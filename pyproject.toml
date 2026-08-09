@@ -26,14 +26,14 @@ image-agent = "workspace_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*", "configs*", "schemas*", "examples*"]
+include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*", "configs*", "schemas*", "examples*", "frontend*"]
 
 [tool.setuptools]
 py-modules = ["workspace_cli", "main", "main_front"]
 
 [tool.setuptools.package-data]
-"*" = ["*.yaml", "*.json", "*.md"]
+"*" = ["*.yaml", "*.json", "*.md", "*.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["tests"]
+testpaths = ["tests", "frontend_tests"]

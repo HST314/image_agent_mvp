@@ -44,14 +44,17 @@ def test_unknown_project_returns_real_not_found(client: TestClient) -> None:
     assert "不存在" in response.json()["detail"]
 
 
-def test_asset_endpoint_rejects_unsupported_type(client: TestClient) -> None:
+def test_asset_endpoint_hides_unindexed_file(client: TestClient) -> None:
     store = main_front.ProjectStore(main_front.PROJECTS_ROOT, "safe-project")
     store.create()
     asset_dir = store.root / "artifacts" / "images"
     asset_dir.mkdir(parents=True)
     (asset_dir / "note.txt").write_text("not an image", encoding="utf-8")
     response = client.get("/api/projects/safe-project/assets/note.txt")
-    assert response.status_code == 415
+    # Files that were not admitted to the content-addressed asset index are
+    # deliberately indistinguishable from missing assets.
+    assert response.status_code == 404
+    assert response.json()["detail"] == "图片资源不存在。"
 
 
 def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) -> None:
@@ -73,4 +76,3 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
     assert data["snapshot"]["state"] == "intake_clarify"
     assert data["manifest"]["current_checkpoint"]["sequence"] == 1
     assert data["snapshot"].get("completed") is not True
-

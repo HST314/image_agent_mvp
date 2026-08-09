@@ -8,11 +8,11 @@ setup(
     packages=find_packages(include=[
         "agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*",
         "model_router*", "render_clients*", "calibrator*", "review*", "configs*",
-        "schemas*", "examples*",
+        "schemas*", "examples*", "frontend*",
     ]),
     py_modules=["workspace_cli", "main", "main_front"],
     include_package_data=True,
-    package_data={"": ["*.yaml", "*.json", "*.md"]},
+    package_data={"": ["*.yaml", "*.json", "*.md", "*.html"]},
     entry_points={"console_scripts": ["image-agent=workspace_cli:main"]},
     python_requires=">=3.10",
     install_requires=["pydantic>=2.6,<3", "PyYAML>=6.0,<7", "openai>=1.0,<2",
