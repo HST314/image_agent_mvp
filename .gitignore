@@ -7,4 +7,5 @@ __pycache__/
 projects/
 frontend/data/projects/
 artifacts/
-
+build/
+*.egg-info/

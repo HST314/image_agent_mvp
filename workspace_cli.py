@@ -43,6 +43,12 @@ def parser() -> argparse.ArgumentParser:
     rewind = commands.add_parser("rewind", aliases=["branch"])
     rewind.add_argument("project_id"); rewind.add_argument("--from", dest="checkpoint", required=True); rewind.add_argument("--name")
     rewind.add_argument("--continue", dest="continue_run", action="store_true"); _flow_options(rewind)
+    policy = commands.add_parser("revise-policy", help="人工确认后在新分支修订运行策略")
+    policy.add_argument("project_id"); policy.add_argument("--policy", type=Path, required=True)
+    policy.add_argument("--actor", required=True); policy.add_argument("--confirm", action="store_true")
+    unknown = commands.add_parser("unknown", help="查询或人工处置付费调用未知态")
+    unknown.add_argument("project_id"); unknown.add_argument("--idempotency-key")
+    unknown.add_argument("--action", choices=("retry_after_confirmation", "abandon")); unknown.add_argument("--actor")
     return root
 
 
@@ -88,6 +94,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"已创建新分支 {branch}，原历史未修改。")
                 if args.continue_run:
                     WorkflowRunner(store, args.model_config, offline_mode=args.offline).run(store.resume(), _options(args))
+        elif args.command == "revise-policy":
+            policy = RuntimePolicy.model_validate(json.loads(args.policy.read_text(encoding="utf-8")))
+            print(json.dumps({"branch": store.revise_policy(policy.snapshot(), confirmed=args.confirm, actor=args.actor)}, ensure_ascii=False))
+        elif args.command == "unknown":
+            gateway = WorkflowRunner(store, Path(__file__).parent / "configs/model_config.yaml",
+                                     offline_mode=RuntimePolicy.model_validate(json.loads((store.root / "runtime_policy.json").read_text())["policy"]).offline_mode).gateway
+            if args.action:
+                if not args.idempotency_key or not args.actor: raise ValueError("处置未知态必须提供 key 与 actor。")
+                gateway.resolve_unknown(args.idempotency_key, args.action, args.actor)
+            print(json.dumps({"items": gateway.unknown_actions()}, ensure_ascii=False))
         elif args.command == "history": print(view.history(store.history()))
         elif args.command == "inspect": print(view.technical(store.manifest()))
         return 0

@@ -28,7 +28,13 @@ def load_style_card(path: str | Path, *, trace_id: str | None = None) -> StyleCa
 def load_style_card_index(path: str | Path) -> dict[str, list[dict[str, str | int]]]:
     """Load a style card index as plain JSON."""
 
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    target, trace = Path(path), f"trace_{uuid4().hex}"
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ResourceError("RESOURCE_MISSING", str(target), trace) from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ResourceError("RESOURCE_CORRUPT", str(target), trace) from exc
 
 
 class StyleCardLoader:

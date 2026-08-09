@@ -20,11 +20,15 @@ class ArkImageRenderClient(ImageRenderClient):
         base_url: str = DEFAULT_ARK_BASE_URL,
         api_key: str | None = None,
         model: str = DEFAULT_ARK_IMAGE_MODEL,
+        timeout: float = 180,
+        max_retries: int = 0,
+        idempotency_key: str | None = None,
     ) -> None:
         super().__init__(
             base_url=os.getenv("ARK_BASE_URL", base_url),
             api_key=api_key or os.getenv("ARK_API_KEY"),
             model=model,
+            timeout=timeout, max_retries=max_retries, idempotency_key=idempotency_key,
         )
 
     def render(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -43,7 +47,9 @@ class ArkImageRenderClient(ImageRenderClient):
         except ImportError as exc:
             raise RuntimeError("openai SDK is required when ARK_API_KEY is configured.") from exc
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url,
+                        timeout=self.timeout, max_retries=self.max_retries,
+                        default_headers={"Idempotency-Key": self.idempotency_key} if self.idempotency_key else None)
         response = client.images.generate(
             model=str(payload["model"]),
             prompt=str(payload["prompt"]),

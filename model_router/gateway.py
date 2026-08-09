@@ -46,6 +46,9 @@ class RuntimeModelGateway:
     def resolve_unknown(self, idempotency_key: str, action: str, actor: str) -> None:
         if action not in {"retry_after_confirmation", "abandon"} or not actor:
             raise ValueError("无效的人工处置。")
+        unresolved = {item["idempotency_key"] for item in self.unknown_actions()}
+        if idempotency_key not in unresolved:
+            raise ValueError("未知态不存在或已经处置，未重复执行。")
         self.store.events.append("model_call_unknown_resolved", idempotency_key=idempotency_key,
                                  action=action, actor=actor, resolved=True)
 

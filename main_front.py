@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
 import os
 import re
@@ -23,6 +24,7 @@ from storage.project_store import ProjectStore
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 from configs.runtime_policy import RuntimePolicy
+from skills.errors import ResourceError
 
 load_dotenv(".env")  # 在程序启动时自动读取当前目录下的 .env 文件
 
@@ -66,6 +68,15 @@ class AdvanceRequest(StrictRequest):
 class BranchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
     name: str | None = Field(default=None, min_length=2, max_length=64)
+
+class PolicyRevisionRequest(StrictRequest):
+    policy: dict[str, Any]
+    actor: str = Field(min_length=1, max_length=128)
+    confirmed: bool
+
+class UnknownResolutionRequest(StrictRequest):
+    action: Literal["retry_after_confirmation", "abandon"]
+    actor: str = Field(min_length=1, max_length=128)
 
 
 @app.middleware("http")
@@ -121,7 +132,14 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "snapshot": snapshot,
         "history": store.history(),
         "capabilities": _capabilities(manifest, snapshot),
+        "resource_events": [e for e in store.history() if e.get("type") == "resource_degraded"],
+        "unknown_actions": _gateway_for_store(store).unknown_actions(),
+        "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
     }
+
+def _gateway_for_store(store: ProjectStore):
+    policy = RuntimePolicy.model_validate(json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"])
+    return _runner(store, policy.offline_mode).gateway
 
 
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
@@ -149,6 +167,8 @@ def _translate_error(exc: Exception) -> HTTPException:
         return exc
     if isinstance(exc, ValidationError):
         return HTTPException(status_code=422, detail=exc.errors(include_url=False))
+    if isinstance(exc, ResourceError):
+        return HTTPException(status_code=503, detail=exc.as_dict())
     if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
         return HTTPException(status_code=404, detail="工程或资源不存在。")
     if isinstance(exc, FileExistsError):
@@ -268,6 +288,37 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
                 store.branch_from(body.checkpoint, name=body.name)
             return _project_view(store)
 
+        return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.post("/api/projects/{project_id}/policy")
+async def revise_project_policy(project_id: str, body: PolicyRevisionRequest) -> dict[str, Any]:
+    try:
+        def execute():
+            store = _store(project_id)
+            policy = RuntimePolicy.model_validate(body.policy)
+            with store.lock():
+                branch = store.revise_policy(policy.snapshot(), confirmed=body.confirmed, actor=body.actor)
+            return {"branch": branch, "project": _project_view(store)}
+        return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/unknown-actions")
+async def get_unknown_actions(project_id: str) -> dict[str, Any]:
+    try:
+        return {"items": await asyncio.to_thread(lambda: _gateway_for_store(_store(project_id)).unknown_actions())}
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.post("/api/projects/{project_id}/unknown-actions/{idempotency_key}")
+async def resolve_unknown_action(project_id: str, idempotency_key: str, body: UnknownResolutionRequest) -> dict[str, Any]:
+    try:
+        def execute():
+            gateway = _gateway_for_store(_store(project_id))
+            gateway.resolve_unknown(idempotency_key, body.action, body.actor)
+            return {"items": gateway.unknown_actions()}
         return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc

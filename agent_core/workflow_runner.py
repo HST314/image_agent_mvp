@@ -23,6 +23,8 @@ from storage.assets import normalize_image_asset
 from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
 from model_router.executor import ModelExecutor
+from skills.resource_loader import load_with_policy
+from skills.errors import ResourceError
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -144,21 +146,37 @@ class WorkflowRunner:
         # 1. 匹配广告品类 Skill
         from skills.category_library_adapter import CategoryLibraryAdapter
         lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
-        if not lib_path.is_file():
-            raise RuntimeError("必需品类库缺失，已阻止付费流程。")
-        match = CategoryLibraryAdapter(lib_path).load_for_task(task_card)
-        if not match:
-            raise RuntimeError("品类库没有匹配结果，已阻止付费流程。")
-        category_skill = match.skill
+        def load_category():
+            try:
+                match = CategoryLibraryAdapter(lib_path).load_for_task(task_card)
+            except (FileNotFoundError, UnicodeError, json.JSONDecodeError) as exc:
+                from uuid import uuid4
+                raise ResourceError("RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_CORRUPT", str(lib_path), f"trace_{uuid4().hex}") from exc
+            if not match:
+                from uuid import uuid4
+                raise ResourceError("RESOURCE_NO_MATCH", str(lib_path), f"trace_{uuid4().hex}")
+            return match.skill
+        category_skill = load_with_policy(load_category, resource=str(lib_path),
+            allow_degradation=self.policy.allow_skill_degradation, fallback=None,
+            emit=lambda detail: self.store.events.append("resource_degraded", **detail))
 
         # 2. 从艺术风格库筛选 5 种不同机制的方向，并生成文本卡片
         from skills.style_loader import StyleCardLoader
         from skills.style_idea_generator import StyleIdeaGenerator
         
         style_path = Path(__file__).parent.parent / "skills/style_cards/index.json"
-        if not style_path.is_file():
-            raise RuntimeError("必需风格库缺失，已阻止付费流程。")
-        style_cards = StyleCardLoader(style_path).select_distinct(count=5)
+        def load_styles():
+            try:
+                return StyleCardLoader(style_path).select_distinct(count=5)
+            except ResourceError:
+                raise
+            except (FileNotFoundError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                from uuid import uuid4
+                code = "RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_SCHEMA_INVALID"
+                raise ResourceError(code, str(style_path), f"trace_{uuid4().hex}", detail=str(exc)) from exc
+        style_cards = load_with_policy(load_styles, resource=str(style_path),
+            allow_degradation=self.policy.allow_skill_degradation, fallback=self._fallback_style_cards(),
+            emit=lambda detail: self.store.events.append("resource_degraded", **detail))
 
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc
@@ -188,7 +206,7 @@ class WorkflowRunner:
                 f"风格名称：{idea.title if idea else ''}\n"
                 f"构图分布：{idea.composition if idea else ''}\n"
                 f"材质光影：{idea.material if idea else ''}\n"
-                f"【品类规范】\n{category_skill.prompt_injection.category_description if category_skill else ''}\n"
+                f"【品类规范】\n{category_skill.prompt_injection.category_description if category_skill else '品类资源已按策略降级；仅使用已确认任务书约束。'}\n"
                 f"要求：保持项目主体与品牌色彩一致，呈现选定的艺术风格机制。"
             )
             result = self._image_call("initial_candidate_generation", prompt, [], index=index)
@@ -204,6 +222,16 @@ class WorkflowRunner:
         selected = options.get("selected_id")
         if not selected: return {"waiting": True, "phase": "waiting_master_selection"}
         return {"master_asset": self.workflow.select_master(data["candidates"], selected), "waiting": False, "phase": "master_selected"}
+
+    @staticmethod
+    def _fallback_style_cards():
+        """Minimal policy-approved directions used only when explicit degradation is enabled."""
+        from agent_core.models import SkillStatus, StyleCard, VisualLanguage
+        compositions = ("centered", "diagonal", "grid", "asymmetric", "panoramic")
+        return [StyleCard(style_id=f"degraded-{index}", version="1", style_name=f"安全方向 {index}",
+                          composition=composition, visual_language=VisualLanguage(materiality=["neutral"]),
+                          risk_notes=["外部风格资源不可用，需人工复核"], status=SkillStatus.APPROVED)
+                for index, composition in enumerate(compositions, 1)]
 
     def _self_check(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])
@@ -293,7 +321,8 @@ class WorkflowRunner:
             return normalize_image_asset({**saved, "mock": True})
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
             lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or "https://ark.cn-beijing.volces.com/api/v3",
-                model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
+                model=route.binding.model, timeout=self.policy.model_timeout_seconds, max_retries=0,
+                idempotency_key=str(route.binding.parameters.get("_idempotency_key", ""))).render(build_render_payload(route.binding.model, prompt,
                 self.policy.default_output_size, {"state":state}, response_format=self.policy.response_format,
                 watermark=self.policy.watermark, reference_images=references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
