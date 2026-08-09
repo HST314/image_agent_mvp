@@ -36,4 +36,3 @@ The maximum page size is 500. Negative cursors and invalid limits return 422.
 - `POST /api/projects/{project_id}/policy` validates the same strict schema.
   A change requires `confirmed=true` and a non-empty actor, creates a new audit
   branch, and never mutates the existing branch in place.
-
