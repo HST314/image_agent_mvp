@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import threading
-import fcntl
+import portalocker
 from io import BytesIO
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -69,17 +69,19 @@ class EventStore:
         with self._guard:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a+", encoding="utf-8") as stream:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-                stream.seek(0)
-                existing = [json.loads(line) for line in stream if line.strip()]
-                event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex,
-                         "sequence": (existing[-1].get("sequence", len(existing)) + 1) if existing else 1,
-                         "timestamp": _now(), "type": event_type, **payload}
-                stream.seek(0, os.SEEK_END)
-                stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                portalocker.lock(stream, portalocker.LOCK_EX)
+                try:
+                    stream.seek(0)
+                    existing = [json.loads(line) for line in stream if line.strip()]
+                    event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex,
+                             "sequence": (existing[-1].get("sequence", len(existing)) + 1) if existing else 1,
+                             "timestamp": _now(), "type": event_type, **payload}
+                    stream.seek(0, os.SEEK_END)
+                    stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                finally:
+                    portalocker.unlock(stream)
         return event
 
     def read_all(self) -> list[dict[str, Any]]:
@@ -419,21 +421,25 @@ class ProjectStore:
             return
         lock_path = self.root / ".lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        lock_path.touch(mode=0o600, exist_ok=True)
+        stream = lock_path.open("r+b", buffering=0)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            os.close(descriptor)
+            portalocker.lock(stream, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except portalocker.exceptions.LockException as exc:
+            stream.close()
             raise ProjectLockError("该工程正在由另一个进程处理，请稍后重试。") from exc
-        os.ftruncate(descriptor, 0)
-        os.write(descriptor, json.dumps({"pid": os.getpid(), "started_at": _now(), "thread": threading.get_ident()}).encode())
+        stream.seek(0)
+        stream.truncate()
+        stream.write(json.dumps({"pid": os.getpid(), "started_at": _now(), "thread": threading.get_ident()}).encode())
+        stream.flush()
+        os.fsync(stream.fileno())
         try:
             self._lock_state.depth = 1
             yield
         finally:
             self._lock_state.depth = 0
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
+            portalocker.unlock(stream)
+            stream.close()
 
     def idempotency_key(self, state: str, checkpoint_hash: str, prompt_hash: str, model_hash: str, reference_hash: str = "") -> str:
         return content_hash([state, checkpoint_hash, prompt_hash, model_hash, reference_hash])

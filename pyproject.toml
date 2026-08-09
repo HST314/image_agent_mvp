@@ -13,6 +13,7 @@ dependencies = [
   "openai>=1.0,<2",
   "Pillow>=10.0,<13",
   "fastapi>=0.110,<1",
+  "portalocker>=2.8,<4",
 ]
 
 [project.optional-dependencies]
