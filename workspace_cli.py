@@ -11,6 +11,7 @@ from calibrator.calibration_loop import ManualAction
 from interaction.presenter import Presenter
 from storage.project_store import ProjectStore
 from agent_core.models import QuestionCard
+from configs.runtime_policy import RuntimePolicy
 
 
 def _flow_options(command: argparse.ArgumentParser) -> None:
@@ -60,7 +61,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     view = Presenter(args.debug)
     try:
         if args.command == "new":
-            task = json.loads(args.task.read_text(encoding="utf-8")); store.create()
+            task = json.loads(args.task.read_text(encoding="utf-8"))
+            policy = RuntimePolicy.from_file(Path(__file__).parent / "configs/runtime.yaml").model_copy(update={"offline_mode": args.offline})
+            store.create(policy.snapshot())
             with store.lock():
                 runner = WorkflowRunner(store, args.model_config, offline_mode=args.offline, output=print)
                 result = runner.run({"task_card": task}, _options(args))

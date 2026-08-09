@@ -37,7 +37,9 @@ class ModelExecutor(Generic[T]):
                 finally:
                     pool.shutdown(wait=False, cancel_futures=True)
             except FutureTimeout as exc:
-                last, category, retryable = exc, "timeout", True
+                # The worker thread may still be executing and the provider may
+                # already have charged the request. Never issue an automatic retry.
+                last, category, retryable = exc, "timeout_unknown", False
             except BaseException as exc:
                 last = exc
                 category, retryable = self.classify(exc)

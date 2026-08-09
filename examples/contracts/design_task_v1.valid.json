@@ -1,0 +1,1 @@
+{"schema_version":"1.0","task_id":"task-1","project_id":"project-1","idempotency_key":"task-1-unique","task":{"goal":"poster"},"trace_id":"trace-1"}

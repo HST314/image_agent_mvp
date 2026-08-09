@@ -21,6 +21,8 @@ from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore, content_hash
 from storage.assets import normalize_image_asset
 from interaction.presenter import Presenter
+from configs.runtime_policy import RuntimePolicy
+from model_router.executor import ModelExecutor
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -44,7 +46,14 @@ class WorkflowRunner:
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  output: Callable[[str], None] | None = None) -> None:
         self.store = store
-        self.gateway = RuntimeModelGateway(store, ModelRouter.from_file(config), offline_mode=offline_mode)
+        policy_file = store.root / "runtime_policy.json"
+        stored = json.loads(policy_file.read_text(encoding="utf-8")).get("policy", {}) if policy_file.exists() else {}
+        self.policy = RuntimePolicy.model_validate(stored) if stored else RuntimePolicy(offline_mode=offline_mode)
+        if stored and self.policy.offline_mode != offline_mode:
+            raise ValueError("工程真实/离线模式已在创建时固化，运行中不可切换。")
+        executor = ModelExecutor(max_attempts=self.policy.max_render_retries + 1,
+                                 timeout=self.policy.model_timeout_seconds)
+        self.gateway = RuntimeModelGateway(store, ModelRouter.from_file(config), executor, offline_mode=offline_mode)
         self.offline_mode = offline_mode
         self.output = output or (lambda _: None)
         self.presenter = Presenter()
@@ -102,9 +111,11 @@ class WorkflowRunner:
             task = task.model_copy(update={"known_facts": facts, "unknowns": {k:v for k,v in task.unknowns.items() if k not in answers}})
             return {"task_card": task.model_dump(mode="json"), "clarification_answers": answers, "waiting": False, "phase": "clarification_completed",
                     "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
-                    "clarification_remaining_budget": max(0, 10 - already_asked)}
+                    "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
         if self.offline_mode:
-            card = generate_question_card(task, previous_fingerprints=fingerprints, already_asked=already_asked)
+            card = generate_question_card(task, previous_fingerprints=fingerprints, already_asked=already_asked,
+                                          total_budget=self.policy.clarification_total_budget,
+                                          max_auto_questions=self.policy.max_auto_questions)
         else:
             card = self.gateway.call("intake_clarify", ModelRole.REASONING_LLM,
                 lambda route: generate_question_card(task, self._text(route), previous_fingerprints=fingerprints, already_asked=already_asked, error_recorder=lambda e: self.store.events.append(**{"event_type": "model_parse_failed", **e})),
@@ -115,10 +126,10 @@ class WorkflowRunner:
             asked = already_asked + len(card.questions)
             return {"question_card": card.model_dump(mode="json"), "waiting": True, "phase": "waiting_clarification",
                     "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": asked,
-                    "clarification_remaining_budget": max(0, 10 - asked)}
+                    "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - asked)}
         return {"question_card": card.model_dump(mode="json"), "waiting": False,
                 "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
-                "clarification_remaining_budget": max(0, 10 - already_asked)}
+                "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
 
     def _confirmation(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"]) if data.get("task_specification") else specification_from_task(ImageTaskCard.model_validate(data["task_card"]))
@@ -131,34 +142,28 @@ class WorkflowRunner:
         task_card = ImageTaskCard.model_validate(data["task_card"])
         
         # 1. 匹配广告品类 Skill
-        category_skill = None
-        try:
-            from skills.category_library_adapter import CategoryLibraryAdapter
-            lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
-            if lib_path.exists():
-                adapter = CategoryLibraryAdapter(lib_path)
-                match = adapter.load_for_task(task_card)
-                if match:
-                    category_skill = match.skill
-        except Exception:
-            pass
+        from skills.category_library_adapter import CategoryLibraryAdapter
+        lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
+        if not lib_path.is_file():
+            raise RuntimeError("必需品类库缺失，已阻止付费流程。")
+        match = CategoryLibraryAdapter(lib_path).load_for_task(task_card)
+        if not match:
+            raise RuntimeError("品类库没有匹配结果，已阻止付费流程。")
+        category_skill = match.skill
 
         # 2. 从艺术风格库筛选 5 种不同机制的方向，并生成文本卡片
         from skills.style_loader import StyleCardLoader
         from skills.style_idea_generator import StyleIdeaGenerator
         
-        style_cards = []
-        try:
-            style_path = Path(__file__).parent.parent / "skills/style_cards/index.json"
-            if style_path.exists():
-                style_cards = StyleCardLoader(style_path).select_distinct(count=5)
-        except Exception:
-            pass
+        style_path = Path(__file__).parent.parent / "skills/style_cards/index.json"
+        if not style_path.is_file():
+            raise RuntimeError("必需风格库缺失，已阻止付费流程。")
+        style_cards = StyleCardLoader(style_path).select_distinct(count=5)
 
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc
         doc = TaskConfirmationDoc(task_id=task_card.task_id, confirmed_facts=[], default_handling_for_unknowns=[])
-        idea_cards = StyleIdeaGenerator(offline_mode=True).generate(
+        idea_cards = StyleIdeaGenerator(offline_mode=self.offline_mode).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=5
         )
 
@@ -189,7 +194,8 @@ class WorkflowRunner:
             result = self._image_call("initial_candidate_generation", prompt, [], index=index)
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
 
-        batch = CandidateBatchGenerator(self.store, render).generate(spec.content_hash)
+        batch = CandidateBatchGenerator(self.store, render, attempts=1,
+                                        max_workers=self.policy.candidate_concurrency).generate(spec.content_hash)
         if batch["failed"]: 
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
         return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards]}
@@ -201,7 +207,7 @@ class WorkflowRunner:
 
     def _self_check(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])
-        policy_data = data.get("self_check_policy", {"termination":"solo", "release":"manual", "max_rounds":3})
+        policy_data = data.get("self_check_policy", self.policy.self_check.model_dump(mode="json"))
         loop = CalibrationLoop(self.store, SelfCheckPolicy(**policy_data), inspector=self._inspect,
             reworker=lambda assembled: self._image_call("self_check_rework", assembled["text"], [r["uri"] for r in assembled["references"]]),
             presenter=lambda number, result: self._present_inspection(number, result))
@@ -281,8 +287,11 @@ class WorkflowRunner:
                 template_id=state, template_version="2", input_refs=references, needs_images=len(references))
             return normalize_image_asset(result)
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
-            lambda route: ArkImageRenderClient(model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
-                str(route.binding.parameters.get("size", "2K")), {"state":state}, watermark=False, reference_images=references)),
+            lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or "https://ark.cn-beijing.volces.com/api/v3",
+                model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
+                self.policy.default_output_size, {"state":state}, response_format=self.policy.response_format,
+                watermark=self.policy.watermark, reference_images=references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
-        return normalize_image_asset(result)
+        from storage.image_ingest import persist_image_response
+        return persist_image_response(self.store.artifacts, result, metadata={"state": state, "candidate_index": index})

@@ -1,0 +1,1 @@
+{"schema_version":"1.0","task_id":"task-1","project_id":"project-1","final_image":{"artifact_id":"artifact_0123456789abcdef01234567","uri":"artifact://artifact_0123456789abcdef01234567","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"design_note_markdown":"# Design","design_note":{"idea":"clear"},"trace_ref":"trace-1"}

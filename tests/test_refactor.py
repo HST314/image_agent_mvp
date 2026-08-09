@@ -106,7 +106,7 @@ def test_11_batch_partial_success_retry_and_idempotency(tmp_path: Path):
 def test_12_executor_timeout_classification_backoff_ids():
     delays=[]; executor=ModelExecutor(max_attempts=2,timeout=.01,base_delay=.001,sleeper=delays.append,randomizer=lambda a,b:0)
     with pytest.raises(ModelCallError) as info: executor.run(lambda:(time.sleep(.05),1)[1])
-    assert info.value.category=="timeout" and info.value.request_id.startswith("req_") and len(delays)==1
+    assert info.value.category=="timeout_unknown" and info.value.request_id.startswith("req_") and len(delays)==0
     with pytest.raises(ModelCallError) as invalid: executor.run(lambda:(_ for _ in ()).throw(ValueError("bad")))
     assert not invalid.value.retryable
 

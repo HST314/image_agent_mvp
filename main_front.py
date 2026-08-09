@@ -22,6 +22,7 @@ from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
+from configs.runtime_policy import RuntimePolicy
 
 load_dotenv(".env")  # 在程序启动时自动读取当前目录下的 .env 文件
 
@@ -208,7 +209,8 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            store.create()
+            policy = RuntimePolicy.from_file(APP_ROOT / "configs/runtime.yaml").model_copy(update={"offline_mode": body.offline})
+            store.create(policy.snapshot())
             _runner(store, body.offline).run({"task_card": task.model_dump(mode="json")}, RunnerOptions())
             return _project_view(store)
 
@@ -276,14 +278,13 @@ async def get_asset(project_id: str, artifact_id: str) -> FileResponse:
     """只允许读取当前工程 artifacts/images 下的受支持图片。"""
     if not re.fullmatch(r"[a-zA-Z0-9._-]{1,160}", artifact_id):
         raise HTTPException(status_code=422, detail="资源标识无效。")
-    project_root = _store(project_id).root.resolve()
-    asset = (project_root / "artifacts" / "images" / artifact_id).resolve()
-    allowed_root = (project_root / "artifacts" / "images").resolve()
-    if allowed_root not in asset.parents or not asset.is_file():
+    try:
+        asset, record = _store(project_id).artifacts.resolve(artifact_id)
+    except (FileNotFoundError, ValueError):
         raise HTTPException(status_code=404, detail="图片资源不存在。")
     if asset.stat().st_size > MAX_ASSET_BYTES:
         raise HTTPException(status_code=413, detail="图片超过 25 MiB 下载限制。")
-    media_type = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
+    media_type = record["mime_type"]
     if media_type not in IMAGE_TYPES:
         raise HTTPException(status_code=415, detail="资源类型不受支持。")
     return FileResponse(asset, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})

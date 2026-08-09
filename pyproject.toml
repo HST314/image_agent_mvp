@@ -11,6 +11,7 @@ dependencies = [
   "pydantic>=2.6,<3",
   "PyYAML>=6.0,<7",
   "openai>=1.0,<2",
+  "Pillow>=10.0,<13",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,13 @@ image-agent = "workspace_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*"]
+include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*", "configs*"]
+
+[tool.setuptools]
+py-modules = ["workspace_cli", "main", "main_front"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.json", "*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

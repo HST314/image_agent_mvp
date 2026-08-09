@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://image-agent.local/schemas/DesignDeliveryEnvelope.v1.json",
+  "title": "DesignDeliveryEnvelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "project_id", "final_image", "design_note_markdown", "design_note", "trace_ref"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "task_id": {"type": "string"},
+    "project_id": {"type": "string"},
+    "final_image": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_id", "uri", "sha256"],
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^artifact_[0-9a-f]{24}$"},
+        "uri": {"type": "string", "pattern": "^artifact://artifact_[0-9a-f]{24}$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "design_note_markdown": {"type": "string", "minLength": 1},
+    "design_note": {"type": "object"},
+    "trace_ref": {"type": "string", "minLength": 1}
+  }
+}

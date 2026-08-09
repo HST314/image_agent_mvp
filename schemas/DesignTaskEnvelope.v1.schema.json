@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://image-agent.local/schemas/DesignTaskEnvelope.v1.json",
+  "title": "DesignTaskEnvelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "project_id", "idempotency_key", "task"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "task_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "idempotency_key": {"type": "string", "minLength": 8},
+    "task": {"type": "object"},
+    "trace_id": {"type": ["string", "null"]}
+  }
+}
