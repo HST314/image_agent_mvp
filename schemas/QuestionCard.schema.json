@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QuestionCard",
+  "type": "object",
+  "required": ["question_card_id", "task_id", "questions", "status"],
+  "properties": {
+    "question_card_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "generated_by_state": { "type": "string", "const": "intake_clarify" },
+    "questions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["question_id", "field", "question", "options", "recommended_option_id", "impact"],
+        "properties": {
+          "question_id": { "type": "string" },
+          "field": { "type": "string" },
+          "question": { "type": "string" },
+          "options": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": ["option_id", "label", "description"],
+              "properties": {
+                "option_id": { "type": "string" },
+                "label": { "type": "string" },
+                "description": { "type": "string" }
+              }
+            }
+          },
+          "recommended_option_id": { "type": "string" },
+          "impact": { "type": "string" },
+          "user_selected_option_id": { "type": ["string", "null"] },
+          "user_free_text": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "status": { "type": "string", "enum": ["pending_answer", "answered", "skipped", "expired"] }
+  }
+}

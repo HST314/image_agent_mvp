@@ -1,0 +1,39 @@
+
+model_config_id: volcengine-runtime
+state_bindings:
+  - state: intake_clarify
+    model_role: reasoning_llm
+    provider: ark
+    model: deepseek-v4-flash-260425
+    parameters: {}
+    fallback_model: null
+  - state: confirmation_build
+    model_role: reasoning_llm
+    provider: ark
+    model: deepseek-v4-flash-260425
+    parameters: {}
+    fallback_model: null
+  - state: self_check_inspection
+    model_role: vision_language_model
+    provider: ark
+    model: doubao-seed-evolving
+    parameters: {}
+    fallback_model: null
+  - state: initial_candidate_generation
+    model_role: text_to_image_model
+    provider: ark
+    model: doubao-seedream-5-0-260128
+    parameters: {}
+    fallback_model: null
+  - state: self_check_rework
+    model_role: text_to_image_model
+    provider: ark
+    model: doubao-seedream-5-0-260128
+    parameters: {}
+    fallback_model: null
+  - state: human_prompt_rework
+    model_role: text_to_image_model
+    provider: ark
+    model: doubao-seedream-5-0-260128
+    parameters: {}
+    fallback_model: null

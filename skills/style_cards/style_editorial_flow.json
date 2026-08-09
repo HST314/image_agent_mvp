@@ -1,0 +1,20 @@
+{
+  "style_id": "style_editorial_flow",
+  "version": "1.0",
+  "style_name": "编辑式动线",
+  "tags": ["叙事", "易扫读"],
+  "best_for": ["顺序阅读", "决策审核"],
+  "avoid_for": ["严格对称"],
+  "composition": "非对称阅读路径，并配合分组信息区域",
+  "visual_language": {
+    "materiality": ["平面色块", "清晰分隔", "分层模块"],
+    "lighting": "环境化且不抢眼",
+    "camera": "正交审核视图",
+    "density": "中高",
+    "scheme": "对比分组，并以稳定中性色支撑"
+  },
+  "risk_notes": ["需要谨慎控制间距，避免信息过载。"],
+  "negative_elements": ["随机装饰", "编造文案"],
+  "reference_assets": [],
+  "status": "approved"
+}

@@ -1,0 +1,47 @@
+{
+  "question_card_id": "question_card_example",
+  "task_id": "task_phase1_sample",
+  "generated_by_state": "intake_clarify",
+  "questions": [
+    {
+      "question_id": "task_phase1_sample_q1",
+      "field": "output_spec",
+      "question": "这份任务书中，最终交付规格应以哪类信息为准？",
+      "options": [
+        { "option_id": "A", "label": "仅采用已给信息", "description": "只使用任务书和来源资料中已经明确给出的事实、约束和边界。" },
+        { "option_id": "B", "label": "采用保守默认", "description": "使用通用保守默认值，并在确认书中标记为默认处理而非已确认事实。" }
+      ],
+      "recommended_option_id": "B",
+      "impact": "该选择会影响确认书是否可以继续流转，以及未明确信息是否需要保持未确认状态。",
+      "user_selected_option_id": null,
+      "user_free_text": null
+    },
+    {
+      "question_id": "task_phase1_sample_q2",
+      "field": "asset_rules",
+      "question": "任务书中提到的输入素材或参考资料，应如何使用和限制？",
+      "options": [
+        { "option_id": "A", "label": "仅采用已给信息", "description": "只使用任务书和来源资料中已经明确给出的事实、约束和边界。" },
+        { "option_id": "B", "label": "采用保守默认", "description": "使用通用保守默认值，并在确认书中标记为默认处理而非已确认事实。" }
+      ],
+      "recommended_option_id": "B",
+      "impact": "该选择会影响确认书是否可以继续流转，以及未明确信息是否需要保持未确认状态。",
+      "user_selected_option_id": null,
+      "user_free_text": null
+    },
+    {
+      "question_id": "task_phase1_sample_q3",
+      "field": "content_boundaries",
+      "question": "任务书中尚未明确的内容边界，应如何处理？",
+      "options": [
+        { "option_id": "A", "label": "仅采用已给信息", "description": "只使用任务书和来源资料中已经明确给出的事实、约束和边界。" },
+        { "option_id": "B", "label": "采用保守默认", "description": "使用通用保守默认值，并在确认书中标记为默认处理而非已确认事实。" }
+      ],
+      "recommended_option_id": "B",
+      "impact": "该选择会影响确认书是否可以继续流转，以及未明确信息是否需要保持未确认状态。",
+      "user_selected_option_id": null,
+      "user_free_text": null
+    }
+  ],
+  "status": "pending_answer"
+}

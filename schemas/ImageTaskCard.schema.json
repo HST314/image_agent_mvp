@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ImageTaskCard",
+  "type": "object",
+  "required": ["task_id", "project_id", "source_refs", "deliverable_goal", "usage_context", "status"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "parent_task_id": { "type": ["string", "null"] },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ref_id", "ref_type"],
+        "properties": {
+          "ref_id": { "type": "string" },
+          "ref_type": { "type": "string" },
+          "excerpt": { "type": ["string", "null"] },
+          "source_hash": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "deliverable_goal": { "type": "string" },
+    "usage_context": { "type": "string" },
+    "category_ref": {
+      "type": ["object", "null"],
+      "required": ["category_id"],
+      "properties": {
+        "category_id": { "type": "string" },
+        "version": { "type": ["string", "null"] }
+      }
+    },
+    "known_facts": { "type": "object", "additionalProperties": true },
+    "unknowns": { "type": "object", "additionalProperties": true },
+    "asset_inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["asset_id", "asset_type", "usage_rule"],
+        "properties": {
+          "asset_id": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "usage_rule": { "type": "string" },
+          "verified": { "type": "boolean" }
+        }
+      }
+    },
+    "question_card_id": { "type": ["string", "null"] },
+    "confirmation_doc_id": { "type": ["string", "null"] },
+    "selected_style_direction_ids": { "type": "array", "items": { "type": "string" } },
+    "selected_master_asset_id": { "type": ["string", "null"] },
+    "calibration_history": { "type": "array", "items": { "type": "string" } },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "clarifying", "pending_confirm", "approved", "generating", "review", "rework", "blocked", "completed", "cancelled"]
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "style_id": "style_focal_depth",
+  "version": "1.0",
+  "style_name": "焦点纵深",
+  "tags": ["聚焦", "空间感"],
+  "best_for": ["主视觉候选", "展示"],
+  "avoid_for": ["高密度信息审核"],
+  "composition": "单一主焦点区域，并辅以分层纵深",
+  "visual_language": {
+    "materiality": ["柔和渐变", "细微纹理", "分离平面"],
+    "lighting": "方向性高光，并带有柔和衰减",
+    "camera": "轻微透视角度",
+    "density": "低到中等",
+    "scheme": "克制色调范围，并使用一个强调色系"
+  },
+  "risk_notes": ["辅助信息可能被弱化。"],
+  "negative_elements": ["过度模糊", "无依据符号"],
+  "reference_assets": [],
+  "status": "approved"
+}

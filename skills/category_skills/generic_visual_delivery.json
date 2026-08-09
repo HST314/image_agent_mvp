@@ -1,0 +1,53 @@
+{
+  "category_id": "generic_visual_delivery",
+  "version": "1.0",
+  "display_name": "通用视觉交付",
+  "applies_when": {
+    "keywords": ["generic", "visual", "delivery"],
+    "semantic_rules": [
+      "当任务需要视觉输出且没有显式选择更具体的已批准技能时使用。"
+    ],
+    "negative_match_rules": [
+      "当任务已经明确选择更具体的已批准技能时不要使用。"
+    ]
+  },
+  "required_questions": [
+    {
+      "field": "output_spec",
+      "question": "应将哪类输出规格视为权威依据？",
+      "blocks_generation": false,
+      "default_handling": "仅在候选探索阶段使用运行时默认值，并保持可追溯。"
+    },
+    {
+      "field": "asset_rules",
+      "question": "哪些已提供素材可以被直接表现？",
+      "blocks_generation": true,
+      "default_handling": "不要将未验证素材表现为正式或最终元素。"
+    }
+  ],
+  "prompt_injection": {
+    "category_description": "创建一张与已批准确认书一致的完整视觉候选图。",
+    "production_constraints": [
+      "保留已确认目标、使用场景、锁定事实和素材使用规则。",
+      "未解决的非阻塞字段只能按记录中的默认处理方式使用。",
+      "除非已经明确验证，否则关键文案、标识符、尺寸和素材表现都应保持保守。"
+    ],
+    "visual_rules": [
+      "确保结果在审核尺度下清晰可读。",
+      "清晰区分主要内容、辅助内容和背景结构。",
+      "避免加入无依据的事实细节。"
+    ],
+    "forbidden_elements": [
+      "未验证的标识符",
+      "未批准的文案",
+      "未确认的尺寸",
+      "无依据的事实声明"
+    ]
+  },
+  "review_checks": [
+    "确认画面遵循已批准的任务摘要。",
+    "确认未解决字段遵循其默认处理方式。",
+    "确认禁止项没有出现。"
+  ],
+  "status": "approved"
+}

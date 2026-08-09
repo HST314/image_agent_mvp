@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskConfirmationDoc",
+  "type": "object",
+  "required": ["confirmation_doc_id", "task_id", "confirmed_facts", "default_handling_for_unknowns", "forbidden_items", "sign_status"],
+  "properties": {
+    "confirmation_doc_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "version": { "type": "string" },
+    "summary": { "type": "string" },
+    "confirmed_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "value", "source_ref"],
+        "properties": {
+          "field": { "type": "string" },
+          "value": {},
+          "source_ref": { "type": "string" },
+          "locked": { "type": "boolean" }
+        }
+      }
+    },
+    "default_handling_for_unknowns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "handling", "risk_level"],
+        "properties": {
+          "field": { "type": "string" },
+          "handling": { "type": "string" },
+          "risk_level": { "type": "string", "enum": ["low", "medium", "high", "blocking"] }
+        }
+      }
+    },
+    "selected_style_strategy": {
+      "type": "object",
+      "properties": {
+        "direction_count": { "type": "integer", "const": 5 },
+        "selection_rule": { "type": "string" },
+        "diversity_requirement": { "type": "string" }
+      }
+    },
+    "forbidden_items": { "type": "array", "items": { "type": "string" } },
+    "human_annotations": { "type": "array", "items": { "type": "string" } },
+    "markdown_body": { "type": "string" },
+    "sign_status": { "type": "string", "enum": ["pending_sign", "approved", "modified"] },
+    "signed_by": { "type": ["string", "null"] },
+    "signed_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

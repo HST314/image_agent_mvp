@@ -1,0 +1,10 @@
+{
+  "items": [
+    {
+      "category_id": "generic_visual_delivery",
+      "path": "generic_visual_delivery.json",
+      "version": "1.0",
+      "is_default": true
+    }
+  ]
+}

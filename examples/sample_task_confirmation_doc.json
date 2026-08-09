@@ -1,0 +1,31 @@
+{
+  "confirmation_doc_id": "confirmation_doc_example",
+  "task_id": "task_phase1_sample",
+  "version": "1.0",
+  "summary": "示例待签署任务确认书。",
+  "confirmed_facts": [
+    {
+      "field": "deliverable_goal",
+      "value": "生成一个用于审核和对比的单张视觉概念图。",
+      "source_ref": "source_brief_001",
+      "locked": true
+    }
+  ],
+  "default_handling_for_unknowns": [
+    {
+      "field": "output_spec",
+      "handling": "采用通用保守默认值，并标记为默认处理而非已确认事实。",
+      "risk_level": "medium"
+    }
+  ],
+  "selected_style_strategy": {
+    "direction_count": 5,
+    "selection_rule": "提供五个不同方向机制供人工审核",
+    "diversity_requirement": "方向必须在构图、视觉语言和交付风险上有差异"
+  },
+  "forbidden_items": [],
+  "human_annotations": [],
+  "sign_status": "pending_sign",
+  "signed_by": null,
+  "signed_at": null
+}

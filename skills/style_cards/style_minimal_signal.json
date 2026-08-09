@@ -1,0 +1,20 @@
+{
+  "style_id": "style_minimal_signal",
+  "version": "1.0",
+  "style_name": "极简信号",
+  "tags": ["极简", "高清晰度"],
+  "best_for": ["快速对比", "决策审核"],
+  "avoid_for": ["丰富场景探索"],
+  "composition": "大面积留白区域，并配置一个简洁焦点结构",
+  "visual_language": {
+    "materiality": ["平滑表面", "细线条", "开放空间"],
+    "lighting": "明亮漫射光",
+    "camera": "正向稳定视图",
+    "density": "低",
+    "scheme": "有限色板，并保持高可读性"
+  },
+  "risk_notes": ["可能不足以表达复杂信息。"],
+  "negative_elements": ["装饰噪声", "未确认文本"],
+  "reference_assets": [],
+  "status": "approved"
+}

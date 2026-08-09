@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelConfig",
+  "type": "object",
+  "required": ["model_config_id", "state_bindings"],
+  "properties": {
+    "model_config_id": { "type": "string" },
+    "state_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["state", "model_role", "provider", "model", "parameters"],
+        "properties": {
+          "state": { "type": "string" },
+          "model_role": { "type": "string", "enum": ["reasoning_llm", "vision_language_model", "text_to_image_model"] },
+          "provider": { "type": "string" },
+          "model": { "type": "string" },
+          "parameters": { "type": "object", "additionalProperties": true },
+          "fallback_model": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

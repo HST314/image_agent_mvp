@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StyleCard",
+  "type": "object",
+  "required": ["style_id", "version", "composition", "visual_language", "negative_elements", "status"],
+  "properties": {
+    "style_id": { "type": "string" },
+    "version": { "type": "string" },
+    "style_name": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "best_for": { "type": "array", "items": { "type": "string" } },
+    "avoid_for": { "type": "array", "items": { "type": "string" } },
+    "composition": { "type": "string" },
+    "visual_language": {
+      "type": "object",
+      "properties": {
+        "materiality": { "type": "array", "items": { "type": "string" } },
+        "lighting": { "type": "string" },
+        "camera": { "type": "string" },
+        "density": { "type": "string" },
+        "scheme": { "type": "string" }
+      }
+    },
+    "risk_notes": { "type": "array", "items": { "type": "string" } },
+    "negative_elements": { "type": "array", "items": { "type": "string" } },
+    "reference_assets": { "type": "array", "items": { "type": "string" } },
+    "status": { "type": "string", "enum": ["candidate", "approved", "deprecated"] }
+  }
+}

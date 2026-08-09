@@ -1,0 +1,14 @@
+model_config_id: sample-offline
+state_bindings:
+  - state: intake_clarify
+    model_role: reasoning_llm
+    provider: offline
+    model: deterministic-question-generator
+    parameters: {}
+    fallback_model: null
+  - state: confirmation_build
+    model_role: reasoning_llm
+    provider: offline
+    model: deterministic-confirmation-builder
+    parameters: {}
+    fallback_model: null

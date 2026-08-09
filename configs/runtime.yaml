@@ -1,0 +1,20 @@
+trace_log_path: examples/trace_log.jsonl
+default_question_count: 3
+question_mode: auto
+max_auto_questions: 3
+max_clarify_rounds: 3
+stream_model_output: false
+clarification_total_budget: 10
+self_check:
+  termination: solo
+  fixed_rounds: 2
+  max_rounds: 4
+  stop_early_on_pass: false
+  release: auto
+approval_required: true
+max_render_retries: 2
+max_calibration_retries: 3
+image_api_base_url: ""
+default_output_size: "1024x1024"
+response_format: "url"
+watermark: false

@@ -1,0 +1,9 @@
+{
+  "items": [
+    { "style_id": "style_composed_grid", "path": "style_composed_grid.json", "priority": 1 },
+    { "style_id": "style_focal_depth", "path": "style_focal_depth.json", "priority": 2 },
+    { "style_id": "style_editorial_flow", "path": "style_editorial_flow.json", "priority": 3 },
+    { "style_id": "style_spatial_layers", "path": "style_spatial_layers.json", "priority": 4 },
+    { "style_id": "style_minimal_signal", "path": "style_minimal_signal.json", "priority": 5 }
+  ]
+}

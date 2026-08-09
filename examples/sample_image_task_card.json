@@ -1,0 +1,58 @@
+{
+  "task_id": "task_phase1_sample",
+  "project_id": "project_phase1_sample",
+  "source_refs": [
+    {
+      "ref_id": "source_brief_001",
+      "ref_type": "brief",
+      "excerpt": "使用已确认输入事实，生成用于相关人员审核的视觉资产。",
+      "source_hash": null
+    }
+  ],
+  "deliverable_goal": "商业宣传设计效果图，极简高科技风格。画面中心是一枚精美立体的中国航天主题金属纪念徽章，锌合金材质，表面呈现出精细的凹凸金属雕刻感，采用高温烤漆与电镀工艺，带有局部闪粉和高级珐琅彩质感，徽章图案为长征八号甲火箭腾空发射的浮雕造型。徽章下方和背景是一张设计感极强的航天任务海报，海报上用大气庄重的视觉呈现火箭升空与千帆星座卫星组网的科幻场景，带有深蓝色与金色交织的微光，整体极具科技感与工艺品质感。产品摄影视角，硬核质感，光影层次丰富，微距镜头，2K超高清画质，大师级排版设计。",
+  "usage_context": "Used for internal decision-making before downstream production.",
+  "category_ref": {
+    "category_id": "generic_visual_delivery",
+    "version": "1.0"
+  },
+  "known_facts": {
+    "audience": "内部审核人员",
+    "tone": "清晰、精致、便于对比",
+    "forbidden_items": [
+      "未验证的标识符",
+      "未批准的文案",
+      "未确认的尺寸"
+    ],
+    "style_keywords": "极简高科技、深蓝金色交织、硬核质感、产品摄影、微距镜头",
+    "resolution_target": "2K超高清",
+    "primary_subject": "中国航天主题金属纪念徽章（长征八号甲火箭浮雕，锌合金材质，高温烤漆与电镀工艺，局部闪粉与珐琅彩质感）",
+    "secondary_subject": "航天任务海报（火箭升空与千帆星座卫星组网科幻场景）",
+    "material_spec": "锌合金，凹凸金属雕刻，高温烤漆，电镀工艺，局部闪粉，高级珐琅彩"
+  },
+  "unknowns": {
+    "output_spec": "2560×1440px或更高分辨率设计效果图，RGB色彩模式，适用于屏幕展示与内部评审",
+    "asset_rules": {
+      "value": "仅使用已确认的视觉元素；徽章图案基于公开资料中的长征八号甲火箭造型；海报背景中的卫星组网场景需符合千帆星座已知公开信息；所有文字元素使用占位符或已批准文案",
+      "risk_level": "medium"
+    },
+    "content_boundaries": "不涉及具体发射日期、任务编号等未公开敏感信息；不标注未获授权的标识或徽章；避免使用真实人物肖像"
+  },
+  "asset_inputs": [
+    {
+      "asset_id": "asset_badge_main",
+      "asset_type": "3d_render",
+      "usage_rule": "主视觉资产：中国航天主题金属纪念徽章，锌合金材质质感，表面凹凸金属雕刻，高温烤漆+电镀工艺表现，局部闪粉与高级珐琅彩质感，图案为长征八号甲火箭腾空发射浮雕造型，产品摄影视角，微距镜头，硬核质感，光影层次丰富"
+    },
+    {
+      "asset_id": "asset_poster_bg",
+      "asset_type": "illustration",
+      "usage_rule": "背景资产：航天任务海报，呈现火箭升空与千帆星座卫星组网的科幻场景，深蓝色与金色交织的微光氛围，大气庄重的视觉构图，极简高科技风格"
+    },
+    {
+      "asset_id": "asset_layout_comp",
+      "asset_type": "composite",
+      "usage_rule": "合成资产：徽章置于画面中心，海报作为下方及背景层，整体大师级排版设计，2K超高清画质输出，极简高科技风格"
+    }
+  ],
+  "status": "draft"
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceLog",
+  "type": "object",
+  "required": ["trace_id", "timestamp", "project_id", "task_id", "state", "event_type", "summary"],
+  "properties": {
+    "trace_id": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "project_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "state": { "type": "string" },
+    "event_type": { "type": "string" },
+    "summary": { "type": "string" },
+    "input_refs": { "type": "array", "items": { "type": "string" } },
+    "output_refs": { "type": "array", "items": { "type": "string" } },
+    "model_role": { "type": ["string", "null"] },
+    "model_name": { "type": ["string", "null"] },
+    "prompt_version_id": { "type": ["string", "null"] },
+    "asset_id": { "type": ["string", "null"] },
+    "decision": { "type": ["string", "null"] },
+    "retry_count": { "type": "integer", "minimum": 0 },
+    "error": {
+      "type": ["object", "null"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+format_version: 1
+states: [intake_clarify, confirmation_build, initial_candidate_generation, master_candidate_selection, self_check_iteration, human_prompt_iteration, final_approval]
+terminal_states: [final_approval, blocked, cancelled]
+transitions:
+  intake_clarify: [confirmation_build]
+  confirmation_build: [initial_candidate_generation]
+  initial_candidate_generation: [master_candidate_selection]
+  master_candidate_selection: [self_check_iteration]
+  self_check_iteration: [self_check_iteration, human_prompt_iteration]
+  human_prompt_iteration: [human_prompt_iteration, final_approval]
+  final_approval: []
