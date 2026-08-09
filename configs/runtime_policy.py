@@ -41,6 +41,7 @@ class RuntimePolicy(BaseModel):
     watermark: bool = False
     offline_mode: bool = False
     allow_skill_degradation: bool = False
+    style_library_root: str = "agent-library"
 
     CONSUMERS: ClassVar[dict[str, str]] = {
         "max_auto_questions": "interaction.question_generator",
@@ -56,6 +57,7 @@ class RuntimePolicy(BaseModel):
         "watermark": "render_clients.payload_mapper",
         "offline_mode": "model_router.gateway",
         "allow_skill_degradation": "skills.resource_loader",
+        "style_library_root": "skills.style_library",
     }
 
     def consumer_matrix(self) -> dict[str, str]:

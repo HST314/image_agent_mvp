@@ -33,16 +33,17 @@ def test_cli_new_resume_and_registry(tmp_path: Path, capsys):
     root = tmp_path / "projects"
     assert main(["--projects-root", str(root), "new", "p", "--task", str(task), "--offline"]) == 0
     first_stdout = capsys.readouterr().out
-    assert "请选择一张作为当前主图" in first_stdout and "候选方向 5" in first_stdout
+    assert "创作任务书" in first_stdout and "流程已安全暂停" in first_stdout
+    assert "请选择一张作为当前主图" not in first_stdout  # 未确认任务书不得进入付费生图步骤
     assert "candidate_index" not in first_stdout and "sha256" not in first_stdout
     store = ProjectStore(root, "p")
-    assert store.manifest()["current_checkpoint"]["state"] == "master_candidate_selection"
+    assert store.manifest()["current_checkpoint"]["state"] == "confirmation_build"
     runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
     assert set(runner.handlers) == set(runner.ORDER)
-    assert main(["--projects-root", str(root), "resume", "p", "--offline", "--selected-id", "candidate-1"]) == 0
+    assert main(["--projects-root", str(root), "resume", "p", "--offline"]) == 0
     resumed_stdout = capsys.readouterr().out
-    assert "第 1 轮画面质检" in resumed_stdout and "修改建议" in resumed_stdout
-    assert any(e["type"] == "inspection_completed" for e in store.history())
+    assert "人工等待点" in resumed_stdout
+    assert not any(e["type"] == "model_call_started" for e in store.history())
 
 
 def test_retry_calls_real_failed_handler_on_new_branch(tmp_path: Path):

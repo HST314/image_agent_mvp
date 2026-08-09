@@ -37,6 +37,8 @@ class RunnerOptions:
     edited_markdown: str | None = None
     final_approved: bool = False
     clarification_answers: dict[str, Any] | None = None
+    task_approved: bool = False
+    actor: str | None = None
 
 
 class WorkflowRunner:
@@ -137,7 +139,18 @@ class WorkflowRunner:
         spec = TaskSpecification.model_validate(data["task_specification"]) if data.get("task_specification") else specification_from_task(ImageTaskCard.model_validate(data["task_card"]))
         if options.get("edited_markdown"):
             spec = update_specification_from_markdown(spec, options["edited_markdown"])
-        return {"task_specification": spec.model_dump(mode="json"), "task_markdown": specification_to_markdown(spec), "waiting": False}
+        markdown = specification_to_markdown(spec)
+        revision_hash = content_hash({"task": data.get("task_card"), "markdown": markdown})
+        prior = data.get("task_revision") or {}
+        changed = prior.get("revision_hash") != revision_hash
+        revision = {"version": int(prior.get("version", 0)) + (1 if changed else 0),
+                    "revision_hash": revision_hash, "markdown": markdown,
+                    "actor": options.get("actor") or "manual-user"}
+        approved = bool(options.get("task_approved") and options.get("actor"))
+        return {"task_specification": spec.model_dump(mode="json"), "task_markdown": markdown,
+                "task_revision": revision,
+                "task_approval": ({"revision_hash": revision_hash, "actor": options["actor"]} if approved else None),
+                "waiting": not approved, "phase": "task_approved" if approved else "waiting_human_approval"}
 
     def _candidates(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])
@@ -160,63 +173,71 @@ class WorkflowRunner:
             allow_degradation=self.policy.allow_skill_degradation, fallback=None,
             emit=lambda detail: self.store.events.append("resource_degraded", **detail))
 
-        # 2. 从艺术风格库筛选 5 种不同机制的方向，并生成文本卡片
-        from skills.style_loader import StyleCardLoader
-        from skills.style_idea_generator import StyleIdeaGenerator
-        
-        style_path = Path(__file__).parent.parent / "skills/style_cards/index.json"
-        def load_styles():
-            try:
-                return StyleCardLoader(style_path).select_distinct(count=5)
-            except ResourceError:
-                raise
-            except (FileNotFoundError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-                from uuid import uuid4
-                code = "RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_SCHEMA_INVALID"
-                raise ResourceError(code, str(style_path), f"trace_{uuid4().hex}", detail=str(exc)) from exc
-        style_cards = load_with_policy(load_styles, resource=str(style_path),
-            allow_degradation=self.policy.allow_skill_degradation, fallback=self._fallback_style_cards(),
-            emit=lambda detail: self.store.events.append("resource_degraded", **detail))
+        # 2. 唯一风格入口：图片只在 VLM 提取边界出现，渲染侧只收到文字。
+        from agent_core.models import SignStatus, TaskConfirmationDoc
+        from agent_core.style_pipeline import StyleRenderPlanner
+        from skills.style_library import StyleExtractor, StyleLibrary, select_five
 
-        # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
-        from interaction.approval_gate import TaskConfirmationDoc
-        doc = TaskConfirmationDoc(task_id=task_card.task_id, confirmed_facts=[], default_handling_for_unknowns=[])
-        idea_cards = StyleIdeaGenerator(offline_mode=self.offline_mode).generate(
-            task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=5
-        )
+        if not data.get("task_approval") or data["task_approval"].get("revision_hash") != data.get("task_revision", {}).get("revision_hash"):
+            raise ValueError("任务书修改后必须重新人工确认，才能进入付费步骤。")
+        style_root = Path(self.policy.style_library_root)
+        if not style_root.is_absolute():
+            style_root = Path.cwd() / style_root
+        library = StyleLibrary(style_root)
+        records = library.records()
+        extractor = StyleExtractor(style_root, self._extract_style, model_id="offline-style-vlm" if self.offline_mode else "runtime-style-vlm")
+        def extraction_for(record):
+            try:
+                return library.extraction(record)
+            except Exception:
+                return extractor.extract(record)
+        selected_styles = select_five(records, extraction_for, specification_to_markdown(spec))
+        doc = TaskConfirmationDoc(task_id=task_card.task_id, summary=specification_to_markdown(spec),
+                                  confirmed_facts=[], default_handling_for_unknowns=[],
+                                  markdown_body=specification_to_markdown(spec), sign_status=SignStatus.APPROVED,
+                                  signed_by=data["task_approval"]["actor"])
+        plans = StyleRenderPlanner().plan(confirmation=doc, category=category_skill, styles=selected_styles,
+            deliverable_goal=task_card.deliverable_goal, usage_context=task_card.usage_context,
+            task_revision_hash=data["task_revision"]["revision_hash"], config_hash=self.policy.sha256())
 
         # 3. 终端输出这 5 张文本卡片给用户
         self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
-        for i, idea in enumerate(idea_cards, 1):
-            self.output(f"\n【方向 {i}：{idea.title}】")
-            self.output(f"  • 构图机制：{idea.composition}")
-            self.output(f"  • 材质语言：{idea.material}")
-            self.output(f"  • 推荐理由：{idea.fit_reason}")
-            self.output(f"  • 主要风险：{idea.major_risk}")
+        for i, selected in enumerate(selected_styles, 1):
+            self.output(f"\n【方向 {i}：{selected.style.title}】")
+            self.output(f"  • 主导机制：{selected.mechanism}")
+            self.output(f"  • 推荐理由：{selected.reason}")
+            self.output(f"  • 主要风险：{selected.risk}")
         self.output("\n=================================================================")
         self.output("保持主体内容、品牌色彩与空间条件一致，正在按上述 5 种风格分别生图，请稍候...\n")
 
         # 4. 生图逻辑：固定内容与品牌色，只注入各自风格
         def render(index: int) -> dict[str, Any]:
-            idea = idea_cards[index] if index < len(idea_cards) else None
-            prompt = (
-                f"商业效果图绘制。\n"
-                f"【项目主体与内容规范】\n{specification_to_markdown(spec)}\n"
-                f"【艺术风格机制】\n"
-                f"风格名称：{idea.title if idea else ''}\n"
-                f"构图分布：{idea.composition if idea else ''}\n"
-                f"材质光影：{idea.material if idea else ''}\n"
-                f"【品类规范】\n{category_skill.prompt_injection.category_description if category_skill else '品类资源已按策略降级；仅使用已确认任务书约束。'}\n"
-                f"要求：保持项目主体与品牌色彩一致，呈现选定的艺术风格机制。"
-            )
-            result = self._image_call("initial_candidate_generation", prompt, [], index=index)
-            return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
+            plan = plans[index]
+            result = self._image_call("initial_candidate_generation", plan.prompt_text, [], index=index)
+            return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}",
+                    "style_name": selected_styles[index].style.title, "style_id": plan.style_id,
+                    "extraction_key": plan.extraction_key, "prompt_version_id": plan.prompt_version_id,
+                    "provenance": plan.provenance}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=1,
                                         max_workers=self.policy.candidate_concurrency).generate(spec.content_hash)
         if batch["failed"]: 
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
-        return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards]}
+        return {"candidates": batch["succeeded"], "style_selections": [
+            {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
+             "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}
+            for item in selected_styles]}
+
+    def _extract_style(self, image_path: str, prompt: str) -> Any:
+        if self.offline_mode:
+            return {"composition":"稳定构图", "material":"可控材质", "lighting":"均衡光影",
+                    "narrative":"清晰叙事", "graphic_language":"差异化图形语言", "color":"任务色彩",
+                    "prompt_supplement":"使用抽象视觉机制，不复制参考作品。"}
+        return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
+            lambda route: self._vlm(route).inspect(image_path, prompt),
+            messages=[{"role":"user","content":prompt},{"role":"image","content":"[LOCAL_STYLE_ASSET]"}],
+            variables={"style_asset_sha256": content_hash(Path(image_path).read_bytes().hex())},
+            template_id="style-extraction", template_version="1", input_refs=[], needs_images=1)
 
     def _selection(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         selected = options.get("selected_id")

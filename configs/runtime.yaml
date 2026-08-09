@@ -16,3 +16,4 @@ response_format: "url"
 watermark: false
 offline_mode: false
 allow_skill_degradation: false
+style_library_root: "agent-library"

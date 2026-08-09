@@ -25,6 +25,8 @@ def _flow_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--edited-task-markdown", type=Path, help="编辑后的任务书；保存为结构化新版本")
     command.add_argument("--approve-final", action="store_true")
     command.add_argument("--clarification-answers", type=Path, help="澄清答案 JSON（字段到答案）")
+    command.add_argument("--approve-task", action="store_true", help="确认当前任务书并允许进入付费步骤")
+    command.add_argument("--actor", help="执行任务书确认的人员标识")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -58,7 +60,8 @@ def _options(args: argparse.Namespace) -> RunnerOptions:
     answers = json.loads(args.clarification_answers.read_text(encoding="utf-8")) if getattr(args, "clarification_answers", None) else None
     return RunnerOptions(selected_id=getattr(args, "selected_id", None), manual_action=action,
                          human_prompt=getattr(args, "human_prompt", None), edited_markdown=markdown,
-                         final_approved=bool(getattr(args, "approve_final", False)), clarification_answers=answers)
+                         final_approved=bool(getattr(args, "approve_final", False)), clarification_answers=answers,
+                         task_approved=bool(getattr(args, "approve_task", False)), actor=getattr(args, "actor", None))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

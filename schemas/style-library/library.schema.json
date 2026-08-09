@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Style Library","type":"object","additionalProperties":false,"required":["schema_version","library_id","version","style_count"],"properties":{"schema_version":{"const":"1.0"},"library_id":{"type":"string","minLength":1},"version":{"type":"string","minLength":1},"style_count":{"type":"integer","minimum":0}}}
