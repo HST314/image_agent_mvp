@@ -26,6 +26,8 @@ class CalibrationLoop:
 
     def run(self, *, current_asset: dict[str, Any], stable_specification: str, constraints: list[str], approve: Callable[[VisualCheckResult], ManualAction] | None = None, start_round: int = 1) -> dict[str, Any]:
         current = current_asset
+        scored = [(float(e.get("result", {}).get("confidence", 0)), e.get("asset"))
+                  for e in self.store.events.read_all() if e.get("type") == "inspection_completed" and e.get("asset")]
         limit = self.policy.fixed_rounds if self.policy.termination == "fix" else self.policy.max_rounds
         for number in range(start_round, limit + 1):
             self.store.events.append("inspection_started", round=number, asset=current)
@@ -33,7 +35,9 @@ class CalibrationLoop:
             cached = self._successful(inspection_key)
             raw = cached or self.inspector(str(current["uri"]), stable_specification)
             result = VisualCheckResult.model_validate(raw)
-            self.store.events.append("inspection_reused" if cached else "inspection_completed", round=number, result=result.model_dump(mode="json"), idempotency_key=inspection_key)
+            self.store.events.append("inspection_reused" if cached else "inspection_completed", round=number, asset=current,
+                                     result=result.model_dump(mode="json"), idempotency_key=inspection_key)
+            scored.append((result.confidence, current))
             self.presenter(number, result)
             checked_hash = str(current["sha256"])
             choice = ManualAction(action="execute")
@@ -92,6 +96,8 @@ class CalibrationLoop:
                     "latest_checked_asset_hash": checked_hash, "termination_reason": reason})
                 return {"waiting": True, "phase": "waiting_human_approval", "round": number,
                         "reason": "已达到质检轮次上限，请人工决定。", "asset": current,
+                        "best_asset": max(scored, key=lambda item: item[0])[1],
+                        "available_actions": ["add_rounds_with_cost_confirmation", "human_tune_best", "abandon"],
                         "inspection": result.model_dump(mode="json"), "calibration_status": "waiting_human_decision",
                         "termination_satisfied": False, "termination_reason": reason,
                         "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}

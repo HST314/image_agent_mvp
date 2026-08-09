@@ -27,6 +27,8 @@ from configs.runtime_policy import RuntimePolicy
 from model_router.executor import ModelExecutor
 from skills.resource_loader import load_with_policy
 from skills.errors import ResourceError
+from calibrator.structured_inspection import parse_with_one_repair, InspectionOutputError
+from agent_core.delivery import build_delivery, persist_delivery
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -345,8 +347,13 @@ class WorkflowRunner:
         frozen = freeze_delivery({**data, "quality_asset_sha256": checked_hash, "quality_passed": satisfied},
                                  asset=asset, quality_version=str(data.get("quality_version", "visual-check-v2")), actor=actor)
         delivery = frozen.model_dump(mode="json")
+        trace_ref = f"project:{self.store.project_id}:asset:{asset['sha256']}"
+        envelope = build_delivery(data, self.store.project_id, asset, trace_ref)
+        delivery_files = persist_delivery(self.store.root, envelope)
         self.store.events.append("delivery_frozen", delivery=delivery)
-        return {"final_asset": asset, "frozen_delivery": delivery, "completed": True}
+        self.store.events.append("delivery_exported", envelope=envelope.model_dump(mode="json"), files=delivery_files)
+        return {"final_asset": asset, "frozen_delivery": delivery, "delivery_envelope": envelope.model_dump(mode="json"),
+                "delivery_files": delivery_files, "completed": True}
 
     def _text(self, route: ModelRoute):
         client = build_text_client(route.binding, timeout=self.policy.model_timeout_seconds)
@@ -371,10 +378,20 @@ class WorkflowRunner:
                 f"设计任务书要求：\n{prompt}"
             )
             
-            return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
+            raw = self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
                 lambda route: self._vlm(route).inspect(image_uri, inspection_prompt), 
                 messages=[{"role":"user","content":inspection_prompt},{"role":"image","content":image_uri}],
                 variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
+            def repair(response: str, errors: str):
+                repair_prompt = f"只修复为指定 JSON Schema，不改变语义。校验错误：{errors}\n原响应：{response}"
+                return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
+                    lambda route: self._vlm(route).inspect(image_uri, repair_prompt), messages=[{"role":"user","content":repair_prompt}],
+                    variables={"repair":True}, template_id="visual-check-repair", template_version="1", input_refs=[image_uri], needs_images=1)
+            try:
+                return parse_with_one_repair(raw, repair).model_dump(mode="json")
+            except InspectionOutputError as exc:
+                self.store.events.append("inspection_schema_failed", safe_raw=exc.safe_raw, errors=exc.errors, recoverable=True)
+                raise
 
     def _vlm(self, route: ModelRoute):
         client = build_vlm_client(route.binding, timeout=self.policy.model_timeout_seconds)
