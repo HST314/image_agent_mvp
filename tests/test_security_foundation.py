@@ -54,7 +54,7 @@ def test_t07_timeout_is_unknown_and_never_auto_retries():
     def slow():
         nonlocal calls
         calls += 1
-        threading.Event().wait(.03)
+        raise TimeoutError("provider SDK timeout")
     with pytest.raises(ModelCallError) as error:
         ModelExecutor(max_attempts=5, timeout=.001).run(slow)
     assert error.value.category == "timeout_unknown" and calls == 1

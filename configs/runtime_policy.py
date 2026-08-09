@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -32,7 +32,7 @@ class RuntimePolicy(BaseModel):
     stream_model_output: Literal[False] = False  # true is rejected until the streaming job phase is installed
     clarification_total_budget: int = Field(10, ge=0, le=100)
     self_check: SelfCheckPolicyConfig = Field(default_factory=SelfCheckPolicyConfig)
-    max_render_retries: int = Field(2, ge=0, le=10)
+    max_render_retries: Literal[0] = 0
     candidate_concurrency: int = Field(5, ge=1, le=5)
     model_timeout_seconds: float = Field(180, gt=0, le=3600)
     image_api_base_url: str = ""
@@ -41,6 +41,25 @@ class RuntimePolicy(BaseModel):
     watermark: bool = False
     offline_mode: bool = False
     allow_skill_degradation: bool = False
+
+    CONSUMERS: ClassVar[dict[str, str]] = {
+        "max_auto_questions": "interaction.question_generator",
+        "stream_model_output": "model_router.clients",
+        "clarification_total_budget": "agent_core.workflow_runner",
+        "self_check": "calibrator.calibration_loop",
+        "max_render_retries": "agent_core.batch(no automatic paid retry)",
+        "candidate_concurrency": "agent_core.batch",
+        "model_timeout_seconds": "model_router.clients SDK timeout",
+        "image_api_base_url": "render_clients.image_render_client",
+        "default_output_size": "render_clients.payload_mapper",
+        "response_format": "render_clients.payload_mapper",
+        "watermark": "render_clients.payload_mapper",
+        "offline_mode": "model_router.gateway",
+        "allow_skill_degradation": "skills.resource_loader",
+    }
+
+    def consumer_matrix(self) -> dict[str, str]:
+        return dict(self.CONSUMERS)
 
     def snapshot(self) -> dict:
         return self.model_dump(mode="json")

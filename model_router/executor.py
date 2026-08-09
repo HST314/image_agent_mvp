@@ -2,7 +2,6 @@
 from __future__ import annotations
 import random
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 from uuid import uuid4
@@ -30,16 +29,9 @@ class ModelExecutor(Generic[T]):
         last: BaseException | None = None
         for attempt in range(1, self.max_attempts + 1):
             try:
-                pool = ThreadPoolExecutor(max_workers=1)
-                future = pool.submit(call)
-                try:
-                    return future.result(timeout=self.timeout)
-                finally:
-                    pool.shutdown(wait=False, cancel_futures=True)
-            except FutureTimeout as exc:
-                # The worker thread may still be executing and the provider may
-                # already have charged the request. Never issue an automatic retry.
-                last, category, retryable = exc, "timeout_unknown", False
+                # Timeout belongs in the SDK/HTTP client. An outer worker timeout
+                # cannot cancel a paid request and creates an unobservable thread.
+                return call()
             except BaseException as exc:
                 last = exc
                 category, retryable = self.classify(exc)
@@ -63,7 +55,8 @@ class ModelExecutor(Generic[T]):
         if isinstance(exc, (ValueError, TypeError, PermissionError)): return "validation_or_refusal", False
         status = getattr(exc, "status_code", None)
         if status in {400, 401, 403, 404, 422}: return "request_rejected", False
-        if status == 429: return "rate_limited", True
-        if isinstance(status, int) and status >= 500: return "provider_unavailable", True
-        if isinstance(exc, (ConnectionError, TimeoutError)): return "transport", True
-        return "provider_error", True
+        if status == 429: return "rate_limited_unknown", False
+        if isinstance(status, int) and status >= 500: return "provider_unavailable_unknown", False
+        if isinstance(exc, TimeoutError): return "timeout_unknown", False
+        if isinstance(exc, ConnectionError): return "transport_unknown", False
+        return "provider_error_unknown", False

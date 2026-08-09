@@ -246,7 +246,7 @@ class WorkflowRunner:
         return {"final_asset": asset, "completed": True}
 
     def _text(self, route: ModelRoute):
-        client = build_text_client(route.binding)
+        client = build_text_client(route.binding, timeout=self.policy.model_timeout_seconds)
         if client is None: raise RuntimeError("文本模型不可用。")
         return client
 
@@ -274,18 +274,23 @@ class WorkflowRunner:
                 variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
 
     def _vlm(self, route: ModelRoute):
-        client = build_vlm_client(route.binding)
+        client = build_vlm_client(route.binding, timeout=self.policy.model_timeout_seconds)
         if client is None: raise RuntimeError("视觉检查模型不可用。")
         return client
 
     def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None) -> dict[str, Any]:
         if self.offline_mode:
-            # Still cross the Gateway, so offline tests exercise routing/auditing.
+            # A real decodable fixture crosses the same persistence boundary;
+            # mock/provider URLs never enter successful events or checkpoints.
+            fixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
             result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
-                lambda route: {"uri": f"mock://{state}/{index or 0}", "mock": True, "provider": "offline", "model": route.binding.model},
+                lambda route: {"content": fixture, "mock": True, "provider": "offline", "model": route.binding.model},
                 messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
                 template_id=state, template_version="2", input_refs=references, needs_images=len(references))
-            return normalize_image_asset(result)
+            from storage.image_ingest import persist_image_response
+            saved = persist_image_response(self.store.artifacts, result,
+                                           metadata={"state": state, "candidate_index": index, "mock": True})
+            return normalize_image_asset({**saved, "mock": True})
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
             lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or "https://ark.cn-beijing.volces.com/api/v3",
                 model=route.binding.model).render(build_render_payload(route.binding.model, prompt,

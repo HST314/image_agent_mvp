@@ -1,0 +1,6 @@
+recursive-include configs *.yaml
+recursive-include prompt_engine/templates *.md
+recursive-include skills *.json
+recursive-include schemas *.json
+recursive-include examples/contracts *.json
+include workflows/*.yaml

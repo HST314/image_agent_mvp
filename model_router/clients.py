@@ -53,11 +53,13 @@ class OpenAICompatibleTextClient:
         api_key: str,
         model: str,
         parameters: dict[str, Any] | None = None,
+        timeout: float = 180,
     ) -> None:
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
         self.parameters = parameters or {}
+        self.timeout = timeout
 
     def complete(self, prompt: str, stream_handler: Callable[[str], None] | None = None) -> str:
         """Call an OpenAI-compatible chat-completions endpoint."""
@@ -67,12 +69,17 @@ class OpenAICompatibleTextClient:
         except ImportError as exc:
             raise RuntimeError("openai SDK is required for remote reasoning LLM calls.") from exc
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout,
+                        max_retries=0)
         request: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        request.update(self.parameters)
+        parameters = dict(self.parameters)
+        idempotency_key = parameters.pop("_idempotency_key", None)
+        request.update(parameters)
+        if idempotency_key:
+            request.setdefault("extra_headers", {})["Idempotency-Key"] = str(idempotency_key)
         if stream_handler is not None:
             request["stream"] = True
             chunks: list[str] = []
@@ -110,11 +117,13 @@ class OpenAICompatibleVisionLanguageClient:
         api_key: str,
         model: str,
         parameters: dict[str, Any] | None = None,
+        timeout: float = 180,
     ) -> None:
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
         self.parameters = parameters or {}
+        self.timeout = timeout
 
     def inspect(self, image_url: str, prompt: str) -> dict[str, object]:
         """Call a VLM and parse the expected JSON inspection object."""
@@ -124,7 +133,8 @@ class OpenAICompatibleVisionLanguageClient:
         except ImportError as exc:
             raise RuntimeError("openai SDK is required for remote VLM calls.") from exc
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout,
+                        max_retries=0)
         request: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -137,7 +147,11 @@ class OpenAICompatibleVisionLanguageClient:
                 }
             ],
         }
-        request.update(self.parameters)
+        parameters = dict(self.parameters)
+        idempotency_key = parameters.pop("_idempotency_key", None)
+        request.update(parameters)
+        if idempotency_key:
+            request.setdefault("extra_headers", {})["Idempotency-Key"] = str(idempotency_key)
         response = client.chat.completions.create(**request)
         content = response.choices[0].message.content
         if not content:
@@ -159,7 +173,7 @@ class OpenAICompatibleVisionLanguageClient:
         return payload
 
 
-def build_text_client(binding: StateBinding) -> TextModelClient | None:
+def build_text_client(binding: StateBinding, *, timeout: float = 180) -> TextModelClient | None:
     """Create a reasoning client for a binding, or ``None`` when mock/offline."""
 
     api_key = _api_key_for_binding(binding)
@@ -170,10 +184,11 @@ def build_text_client(binding: StateBinding) -> TextModelClient | None:
         api_key=api_key,
         model=binding.model,
         parameters=binding.parameters,
+        timeout=timeout,
     )
 
 
-def build_vlm_client(binding: StateBinding) -> VisionLanguageModelClient | None:
+def build_vlm_client(binding: StateBinding, *, timeout: float = 180) -> VisionLanguageModelClient | None:
     """Create a VLM client for a binding, or ``None`` when mock/offline."""
 
     api_key = _api_key_for_binding(binding)
@@ -184,6 +199,7 @@ def build_vlm_client(binding: StateBinding) -> VisionLanguageModelClient | None:
         api_key=api_key,
         model=binding.model,
         parameters=binding.parameters,
+        timeout=timeout,
     )
 
 

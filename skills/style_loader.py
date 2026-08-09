@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
+from pydantic import ValidationError
+from skills.errors import ResourceError
 
 from agent_core.models import SkillStatus, StyleCard
 
 
-def load_style_card(path: str | Path) -> StyleCard:
+def load_style_card(path: str | Path, *, trace_id: str | None = None) -> StyleCard:
     """Load and validate one style card JSON file."""
 
-    return StyleCard.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    target, trace = Path(path), trace_id or f"trace_{uuid4().hex}"
+    try:
+        return StyleCard.model_validate_json(target.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ResourceError("RESOURCE_MISSING", str(target), trace) from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ResourceError("RESOURCE_CORRUPT", str(target), trace) from exc
+    except ValidationError as exc:
+        raise ResourceError("RESOURCE_SCHEMA_INVALID", str(target), trace, detail=str(exc)) from exc
 
 
 def load_style_card_index(path: str | Path) -> dict[str, list[dict[str, str | int]]]:

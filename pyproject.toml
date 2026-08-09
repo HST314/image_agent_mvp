@@ -25,7 +25,7 @@ image-agent = "workspace_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*", "configs*"]
+include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*", "configs*", "schemas*", "examples*"]
 
 [tool.setuptools]
 py-modules = ["workspace_cli", "main", "main_front"]

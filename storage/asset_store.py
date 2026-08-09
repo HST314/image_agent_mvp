@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from agent_core.models import CandidateAsset
 
+
+@runtime_checkable
+class AssetStoreProtocol(Protocol):
+    def append(self, asset: CandidateAsset) -> None: ...
+    def read_all(self) -> list[CandidateAsset]: ...
 
 class AssetStore:
     """Persist rendered asset records as newline-delimited JSON."""
@@ -18,6 +24,9 @@ class AssetStore:
     def append(self, asset: CandidateAsset) -> None:
         """Append one asset record without overwriting history."""
 
+        uri = str(getattr(asset, "uri", None) or getattr(asset, "url", ""))
+        if uri.startswith(("mock://", "http://", "https://", "file://")):
+            raise ValueError("ASSET_REF_UNSTABLE: 成功资产必须使用内部 URI 或内容寻址 ID。")
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(asset.model_dump_json() + "\n")
 

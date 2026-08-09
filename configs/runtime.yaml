@@ -7,7 +7,7 @@ self_check:
   max_rounds: 4
   stop_early_on_pass: false
   release: auto
-max_render_retries: 2
+max_render_retries: 0
 candidate_concurrency: 5
 model_timeout_seconds: 180
 image_api_base_url: ""

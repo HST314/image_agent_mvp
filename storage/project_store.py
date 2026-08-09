@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import fcntl
@@ -212,15 +213,25 @@ class CheckpointStore:
     def _index(self) -> dict[str, Any]:
         return json.loads(self.index_path.read_text()) if self.index_path.exists() else {"format_version": FORMAT_VERSION, "items": {}}
 
-    def save(self, branch: str, sequence: int, state: str, data: dict[str, Any]) -> tuple[str, str, str]:
+    def prepare(self, branch: str, sequence: int, state: str, data: dict[str, Any]) -> dict[str, Any]:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", branch):
+            raise ValueError("分支名称包含不安全字符。")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", state):
+            raise ValueError("状态名称包含不安全字符。")
         envelope = {"format_version": FORMAT_VERSION, "branch": branch, "sequence": sequence, "state": state, "data": data}
         envelope["checksum"] = content_hash(envelope)
         relative = f"checkpoints/{branch}/{sequence:06d}-{state}.json"
+        return {"envelope": envelope, "checkpoint_id": f"checkpoint_{envelope['checksum'][:24]}",
+                "path": relative, "checksum": envelope["checksum"]}
+
+    def save(self, branch: str, sequence: int, state: str, data: dict[str, Any], *, prepared: dict[str, Any] | None = None) -> tuple[str, str, str]:
+        record = prepared or self.prepare(branch, sequence, state, data)
+        envelope, relative = record["envelope"], record["path"]
         path = self.root / relative
         if path.exists():
             raise ImmutableRecordError("成功检查点不可覆盖。")
         atomic_json(path, envelope)
-        checkpoint_id = f"checkpoint_{envelope['checksum'][:24]}"
+        checkpoint_id = record["checkpoint_id"]
         index = self._index()
         index["items"][checkpoint_id] = {"path": relative, "checksum": envelope["checksum"], "branch": branch, "sequence": sequence, "state": state}
         atomic_json(self.index_path, index)
@@ -286,9 +297,13 @@ class ProjectStore:
         active = branch or manifest["current_branch"]
         previous = manifest.get("current_checkpoint")
         sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
-        transaction = {"format_version": FORMAT_VERSION, "status": "intent", "branch": active, "sequence": sequence, "state": state, "data": data}
+        prepared = self.checkpoints.prepare(active, sequence, state, data)
+        transaction = {"format_version": FORMAT_VERSION, "kind": "checkpoint", "status": "intent",
+                       "branch": active, "sequence": sequence, "state": state, "data": data,
+                       "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
+                       "checksum": prepared["checksum"]}
         atomic_json(self.root / "transactions/pending.json", transaction)
-        checkpoint_id, relative, checksum = self.checkpoints.save(active, sequence, state, data)
+        checkpoint_id, relative, checksum = self.checkpoints.save(active, sequence, state, data, prepared=prepared)
         transaction.update(status="prepared", checkpoint_id=checkpoint_id, path=relative, checksum=checksum)
         atomic_json(self.root / "transactions/pending.json", transaction)
         pointer = {"checkpoint_id": checkpoint_id, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
@@ -307,17 +322,36 @@ class ProjectStore:
         pointer = manifest.get("current_checkpoint") or {}
         if pointer.get("branch") == intent["branch"] and pointer.get("sequence") == intent["sequence"]:
             checkpoint_id = pointer.get("checkpoint_id")
-            if not any(e.get("type") == "step_succeeded" and e.get("checkpoint_id") == checkpoint_id for e in self.events.read_all()):
+            if intent.get("kind") == "branch":
+                if not any(e.get("type") == "branch_created" and e.get("branch") == intent["branch"] for e in self.events.read_all()):
+                    source = self.checkpoints.load(intent["from_checkpoint"])
+                    self.events.append("branch_created", branch=intent["branch"], parent=source["branch"],
+                                       from_checkpoint=intent["from_checkpoint"], recovered=True)
+            elif not any(e.get("type") == "step_succeeded" and e.get("checkpoint_id") == checkpoint_id for e in self.events.read_all()):
                 self.events.append("step_succeeded", branch=intent["branch"], state=intent["state"], checkpoint_id=checkpoint_id, recovered=True)
             pending.unlink(missing_ok=True)
             return
-        # Roll back a prepared but uncommitted checkpoint and its index entry.
+        # Roll back every observable part, including a file written before its
+        # index update. The intent contains the deterministic target up front.
         index = self.checkpoints._index()
+        expected_id = intent.get("checkpoint_id")
+        expected_path = intent.get("path")
+        if expected_path:
+            target = (self.root / expected_path).resolve()
+            if self.root.resolve() in target.parents:
+                target.unlink(missing_ok=True)
+        if expected_id:
+            index["items"].pop(expected_id, None)
         for checkpoint_id, item in list(index["items"].items()):
             if item["branch"] == intent["branch"] and item["sequence"] == intent["sequence"]:
                 (self.root / item["path"]).unlink(missing_ok=True)
                 del index["items"][checkpoint_id]
         atomic_json(self.checkpoints.index_path, index)
+        if intent.get("kind") == "branch":
+            branches_path = self.root / "branches.json"
+            branches = json.loads(branches_path.read_text(encoding="utf-8"))
+            branches["branches"].pop(intent["branch"], None)
+            atomic_json(branches_path, branches)
         pending.unlink(missing_ok=True)
 
     def start_step(self, state: str, **details: Any) -> None:
@@ -348,19 +382,27 @@ class ProjectStore:
         return execute(failure["state"], self.resume())
 
     def branch_from(self, checkpoint_id: str, *, name: str | None = None) -> str:
+        self._recover_transaction()
         source = self.checkpoints.load(checkpoint_id)
         branches_path = self.root / "branches.json"
         branches = json.loads(branches_path.read_text(encoding="utf-8"))
         branch = name or f"branch-{uuid4().hex[:8]}"
         if branch in branches["branches"]:
             raise ValueError("分支名称已存在。")
+        prepared = self.checkpoints.prepare(branch, 1, source["state"], source["data"])
+        transaction = {"format_version": FORMAT_VERSION, "kind": "branch", "status": "intent",
+                       "branch": branch, "sequence": 1, "state": source["state"], "data": source["data"],
+                       "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
+                       "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id}
+        atomic_json(self.root / "transactions/pending.json", transaction)
         branches["branches"][branch] = {"parent": source["branch"], "from_checkpoint": checkpoint_id, "created_at": _now()}
         atomic_json(branches_path, branches)
         manifest = self.manifest()
-        new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], source["data"])
+        new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], source["data"], prepared=prepared)
         manifest.update(current_branch=branch, current_checkpoint={"checkpoint_id": new_id, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}, failed_step=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
         self.events.append("branch_created", branch=branch, parent=source["branch"], from_checkpoint=checkpoint_id)
+        (self.root / "transactions/pending.json").unlink(missing_ok=True)
         return branch
 
     @contextmanager
@@ -398,3 +440,16 @@ class ProjectStore:
 
     def history(self) -> list[dict[str, Any]]:
         return self.events.read_all()
+
+    def revise_policy(self, policy: dict[str, Any], *, confirmed: bool, actor: str) -> str:
+        """Configuration changes are auditable branches, never in-place edits."""
+        if not confirmed or not actor:
+            raise PermissionError("配置修订需要人工确认和操作者身份。")
+        pointer = self.manifest().get("current_checkpoint")
+        if not pointer:
+            raise ValueError("配置修订前必须存在安全检查点。")
+        branch = self.branch_from(pointer["checkpoint_id"], name=f"policy-{content_hash(policy)[:8]}")
+        atomic_json(self.root / "runtime_policy.json", {"policy": policy, "sha256": content_hash(policy)})
+        self.events.append("runtime_policy_revised", branch=branch, actor=actor,
+                           policy_hash=content_hash(policy), confirmed=True)
+        return branch

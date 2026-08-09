@@ -18,6 +18,8 @@ class RuntimeModelGateway:
         snapshot = binding.model_dump(mode="json")
         trace = f"trace_{uuid4().hex}"
         idempotency_key = content_hash([state, template_id, template_version, messages, variables, input_refs])
+        route = ModelRoute(binding=route.binding.model_copy(update={"parameters": {
+            **route.binding.parameters, "_idempotency_key": idempotency_key}}), mock=route.mock)
         relevant = [event for event in self.store.history() if event.get("idempotency_key") == idempotency_key and event.get("type") in {"model_call_unknown", "model_call_unknown_resolved"}]
         unresolved = relevant[-1] if relevant and relevant[-1]["type"] == "model_call_unknown" else None
         if unresolved:
@@ -35,7 +37,7 @@ class RuntimeModelGateway:
             self.store.events.append("model_call_completed", state=state, trace_id=trace, idempotency_key=idempotency_key)
             return result
         except Exception as exc:
-            if getattr(exc, "category", None) == "timeout_unknown":
+            if str(getattr(exc, "category", "")).endswith("_unknown"):
                 self.store.events.append("model_call_unknown", state=state, trace_id=trace,
                                          idempotency_key=idempotency_key, possible_charge=True,
                                          recovery_actions=["retry_after_confirmation", "abandon"])
@@ -46,3 +48,11 @@ class RuntimeModelGateway:
             raise ValueError("无效的人工处置。")
         self.store.events.append("model_call_unknown_resolved", idempotency_key=idempotency_key,
                                  action=action, actor=actor, resolved=True)
+
+    def unknown_actions(self) -> list[dict[str, Any]]:
+        """API/UI projection for unresolved paid-call outcomes."""
+        events = self.store.history()
+        resolved = {e["idempotency_key"] for e in events if e.get("type") == "model_call_unknown_resolved"}
+        return [{"idempotency_key": e["idempotency_key"], "trace_id": e["trace_id"],
+                 "actions": ["retry_after_confirmation", "abandon"]}
+                for e in events if e.get("type") == "model_call_unknown" and e["idempotency_key"] not in resolved]
