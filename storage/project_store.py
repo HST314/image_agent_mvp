@@ -256,6 +256,16 @@ class CheckpointStore:
         envelope["checkpoint_id"] = checkpoint_id
         return envelope
 
+    def list(self) -> list[dict[str, Any]]:
+        """Return safe checkpoint metadata without exposing filesystem paths."""
+        items = self._index().get("items", {})
+        return sorted(
+            ({"checkpoint_id": checkpoint_id, "branch": item["branch"],
+              "sequence": item["sequence"], "state": item["state"]}
+             for checkpoint_id, item in items.items()),
+            key=lambda item: (item["branch"], item["sequence"]),
+        )
+
 
 class ProjectStore:
     """Own project manifest, branches, prompts, events, artifacts and checkpoints."""
@@ -280,7 +290,10 @@ class ProjectStore:
         snapshot = config or {}
         atomic_json(self.root / "project.yaml", snapshot)
         atomic_json(self.root / "runtime_policy.json", {"policy": snapshot, "sha256": content_hash(snapshot)})
-        atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": {"parent": None, "from_checkpoint": None, "created_at": _now()}}})
+        atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": {
+            "parent": None, "from_checkpoint": None, "created_at": _now(),
+            "runtime_policy": snapshot, "runtime_policy_hash": content_hash(snapshot),
+        }}})
         self.events.append("project_created", branch="main")
         return manifest
 
@@ -397,7 +410,15 @@ class ProjectStore:
                        "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
                        "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id}
         atomic_json(self.root / "transactions/pending.json", transaction)
-        branches["branches"][branch] = {"parent": source["branch"], "from_checkpoint": checkpoint_id, "created_at": _now()}
+        parent_details = branches["branches"][source["branch"]]
+        policy = parent_details.get("runtime_policy")
+        if policy is None:
+            policy = json.loads((self.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
+            parent_details.update(runtime_policy=policy, runtime_policy_hash=content_hash(policy))
+        branches["branches"][branch] = {
+            "parent": source["branch"], "from_checkpoint": checkpoint_id, "created_at": _now(),
+            "runtime_policy": policy, "runtime_policy_hash": content_hash(policy),
+        }
         atomic_json(branches_path, branches)
         manifest = self.manifest()
         new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], source["data"], prepared=prepared)
@@ -406,6 +427,50 @@ class ProjectStore:
         self.events.append("branch_created", branch=branch, parent=source["branch"], from_checkpoint=checkpoint_id)
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
         return branch
+
+    def branches(self) -> dict[str, Any]:
+        """Expose branch lineage and read-only checkpoint metadata."""
+        manifest = self.manifest()
+        branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
+        checkpoints = self.checkpoints.list()
+        return {
+            "current_branch": manifest["current_branch"],
+            "current_checkpoint_id": (manifest.get("current_checkpoint") or {}).get("checkpoint_id"),
+            "items": [
+                {"name": name, **details,
+                 "current": name == manifest["current_branch"],
+                 "checkpoints": [item for item in checkpoints if item["branch"] == name]}
+                for name, details in branches.items()
+            ],
+        }
+
+    def switch_branch(self, checkpoint_id: str) -> dict[str, Any]:
+        """Move the active read pointer to an indexed checkpoint without changing history."""
+        self._recover_transaction()
+        target = self.checkpoints.load(checkpoint_id)
+        branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
+        if target["branch"] not in branches:
+            raise CorruptProjectError("检查点引用了不存在的分支。")
+        branch_checkpoints = [item for item in self.checkpoints.list() if item["branch"] == target["branch"]]
+        head = max(branch_checkpoints, key=lambda item: item["sequence"])
+        if head["checkpoint_id"] != checkpoint_id:
+            raise ValueError("历史节点只读；如需继续，请从该节点创建新分支。")
+        manifest = self.manifest()
+        manifest.update(
+            current_branch=target["branch"],
+            current_checkpoint={
+                "checkpoint_id": checkpoint_id, "checksum": target["checksum"],
+                "branch": target["branch"], "sequence": target["sequence"], "state": target["state"],
+            },
+            failed_step=None,
+            updated_at=_now(),
+        )
+        atomic_json(self.root / "manifest.json", manifest)
+        policy = branches[target["branch"]].get("runtime_policy")
+        if policy is not None:
+            atomic_json(self.root / "runtime_policy.json", {"policy": policy, "sha256": content_hash(policy)})
+        self.events.append("branch_switched", branch=target["branch"], checkpoint_id=checkpoint_id)
+        return self.branches()
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -454,7 +519,16 @@ class ProjectStore:
         pointer = self.manifest().get("current_checkpoint")
         if not pointer:
             raise ValueError("配置修订前必须存在安全检查点。")
+        branches_path = self.root / "branches.json"
+        branches = json.loads(branches_path.read_text(encoding="utf-8"))
+        active = self.manifest()["current_branch"]
+        current = json.loads((self.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
+        branches["branches"][active].update(runtime_policy=current, runtime_policy_hash=content_hash(current))
+        atomic_json(branches_path, branches)
         branch = self.branch_from(pointer["checkpoint_id"], name=f"policy-{content_hash(policy)[:8]}")
+        branches = json.loads(branches_path.read_text(encoding="utf-8"))
+        branches["branches"][branch].update(runtime_policy=policy, runtime_policy_hash=content_hash(policy))
+        atomic_json(branches_path, branches)
         atomic_json(self.root / "runtime_policy.json", {"policy": policy, "sha256": content_hash(policy)})
         self.events.append("runtime_policy_revised", branch=branch, actor=actor,
                            policy_hash=content_hash(policy), confirmed=True)

@@ -85,6 +85,9 @@ class BranchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
     name: str | None = Field(default=None, min_length=2, max_length=64)
 
+class BranchSwitchRequest(StrictRequest):
+    checkpoint_id: str = Field(pattern=r"^checkpoint_[0-9a-f]{24}$")
+
 class PolicyRevisionRequest(StrictRequest):
     policy: dict[str, Any]
     actor: str = Field(min_length=1, max_length=128)
@@ -201,6 +204,27 @@ def _translate_error(exc: Exception) -> HTTPException:
         status_code=503,
         detail=f"后端能力暂不可用：{exc}。已有进度已保留，可修正配置后恢复或重试。",
     )
+
+
+SECRET_FIELDS = ("api_key", "apikey", "authorization", "token", "secret")
+
+
+def _redact(value: Any) -> Any:
+    """Recursively remove credentials before an audit record crosses HTTP."""
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if any(secret in key.lower() for secret in SECRET_FIELDS) else _redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    return value
+
+
+def _page(items: list[dict[str, Any]], after: int, limit: int, *, cursor: str) -> dict[str, Any]:
+    selected = [item for item in items if int(item.get(cursor, 0)) > after][:limit]
+    return {"items": selected, "next_cursor": int(selected[-1][cursor]) if selected else after,
+            "has_more": any(int(item.get(cursor, 0)) > (int(selected[-1][cursor]) if selected else after) for item in items)}
 
 
 @app.get("/", include_in_schema=False)
@@ -425,6 +449,81 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
             return _project_view(store)
 
         return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/branches")
+async def list_project_branches(project_id: str) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(lambda: _store(project_id).branches())
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/branches/switch")
+async def switch_project_branch(project_id: str, body: BranchSwitchRequest) -> dict[str, Any]:
+    try:
+        def execute() -> dict[str, Any]:
+            store = _store(project_id)
+            with store.lock():
+                return store.switch_branch(body.checkpoint_id)
+        return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/timeline")
+async def project_timeline(project_id: str, after: int = 0, limit: int = 100) -> dict[str, Any]:
+    if after < 0 or not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="游标或分页大小无效。")
+    try:
+        events = await asyncio.to_thread(lambda: _store(project_id).history())
+        return _page(_redact(events), after, limit, cursor="sequence")
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/timeline/events")
+async def project_timeline_events(project_id: str, after: int = 0, limit: int = 100) -> StreamingResponse:
+    page = await project_timeline(project_id, after, limit)
+    async def stream():
+        for event in page["items"]:
+            yield f"id: {event['sequence']}\nevent: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/projects/{project_id}/traces")
+async def project_traces(project_id: str, after: int = 0, limit: int = 100) -> dict[str, Any]:
+    if after < 0 or not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="游标或分页大小无效。")
+    try:
+        def read() -> list[dict[str, Any]]:
+            store = _store(project_id)
+            records: list[dict[str, Any]] = []
+            if store.prompts.path.exists():
+                for sequence, line in enumerate(store.prompts.path.read_text(encoding="utf-8").splitlines(), 1):
+                    if line.strip():
+                        records.append({"sequence": sequence, **json.loads(line)})
+            return _redact(records)
+        return _page(await asyncio.to_thread(read), after, limit, cursor="sequence")
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/settings/schema")
+async def project_settings_schema(project_id: str) -> dict[str, Any]:
+    try:
+        store = _store(project_id)
+        current = json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
+        schema = RuntimePolicy.model_json_schema()
+        properties = schema["properties"]
+        for name, consumer in RuntimePolicy.CONSUMERS.items():
+            properties[name]["consumer"] = consumer
+            properties[name]["effect"] = "new_project_or_confirmed_revision"
+        return {"schema_version": "1", "scope": "new_project_or_confirmed_revision",
+                "risk": "修改现有工程会创建审计分支并使后续结果重新确认。",
+                "properties": properties, "$defs": schema.get("$defs", {}), "current": current}
     except Exception as exc:
         raise _translate_error(exc) from exc
 

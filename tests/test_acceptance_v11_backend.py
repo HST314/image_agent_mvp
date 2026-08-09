@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+import main_front
+from configs.runtime_policy import RuntimePolicy
+from storage.project_store import ProjectStore
+
+
+def _project(root: Path, project_id: str = "history_demo") -> tuple[ProjectStore, str]:
+    store = ProjectStore(root, project_id)
+    store.create(RuntimePolicy(offline_mode=True).snapshot())
+    first = store.checkpoint("confirmation_build", {"state": "confirmation_build", "phase": "waiting"})
+    store.events.append("model_call_started", trace_id="trace_safe", state="render", token="must-not-leak")
+    store.prompts.begin({
+        "messages": [{"role": "user", "content": "draw"}], "template_id": "render",
+        "template_version": "1", "template_hash": "h", "variables": {"api_key": "secret"},
+        "input_refs": [], "model": {"name": "offline"}, "parameters": {}, "config_hash": "c",
+        "state": "render", "trace_id": "trace_safe",
+    })
+    return store, first
+
+
+def test_t28_branch_list_switch_and_reopen_are_checkpoint_id_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, first = _project(tmp_path)
+    client = TestClient(main_front.app)
+
+    reopened = client.post(f"/api/projects/{store.project_id}/branches", json={"checkpoint": first, "name": "revision-1"})
+    assert reopened.status_code == 200
+    listing = client.get(f"/api/projects/{store.project_id}/branches").json()
+    assert listing["current_branch"] == "revision-1"
+    assert {item["name"] for item in listing["items"]} == {"main", "revision-1"}
+    assert all("checkpoints" in item for item in listing["items"])
+
+    switched = client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": first})
+    assert switched.status_code == 200
+    assert switched.json()["current_branch"] == "main"
+    assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": "../x"}).status_code == 422
+
+    other, _ = _project(tmp_path, "other_project")
+    foreign = other.checkpoint("foreign", {"state": "foreign", "project": "other_project"})
+    assert other.project_id
+    assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": foreign}).status_code == 409
+
+    store.switch_branch(first)
+    older = first
+    newer = store.checkpoint("newer", {"state": "newer"})
+    assert newer != older
+    blocked = client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": older})
+    assert blocked.status_code == 409 and "历史节点只读" in blocked.text
+
+
+def test_t29_t30_timeline_cursor_sse_and_trace_redaction(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, _ = _project(tmp_path)
+    client = TestClient(main_front.app)
+
+    first = client.get(f"/api/projects/{store.project_id}/timeline", params={"after": 0, "limit": 2}).json()
+    assert len(first["items"]) == 2 and first["next_cursor"] == first["items"][-1]["sequence"]
+    second = client.get(f"/api/projects/{store.project_id}/timeline", params={"after": first["next_cursor"], "limit": 100}).json()
+    assert all(item["sequence"] > first["next_cursor"] for item in second["items"])
+
+    sse = client.get(f"/api/projects/{store.project_id}/timeline/events", params={"after": first["next_cursor"], "limit": 100})
+    assert sse.status_code == 200 and "text/event-stream" in sse.headers["content-type"]
+    assert [json.loads(line[6:]) for line in sse.text.splitlines() if line.startswith("data: ")] == second["items"]
+
+    traces = client.get(f"/api/projects/{store.project_id}/traces", params={"after": 0, "limit": 100})
+    assert traces.status_code == 200
+    raw = json.dumps(traces.json())
+    assert "secret" not in raw and "must-not-leak" not in raw
+    assert "trace_safe" in raw
+
+
+def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, _ = _project(tmp_path)
+    client = TestClient(main_front.app)
+
+    schema = client.get(f"/api/projects/{store.project_id}/settings/schema").json()
+    assert set(schema["properties"]) == set(RuntimePolicy.CONSUMERS)
+    assert schema["scope"] == "new_project_or_confirmed_revision"
+    assert all(item["consumer"] for item in schema["properties"].values())
+
+    policy = RuntimePolicy(offline_mode=True, watermark=True).snapshot()
+    changed = client.post(f"/api/projects/{store.project_id}/policy", json={"policy": policy, "actor": "owner", "confirmed": True})
+    assert changed.status_code == 200
+    assert changed.json()["branch"].startswith("policy-")
+    assert any(event["type"] == "runtime_policy_revised" for event in store.history())
+    policy_branch_head = changed.json()["project"]["manifest"]["current_checkpoint"]["checkpoint_id"]
+    assert changed.json()["project"]["runtime_policy"]["watermark"] is True
+    original_head = next(item for item in store.branches()["items"] if item["name"] == "main")["checkpoints"][-1]["checkpoint_id"]
+    assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": original_head}).json()["current_branch"] == "main"
+    assert client.get(f"/api/projects/{store.project_id}").json()["runtime_policy"]["watermark"] is False
+    assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": policy_branch_head}).json()["current_branch"].startswith("policy-")
