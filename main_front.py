@@ -171,8 +171,12 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
         return ["select_master"]
     if phase == "waiting_human_approval":
         return ["review_calibration"]
+    if phase == "additional_rounds_approved":
+        return ["resume_quality_inspection"]
+    if phase == "waiting_human_tune":
+        return ["submit_human_tune"]
     if phase == "waiting_reinspection":
-        return ["resume"]
+        return ["resume_quality_inspection"]
     if snapshot:
         return ["resume", "branch"]
     return []
@@ -319,12 +323,24 @@ async def annotate_and_rework(project_id: str, body: AnnotationRequest) -> dict[
     """Create an immutable guide asset, then create a child edited asset."""
     try:
         def execute():
-            store=_store(project_id); source, source_record=store.artifacts.resolve(body.artifact_id)
-            guide_bytes=compose(source.read_bytes(), body.marks)
-            guide=store.artifacts.save_bytes(guide_bytes, metadata={"kind":"annotation_guide","parent_artifact_id":body.artifact_id,"marks":body.marks})
-            result=_runner(store, body.offline)._image_call("human_prompt_rework", body.prompt, [guide["uri"]])
-            store.events.append("human_annotation_rework", parent_asset=source_record, guide_asset=guide, asset=result, prompt=body.prompt)
-            return {"parent_asset":source_record,"guide_asset":guide,"asset":result,"requires_reinspection":True}
+            store=_store(project_id)
+            with store.lock():
+                snapshot=store.resume()
+                if snapshot is None:
+                    raise ValueError("工程还没有可恢复节点。")
+                source, source_record=store.artifacts.resolve(body.artifact_id)
+                guide_bytes=compose(source.read_bytes(), body.marks)
+                guide=store.artifacts.save_bytes(guide_bytes, metadata={"kind":"annotation_guide","parent_artifact_id":body.artifact_id,"marks":body.marks})
+                child=_runner(store, body.offline)._image_call("human_prompt_rework", body.prompt, [guide["uri"]])
+                updated={**snapshot, "state":"human_prompt_iteration", "asset":child, "current_asset":child,
+                         "annotation_parent_asset":source_record, "annotation_guide_asset":guide,
+                         "phase":"waiting_reinspection", "waiting":True, "calibration_status":"invalidated",
+                         "termination_satisfied":False, "termination_reason":"annotation_rework_requires_reinspection",
+                         "latest_checked_asset_hash":None, "inspection":None}
+                store.events.append("human_annotation_rework", parent_asset=source_record, guide_asset=guide, asset=child, prompt=body.prompt)
+                checkpoint_id=store.checkpoint("human_prompt_iteration",updated)
+                return {"parent_asset":source_record,"guide_asset":guide,"asset":child,
+                        "checkpoint_id":checkpoint_id,"requires_reinspection":True}
         return await asyncio.to_thread(execute)
     except Exception as exc: raise _translate_error(exc) from exc
 
@@ -333,31 +349,33 @@ async def quality_disposition(project_id: str, body: QualityDispositionRequest) 
     """Record the explicit human route after automatic inspection is exhausted."""
     try:
         def execute():
-            store=_store(project_id); snapshot=store.resume() or {}
-            if snapshot.get("phase") != "waiting_human_approval" or "round_limit" not in str(snapshot.get("termination_reason")):
-                raise ValueError("QUALITY_LIMIT_NOT_REACHED")
-            if body.action=="add_rounds_with_cost_confirmation" and (not body.cost_confirmed or body.additional_rounds<1):
-                raise ValueError("COST_CONFIRMATION_REQUIRED")
-            asset=snapshot.get("best_asset") or snapshot.get("asset")
-            store.events.append("quality_disposition", action=body.action, additional_rounds=body.additional_rounds,
-                                cost_confirmed=body.cost_confirmed, selected_asset=asset)
-            updated=dict(snapshot)
-            if body.action=="abandon":
-                updated.update(phase="terminated_without_delivery",calibration_status="terminated_without_delivery",
-                               termination_satisfied=False,termination_reason="human_abandoned_after_limit")
-                status_value="abandoned"
-            elif body.action=="human_tune_best":
-                updated.update(asset=asset,current_asset=asset,phase="waiting_human_tune",calibration_status="waiting_human_tune",
-                               termination_satisfied=False,latest_checked_asset_hash=None,inspection=None)
-                status_value="waiting_human_tune"
-            else:
-                policy=dict(updated.get("self_check_policy") or updated.get("selected_policy") or {})
-                policy["termination"]="solo"; policy["max_rounds"]=int(snapshot.get("round",0))+body.additional_rounds
-                policy["fixed_rounds"]=min(int(policy.get("fixed_rounds",1)),policy["max_rounds"])
-                updated.update(asset=asset,current_asset=asset,phase="additional_rounds_approved",calibration_status="pending",
-                               self_check_policy=policy,round=int(snapshot.get("round",0))+1)
-                status_value="additional_rounds_approved"
-            with store.lock(): store.checkpoint("self_check_iteration",updated)
+            store=_store(project_id)
+            with store.lock():
+                snapshot=store.resume() or {}
+                if snapshot.get("phase") != "waiting_human_approval" or "round_limit" not in str(snapshot.get("termination_reason")):
+                    raise ValueError("QUALITY_LIMIT_NOT_REACHED")
+                if body.action=="add_rounds_with_cost_confirmation" and (not body.cost_confirmed or body.additional_rounds<1):
+                    raise ValueError("COST_CONFIRMATION_REQUIRED")
+                asset=snapshot.get("best_asset") or snapshot.get("asset")
+                store.events.append("quality_disposition", action=body.action, additional_rounds=body.additional_rounds,
+                                    cost_confirmed=body.cost_confirmed, selected_asset=asset)
+                updated=dict(snapshot)
+                if body.action=="abandon":
+                    updated.update(phase="terminated_without_delivery",calibration_status="terminated_without_delivery",
+                                   termination_satisfied=False,termination_reason="human_abandoned_after_limit")
+                    status_value="abandoned"
+                elif body.action=="human_tune_best":
+                    updated.update(asset=asset,current_asset=asset,phase="waiting_human_tune",calibration_status="waiting_human_tune",
+                                   termination_satisfied=False,latest_checked_asset_hash=None,inspection=None)
+                    status_value="waiting_human_tune"
+                else:
+                    policy=dict(updated.get("self_check_policy") or updated.get("selected_policy") or {})
+                    policy["termination"]="solo"; policy["max_rounds"]=int(snapshot.get("round",0))+body.additional_rounds
+                    policy["fixed_rounds"]=min(int(policy.get("fixed_rounds",1)),policy["max_rounds"])
+                    updated.update(asset=asset,current_asset=asset,phase="additional_rounds_approved",calibration_status="pending",
+                                   self_check_policy=policy,round=int(snapshot.get("round",0))+1)
+                    status_value="additional_rounds_approved"
+                store.checkpoint("self_check_iteration",updated)
             return {"status":status_value,"additional_rounds":body.additional_rounds,"asset":asset}
         return await asyncio.to_thread(execute)
     except Exception as exc: raise _translate_error(exc) from exc

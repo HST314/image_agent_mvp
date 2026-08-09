@@ -84,10 +84,13 @@ class WorkflowRunner:
 
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
-        if snapshot.get("phase") in {"waiting_human_approval", "waiting_clarification", "waiting_master_selection"}:
+        phase = snapshot.get("phase")
+        if phase in {"waiting_human_approval", "waiting_clarification", "waiting_master_selection"}:
             return str(snapshot.get("state"))
-        if snapshot.get("phase") == "waiting_reinspection":
+        if phase in {"additional_rounds_approved", "waiting_reinspection"}:
             return "self_check_iteration"
+        if phase == "waiting_human_tune":
+            return "human_prompt_iteration"
         current = str(snapshot.get("state", ""))
         if current not in self.ORDER: raise ValueError("检查点中的流程状态无法识别。")
         index = self.ORDER.index(current)
