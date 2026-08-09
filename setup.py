@@ -1,10 +1,23 @@
-"""Compatibility build entry point mirroring the canonical project metadata."""
+"""Compatibility adapter; all project metadata is sourced from pyproject.toml."""
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:  # Python 3.10 build environments
+    import tomli as tomllib
+
 from setuptools import find_packages, setup
 
+
+PROJECT = tomllib.loads(Path(__file__).with_name("pyproject.toml").read_text(encoding="utf-8"))["project"]
+
 setup(
-    name="image-agent-mvp",
-    version="0.1.0",
-    description="Generic Phase 1 image agent core with offline human approval gates.",
+    name=PROJECT["name"],
+    version=PROJECT["version"],
+    description=PROJECT["description"],
+    python_requires=PROJECT["requires-python"],
+    install_requires=PROJECT["dependencies"],
+    extras_require=PROJECT["optional-dependencies"],
     packages=find_packages(include=[
         "agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*",
         "model_router*", "render_clients*", "calibrator*", "review*", "configs*",
@@ -14,8 +27,4 @@ setup(
     include_package_data=True,
     package_data={"": ["*.yaml", "*.json", "*.md", "*.html"]},
     entry_points={"console_scripts": ["image-agent=workspace_cli:main"]},
-    python_requires=">=3.10",
-    install_requires=["pydantic>=2.6,<3", "PyYAML>=6.0,<7", "openai>=1.0,<2",
-                      "Pillow>=10.0,<13", "fastapi>=0.110,<1"],
-    extras_require={"dev": ["pytest>=8.0,<9", "jsonschema>=4.0,<5"]},
 )
