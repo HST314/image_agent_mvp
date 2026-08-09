@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_core.models import ImageTaskCard
@@ -66,6 +67,8 @@ class AdvanceRequest(StrictRequest):
     edited_delta: str | None = Field(default=None, max_length=4_000)
     human_prompt: str | None = Field(default=None, max_length=8_000)
     final_approved: bool = False
+    task_approved: bool = False
+    actor: str | None = Field(default=None, min_length=1, max_length=128)
     offline: bool = False
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
@@ -139,6 +142,8 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         edited_markdown=body.edited_markdown,
         final_approved=body.final_approved,
         clarification_answers=body.clarification_answers,
+        task_approved=body.task_approved,
+        actor=body.actor,
     )
 
 
@@ -230,6 +235,10 @@ def _page(items: list[dict[str, Any]], after: int, limit: int, *, cursor: str) -
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(FRONTEND_ROOT / "index.html", media_type="text/html")
+
+
+# 前端模块化静态资源（T35）：仅暴露 frontend/static 下的 js/css，Starlette 内部拒绝路径穿越。
+app.mount("/static", StaticFiles(directory=FRONTEND_ROOT / "static"), name="static")
 
 
 @app.get("/api/health")

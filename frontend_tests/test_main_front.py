@@ -20,7 +20,11 @@ def test_health_and_frontend_are_served(client: TestClient) -> None:
     page = client.get("/")
     assert page.status_code == 200
     assert "Image Agent Studio" in page.text
-    assert "prefers-reduced-motion" in page.text
+    # 样式已模块化到静态资源（T35）；可访问性媒体查询随样式表一起提供。
+    assert '/static/css/main.css' in page.text
+    css = client.get("/static/css/main.css")
+    assert css.status_code == 200
+    assert "prefers-reduced-motion" in css.text
 
 
 @pytest.mark.parametrize("project_id", ["../escape", "a", "含中文", "bad/id"])

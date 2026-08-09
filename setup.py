@@ -25,6 +25,9 @@ setup(
     ]),
     py_modules=["workspace_cli", "main", "main_front"],
     include_package_data=True,
-    package_data={"": ["*.yaml", "*.json", "*.md", "*.html"]},
+    package_data={
+        "": ["*.yaml", "*.json", "*.md", "*.html"],
+        "frontend": ["static/css/*.css", "static/js/*.js"],
+    },
     entry_points={"console_scripts": ["image-agent=workspace_cli:main"]},
 )

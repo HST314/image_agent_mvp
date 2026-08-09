@@ -9,3 +9,4 @@ frontend/data/projects/
 artifacts/
 build/
 *.egg-info/
+.deps/

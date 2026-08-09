@@ -5,3 +5,4 @@ recursive-include schemas *.json
 recursive-include examples/contracts *.json
 include workflows/*.yaml
 include frontend/index.html
+recursive-include frontend/static *.css *.js
