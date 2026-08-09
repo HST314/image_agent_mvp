@@ -105,6 +105,23 @@ ERROR_ACTIONS = {
 }
 
 
+def classify_error(exc: Exception) -> str:
+    """Map production failures to the recovery contract (deny retry by default)."""
+    message = str(exc).upper()
+    name = type(exc).__name__.lower()
+    if "AUTH" in message or "PERMISSION" in message:
+        return "authentication"
+    if "RATE" in message and "LIMIT" in message:
+        return "rate_limited"
+    if "TIMEOUT" in message or "UNKNOWN" in message:
+        return "timeout_unknown"
+    if "MODERATION" in message or "CONTENT_POLICY" in message:
+        return "content_moderation"
+    if "VALIDATION" in name or "JSON" in message or "SCHEMA" in message:
+        return "structured_output"
+    return "invalid_input"
+
+
 def recovery_actions(category: str) -> tuple[str, ...]:
     if category not in ERROR_ACTIONS:
         raise ValueError("UNKNOWN_ERROR_CATEGORY")

@@ -4,3 +4,4 @@ openai==1.99.1
 pytest==8.4.1
 jsonschema==4.25.0
 portalocker==3.2.0
+Pillow==11.3.0

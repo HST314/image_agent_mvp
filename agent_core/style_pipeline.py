@@ -66,7 +66,7 @@ class StyleRenderPlanner:
                           "prompt_version_id": prompt.prompt_version_id, "config_hash": config_hash}
             plans.append(RenderPlanItem(slot, selected.style.style_id, extraction.extraction_key,
                                         prompt.prompt_version_id, prompt.prompt_text, provenance))
-        hard_sections = [p.prompt_text.split("风格注入：", 1)[0] for p in plans]
+        hard_sections = [p.prompt_text.split("风格卡注入：", 1)[0] for p in plans]
         if len(set(hard_sections)) != 1:
             raise ValueError("hard task constraints differ between slots")
         return plans

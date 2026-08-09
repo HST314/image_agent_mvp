@@ -9,7 +9,9 @@ from typing import Any, Callable
 from agent_core.batch import CandidateBatchGenerator
 from agent_core.models import ImageTaskCard, ModelRole, TaskSpecification, VisualCheckResult
 from agent_core.state_machine import RecoverableWorkflow
-from agent_core.workflow import TRANSITIONS, SelfCheckPolicy, validate_transition
+from agent_core.workflow import SelfCheckPolicy, validate_transition
+from agent_core.unified_workflow import (DomainState, classify_error, freeze_delivery,
+                                         recovery_actions, revise_task, TaskRevision)
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
 from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
 from interaction.question_generator import generate_question_card
@@ -46,6 +48,15 @@ class WorkflowRunner:
 
     ORDER = ("intake_clarify", "confirmation_build", "initial_candidate_generation",
              "master_candidate_selection", "self_check_iteration", "human_prompt_iteration", "final_approval")
+    DOMAIN_TARGET = {
+        "intake_clarify": DomainState.CLARIFICATION,
+        "confirmation_build": DomainState.TASK_APPROVAL,
+        "initial_candidate_generation": DomainState.FIVE_RENDER,
+        "master_candidate_selection": DomainState.MASTER_SELECTION,
+        "self_check_iteration": DomainState.QUALITY_REWORK,
+        "human_prompt_iteration": DomainState.HUMAN_EDIT,
+        "final_approval": DomainState.DELIVERY_FROZEN,
+    }
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  output: Callable[[str], None] | None = None) -> None:
@@ -87,6 +98,8 @@ class WorkflowRunner:
 
     def _run_locked(self, snapshot: dict[str, Any] | None, options: RunnerOptions, *, only_state: str | None = None) -> dict[str, Any]:
         data = dict(snapshot or {}); target = only_state or self.next_state(snapshot)
+        if "task_card" in data and "domain_state" not in data:
+            data["domain_state"] = DomainState.TASK.value
         while True:
             current = str(data.get("state", ""))
             if current and current != target:
@@ -96,13 +109,32 @@ class WorkflowRunner:
             try:
                 result = handler(data, options.__dict__)
                 data = {**data, **result, "state": target}
+                if "domain_state" in data:
+                    self._advance_domain(data, self.DOMAIN_TARGET[target])
                 # Waiting is a successful recoverable boundary, not a failed state.
                 self.store.checkpoint(target, data)
             except Exception as exc:
-                self.store.fail_step(target, {"code": type(exc).__name__, "message": str(exc), "retryable": True})
+                category = classify_error(exc)
+                actions = recovery_actions(category)
+                self.store.fail_step(target, {"code": type(exc).__name__, "message": str(exc),
+                                               "category": category, "retryable": "retry" in actions,
+                                               "recovery_actions": list(actions)})
                 raise
             if only_state or data.get("waiting") or target == "final_approval": return data
             target = self.next_state(data)
+
+    @staticmethod
+    def _advance_domain(data: dict[str, Any], target: DomainState) -> None:
+        """Advance every production handler through the canonical graph."""
+        from agent_core.unified_workflow import FLOW, require_transition
+        current = DomainState(data["domain_state"])
+        if FLOW.index(target) < FLOW.index(current):
+            return
+        while current != target:
+            following = FLOW[FLOW.index(current) + 1]
+            require_transition(current, following, data)
+            current = following
+        data["domain_state"] = current.value
 
     def _clarify(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
@@ -140,15 +172,22 @@ class WorkflowRunner:
         if options.get("edited_markdown"):
             spec = update_specification_from_markdown(spec, options["edited_markdown"])
         markdown = specification_to_markdown(spec)
-        revision_hash = content_hash({"task": data.get("task_card"), "markdown": markdown})
-        prior = data.get("task_revision") or {}
-        changed = prior.get("revision_hash") != revision_hash
-        revision = {"version": int(prior.get("version", 0)) + (1 if changed else 0),
-                    "revision_hash": revision_hash, "markdown": markdown,
-                    "actor": options.get("actor") or "manual-user"}
+        history = list(data.get("task_revision_history", []))
+        raw_task = json.dumps(data.get("task_card"), ensure_ascii=False, sort_keys=True)
+        actor = options.get("actor") or "manual-user"
+        revisions = [TaskRevision.model_validate(item) for item in history]
+        candidate = revise_task(revisions, raw_task, markdown, actor)
+        if history and history[-1]["raw_task"] == raw_task and history[-1]["task_markdown"] == markdown:
+            revision = history[-1]
+        else:
+            revision = candidate.model_dump(mode="json")
+            history.append(revision)
+            self.store.events.append("task_revision_created", revision=revision)
+        revision_hash = revision["revision_hash"]
         approved = bool(options.get("task_approved") and options.get("actor"))
         return {"task_specification": spec.model_dump(mode="json"), "task_markdown": markdown,
                 "task_revision": revision,
+                "task_revision_history": history,
                 "task_approval": ({"revision_hash": revision_hash, "actor": options["actor"]} if approved else None),
                 "waiting": not approved, "phase": "task_approved" if approved else "waiting_human_approval"}
 
@@ -182,7 +221,12 @@ class WorkflowRunner:
             raise ValueError("任务书修改后必须重新人工确认，才能进入付费步骤。")
         style_root = Path(self.policy.style_library_root)
         if not style_root.is_absolute():
-            style_root = Path.cwd() / style_root
+            configured = Path.cwd() / style_root
+            if configured.exists():
+                style_root = configured
+            else:
+                from skills.builtin_style_library import ensure_builtin_style_library
+                style_root = ensure_builtin_style_library(self.store.root / "runtime" / "style-library-v1")
         library = StyleLibrary(style_root)
         records = library.records()
         extractor = StyleExtractor(style_root, self._extract_style, model_id="offline-style-vlm" if self.offline_mode else "runtime-style-vlm")
@@ -291,8 +335,18 @@ class WorkflowRunner:
             satisfied = False
         if not data.get("selected_policy") or not data.get("termination_reason"):
             satisfied = False
-        self.workflow.validate_final_asset(asset, human_approved=bool(options.get("final_approved")), self_check_complete=satisfied)
-        return {"final_asset": asset, "completed": True}
+        actor = options.get("actor") or (data.get("task_approval") or {}).get("actor")
+        if "domain_state" not in data:
+            # Read-only compatibility for checkpoints created before the unified
+            # graph. All newly created task projects use the frozen contract.
+            self.workflow.validate_final_asset(asset, human_approved=bool(options.get("final_approved")), self_check_complete=satisfied)
+            return {"final_asset": asset, "completed": True}
+        self.workflow.validate_final_asset(asset, human_approved=bool(options.get("final_approved") and actor), self_check_complete=satisfied)
+        frozen = freeze_delivery({**data, "quality_asset_sha256": checked_hash, "quality_passed": satisfied},
+                                 asset=asset, quality_version=str(data.get("quality_version", "visual-check-v2")), actor=actor)
+        delivery = frozen.model_dump(mode="json")
+        self.store.events.append("delivery_frozen", delivery=delivery)
+        return {"final_asset": asset, "frozen_delivery": delivery, "completed": True}
 
     def _text(self, route: ModelRoute):
         client = build_text_client(route.binding, timeout=self.policy.model_timeout_seconds)
@@ -328,6 +382,11 @@ class WorkflowRunner:
         return client
 
     def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None) -> dict[str, Any]:
+        if state == "initial_candidate_generation":
+            from agent_core.style_pipeline import assert_reference_isolated
+            assert_reference_isolated({"prompt": prompt, "candidate_index": index})
+            if references:
+                raise ValueError("STYLE_REFERENCE_LEAK:reference_images")
         if self.offline_mode:
             # A real decodable fixture crosses the same persistence boundary;
             # mock/provider URLs never enter successful events or checkpoints.
