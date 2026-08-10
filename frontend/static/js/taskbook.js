@@ -1,7 +1,7 @@
 /* 任务书模块（T32）：Markdown 安全预览/编辑、确认门禁、编辑后确认失效立即可见、
  * 草稿自动保存与恢复。确认动作经 advance 携带 task_approved + actor（一期手工入口）。 */
 
-import { el, toast } from './dom.js';
+import { el, toast, idempotencyKey } from './dom.js';
 import { renderMarkdownInto } from './markdown.js';
 import { approvalValid } from './states.js';
 import { saveDraft, loadDraft, clearDraft } from './store.js';
@@ -9,7 +9,7 @@ import { advance } from './api.js';
 
 const DRAFT_NAME = 'taskbook-markdown';
 
-export function renderTaskbook(container, view, { projectId, actor, onChanged }) {
+export function renderTaskbook(container, view, { projectId, actor, onChanged, jobRunner }) {
   const snapshot = view.snapshot || {};
   const markdown = snapshot.task_markdown || '';
   const valid = approvalValid(snapshot);
@@ -88,6 +88,11 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged })
   approveBtn.disabled = valid || !actor;
   approveBtn.addEventListener('click', async () => {
     approveBtn.disabled = true;
+    if (jobRunner) {
+      const job = await jobRunner.start({ task_approved: true, actor, idempotency_key: idempotencyKey('task') });
+      if (!job) approveBtn.disabled = false;
+      return;
+    }
     try {
       const updated = await advance(projectId, { task_approved: true, actor });
       toast('任务书已确认。');

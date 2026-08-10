@@ -68,7 +68,7 @@ export function renderProject(view) {
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
   const refresh = (next) => { if (next) renderProject(next); else openProject(projectId); };
-  const jobRunner = makeJobRunner(jobBox, projectId, refresh);
+  const jobRunner = makeJobRunner(jobBox, projectId, refresh, content);
 
   renderStage(stagePanel, view, derived, { projectId, actor, refresh, jobRunner });
 
@@ -91,7 +91,7 @@ export function renderProject(view) {
   if (snapshot.task_markdown) {
     const panel = sectionPanel('任务书', '');
     panel.querySelector('.section__head').remove();
-    renderTaskbook(panel, view, { projectId, actor, onChanged: refresh });
+    renderTaskbook(panel, view, { projectId, actor, onChanged: refresh, jobRunner });
     primary.append(panel);
   }
 
@@ -120,8 +120,10 @@ export function renderProject(view) {
   }
 
   /* 恢复进行中的 job 展示（刷新后） */
-  if (state.job && state.job.project_id === projectId && !isTerminal(state.job.status)) {
-    jobRunner.attach(state.job);
+  const activeJob = view.active_job || (state.job && state.job.project_id === projectId && !isTerminal(state.job.status) ? state.job : null);
+  if (activeJob) {
+    patch({ job: activeJob });
+    jobRunner.attach(activeJob);
   }
 }
 
@@ -382,7 +384,7 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
   panel.append(finalBtn);
 }
 
-function renderFinal(panel, view, { projectId, actor, refresh }) {
+function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.final_asset || snapshot.current_asset || snapshot.asset;
   panel.append(el('p', { class: 'hint', text: '确认后将冻结交付并生成最终说明；冻结后的资产不可覆盖。' }));
@@ -395,17 +397,12 @@ function renderFinal(panel, view, { projectId, actor, refresh }) {
   approve.addEventListener('click', async () => {
     if (!window.confirm(`以操作人 ${actor} 确认最终交付？确认后冻结资产与质检版本。`)) return;
     approve.disabled = true;
-    const payload = { final_approved: true };
-    try {
-      const updated = view.manifest?.failed_step
-        ? await api.retryProject(projectId, payload)
-        : await api.advance(projectId, payload);
-      toast('交付已冻结。');
-      refresh(updated);
-    } catch (error) {
-      toast(error.message, 'error');
-      approve.disabled = false;
+    if (view.manifest?.failed_step) {
+      await jobRunner.retry({ final_approved: true });
+      return;
     }
+    const job = await jobRunner.start({ final_approved: true, idempotency_key: idempotencyKey('final') });
+    if (!job) approve.disabled = false;
   });
   panel.append(approve);
   if (!actor) panel.append(el('small', { text: '请先在右侧"工程信息"填写操作人身份。' }));
@@ -502,9 +499,16 @@ function renderUnknowns(items, { projectId, refresh }) {
 
 function isTerminal(status) { return ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(status); }
 
-function makeJobRunner(box, projectId, refresh) {
+function makeJobRunner(box, projectId, refresh, actionRoot) {
   let progress = null;
+  let busy = false;
+  const setBusy = (flag) => {
+    busy = flag;
+    actionRoot.setAttribute('aria-busy', String(flag));
+    actionRoot.querySelectorAll('button, textarea, input, select').forEach((node) => { node.disabled = flag; });
+  };
   const attach = (job) => {
+    setBusy(!isTerminal(job.status));
     box.textContent = '';
     progress = renderJobProgress(box, job, {
       onCancel: async () => {
@@ -515,6 +519,7 @@ function makeJobRunner(box, projectId, refresh) {
       onEvent: (event) => progress?.update({ status: event.type }),
       onDone: (record) => {
         progress?.done(record);
+        setBusy(false);
         patch({ job: record });
         if (record.status === 'succeeded') { toast('已保存到新的工作流检查点。'); }
         else if (record.status === 'failed') { toast(record.error?.message || '任务失败。', 'error'); }
@@ -525,12 +530,16 @@ function makeJobRunner(box, projectId, refresh) {
   return {
     attach,
     async start(payload) {
+      if (busy) return state.job;
+      setBusy(true);
+      box.textContent = '';
+      progress = renderJobProgress(box, { project_id: projectId, operation: jobOperation(payload), status: 'submitting' });
       try {
         const job = await api.startAdvanceJob(projectId, payload);
         patch({ job });
         attach(job);
         return job;
-      } catch (error) { toast(error.message, 'error'); return null; }
+      } catch (error) { setBusy(false); progress?.done({ status: 'failed', error: { message: error.message } }); toast(error.message, 'error'); return null; }
     },
     async retry(payload) {
       // 失败重试沿用同步 retry（后端在失败点恢复；付费动作仍经生产锁与幂等键保护）。
@@ -541,6 +550,15 @@ function makeJobRunner(box, projectId, refresh) {
       } catch (error) { toast(error.message, 'error'); }
     },
   };
+}
+
+function jobOperation(payload) {
+  if (['execute', 'edit_and_execute'].includes(payload.manual_action)) return '执行质检建议';
+  if (payload.human_prompt) return '模型微调图像';
+  if (payload.selected_id) return '确认主图并开始质检';
+  if (payload.task_approved) return '生成候选图像';
+  if (payload.final_approved || payload.manual_action === 'accept_current') return '确认最终图像';
+  return '推进工作流';
 }
 
 /* ---------- 小工具 ---------- */

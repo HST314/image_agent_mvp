@@ -196,7 +196,22 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "resource_events": [e for e in store.history() if e.get("type") == "resource_degraded"],
         "unknown_actions": _gateway_for_store(store).unknown_actions(),
         "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
+        "active_job": JOBS.active_for_project(store.project_id),
     }
+
+
+def _job_operation(body: AdvanceRequest) -> str:
+    if body.manual_action in {"execute", "edit_and_execute"}:
+        return "执行质检建议"
+    if body.human_prompt:
+        return "模型微调图像"
+    if body.selected_id:
+        return "确认主图并开始质检"
+    if body.task_approved:
+        return "生成候选图像"
+    if body.final_approved or body.manual_action == "accept_current":
+        return "确认最终图像"
+    return "推进工作流"
 
 def _gateway_for_store(store: ProjectStore):
     return _project_runner(store).gateway
@@ -382,7 +397,7 @@ async def create_advance_job(project_id: str, body: AdvanceRequest) -> JSONRespo
             store = _existing_store(project_id)
             store.events.append("job_status_changed", job_id=record["job_id"], operation=record["operation"],
                                 status=record["status"], error=record.get("error"))
-        job, created = JOBS.submit(project_id, key, "advance", execute, on_event=persist_job)
+        job, created = JOBS.submit(project_id, key, _job_operation(body), execute, on_event=persist_job)
         return JSONResponse(status_code=202 if created else 200, content=job)
     except Exception as exc:
         raise _translate_error(exc) from exc

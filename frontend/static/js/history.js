@@ -40,6 +40,7 @@ function formatTime(value) {
 
 /** 实时进度条：仅展示 job 真实事件流（queued/running/succeeded/failed）。 */
 export function renderJobProgress(container, job, { onCancel } = {}) {
+  let current = job || {};
   const box = el('div', { class: 'job-progress', role: 'status' });
   const spinner = el('span', { class: 'spinner', 'aria-hidden': 'true' });
   const text = el('span', { text: describeJob(job) });
@@ -51,7 +52,7 @@ export function renderJobProgress(container, job, { onCancel } = {}) {
   }
   container.append(box);
   return {
-    update(next) { text.textContent = describeJob(next); },
+    update(next) { current = { ...current, ...next }; text.textContent = describeJob(current); },
     done(record) {
       spinner.remove();
       text.textContent = describeJob(record);
@@ -61,8 +62,10 @@ export function renderJobProgress(container, job, { onCancel } = {}) {
 
 function describeJob(job) {
   if (!job) return '正在提交任务…';
+  const operation = job.operation || '后端任务';
   const map = {
-    queued: '任务已排队…', running: '后端正在处理，页面可继续操作…', cancelling: '正在取消…',
+    submitting: `正在提交“${operation}”…`, queued: `“${operation}”已排队…`,
+    running: `正在${operation}…`, cancelling: `正在取消“${operation}”…`,
     succeeded: '任务完成。', failed: `任务失败：${job.error?.message || '未知错误'}`,
     cancelled: '任务已取消。', interrupted: '服务重启，任务中断且不会自动补调用。',
   };

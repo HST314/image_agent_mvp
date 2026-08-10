@@ -68,6 +68,12 @@ class JobRegistry:
         with self._lock:
             for path in self.root.glob("job_*.json"):
                 item = json.loads(path.read_text(encoding="utf-8"))
+                # A project is protected by one workflow lock.  Returning the
+                # existing in-flight job prevents a second click (or another
+                # tab) from creating a doomed job that can only fail on that
+                # lock, while giving the caller the record it should track.
+                if item.get("project_id") == project_id and item.get("status") in {"queued", "running", "cancelling"}:
+                    return item, False
                 if item.get("project_id") == project_id and item.get("idempotency_key") == idempotency_key:
                     return item, False
             job_id = "job_" + uuid.uuid4().hex
@@ -78,6 +84,19 @@ class JobRegistry:
             if on_event: on_event(record)
             self._pool.submit(self._run, job_id, execute, on_event)
             return record, True
+
+    def active_for_project(self, project_id: str) -> dict[str, Any] | None:
+        """Return the newest durable in-flight job for a project, if any."""
+        with self._lock:
+            active: list[dict[str, Any]] = []
+            for path in self.root.glob("job_*.json"):
+                try:
+                    item = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if item.get("project_id") == project_id and item.get("status") in {"queued", "running", "cancelling"}:
+                    active.append(item)
+            return max(active, key=lambda item: str(item.get("created_at", "")), default=None)
 
     def _event(self, record: dict[str, Any], kind: str, **payload: Any) -> None:
         record["events"].append({"seq":len(record["events"])+1,"type":kind,"timestamp":_now(),**payload})
