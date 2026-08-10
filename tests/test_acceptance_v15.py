@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import diagnostics
 import main_front
+from storage.project_store import ArtifactStore, EventStore
 
 
 def test_health_reports_all_required_probes_without_internal_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -24,32 +25,46 @@ def test_health_reports_all_required_probes_without_internal_paths(tmp_path: Pat
 
 
 @pytest.mark.parametrize("failed_probe,expected_code", [
-    ("model_router", "MODEL_ROUTER_UNAVAILABLE"),
-    ("job_executor", "JOB_EXECUTOR_UNAVAILABLE"),
-    ("storage", "STORAGE_UNAVAILABLE"),
-    ("event_writer", "EVENT_WRITER_UNAVAILABLE"),
-    ("asset_api", "ASSET_API_UNAVAILABLE"),
-    ("runtime_resources", "RUNTIME_RESOURCES_UNAVAILABLE"),
+    ("model_router", "MODEL_ROUTER_UNAVAILABLE"), ("job_executor", "JOB_EXECUTOR_UNAVAILABLE"),
+    ("storage", "STORAGE_UNAVAILABLE"), ("event_writer", "EVENT_WRITER_UNAVAILABLE"),
+    ("asset_api", "ASSET_API_UNAVAILABLE"), ("runtime_resources", "RUNTIME_RESOURCES_UNAVAILABLE"),
 ])
 def test_health_failure_matrix_uses_stable_safe_codes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_probe: str, expected_code: str
 ) -> None:
-    original = diagnostics._probe
+    secret = "secret=/private/path token=hidden"
 
-    def fail_selected(name, code, trace_id, check):
-        if name == failed_probe:
-            check = lambda: (_ for _ in ()).throw(RuntimeError("secret=/private/path token=hidden"))
-        return original(name, code, trace_id, check)
+    def raise_secret(*args, **kwargs):
+        raise OSError(secret)
 
-    monkeypatch.setattr(diagnostics, "_probe", fail_selected)
-    result = diagnostics.run_diagnostics(
-        projects_root=tmp_path / "projects", model_config=main_front.MODEL_CONFIG,
-        app_root=main_front.APP_ROOT, job_registry=main_front.JOBS,
-    )
-    assert result["status"] == "degraded"
+    if failed_probe == "model_router":
+        monkeypatch.setattr(diagnostics.ModelRouter, "from_file", classmethod(raise_secret))
+    elif failed_probe == "job_executor":
+        monkeypatch.setattr(main_front.JOBS, "is_ready", lambda: False)
+    elif failed_probe == "storage":
+        monkeypatch.setattr(diagnostics.shutil, "disk_usage", raise_secret)
+    elif failed_probe == "event_writer":
+        original = EventStore.append
+
+        def append(self, event_type, **payload):
+            if event_type == "health_probe":
+                raise_secret()
+            return original(self, event_type, **payload)
+
+        monkeypatch.setattr(EventStore, "append", append)
+    elif failed_probe == "asset_api":
+        monkeypatch.setattr(ArtifactStore, "save_bytes", raise_secret)
+    else:
+        monkeypatch.setattr(main_front, "APP_ROOT", tmp_path / "missing-runtime")
+
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path / "projects")
+    response = TestClient(main_front.app).get("/api/health")
+    assert response.status_code == 503
+    result = response.json()
+    assert result["status"] == "degraded" and result["trace_id"].startswith("trace_")
     failed = next(item for item in result["checks"] if item["name"] == failed_probe)
     assert failed == {"name": failed_probe, "status": "error", "error_code": expected_code}
-    assert "/private/path" not in str(result)
+    assert "/private/path" not in response.text and "token=hidden" not in response.text
 
 
 def test_http_health_degraded_is_503(monkeypatch: pytest.MonkeyPatch) -> None:

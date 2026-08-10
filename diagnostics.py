@@ -1,6 +1,8 @@
 """Side-effect-free public health diagnostics with stable failure codes."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import shutil
 import tempfile
@@ -51,11 +53,18 @@ def run_diagnostics(*, projects_root: Path, model_config: Path, app_root: Path,
                 raise OSError("event verification failed")
 
     def assets() -> None:
-        # The API depends on the writable project root and the ArtifactStore implementation.
         from storage.project_store import ArtifactStore
-        if not callable(getattr(ArtifactStore, "resolve", None)):
-            raise RuntimeError("asset resolver unavailable")
-        storage()
+        # Exercise the same persistence and integrity boundary used by the asset API.
+        fixture = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        with tempfile.TemporaryDirectory(prefix=".health-asset-", dir=projects_root) as raw:
+            store = ArtifactStore(Path(raw))
+            saved = store.save_bytes(fixture, suffix=".png", metadata={"probe": True})
+            path, resolved = store.resolve(saved["artifact_id"])
+            digest = hashlib.sha256(fixture).hexdigest()
+            if path.read_bytes() != fixture or saved["sha256"] != digest or resolved["sha256"] != digest:
+                raise OSError("asset verification failed")
 
     def resources() -> None:
         required = (
