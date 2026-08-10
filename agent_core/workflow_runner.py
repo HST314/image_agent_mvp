@@ -320,10 +320,53 @@ class WorkflowRunner:
     def _self_check(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])
         policy_data = data.get("self_check_policy", self.policy.self_check.model_dump(mode="json"))
+        action = options.get("manual_action")
+        at_round_limit = (data.get("phase") == "waiting_human_approval" and
+                          "round_limit" in str(data.get("termination_reason")))
+        if at_round_limit and action:
+            asset = data.get("best_asset") or data.get("asset") or data["master_asset"]
+            round_number = int(data.get("round", 0))
+            if action.action == "accept_current":
+                checked = data.get("asset") or asset
+                self.store.events.append("quality_disposition", action="accept_current", selected_asset=checked)
+                self.store.events.append("calibration_current_asset_accepted", round=round_number,
+                                         asset_hash=checked["sha256"], decision=(data.get("inspection") or {}).get("decision"),
+                                         policy=policy_data)
+                return {"waiting": False, "phase": "calibration_completed", "round": round_number,
+                        "asset": checked, "current_asset": checked, "calibration_status": "human_accepted",
+                        "termination_satisfied": True, "termination_reason": "human_accepted_current_asset",
+                        "latest_checked_asset_hash": checked["sha256"], "selected_policy": policy_data}
+            if action.action == "end":
+                self.store.events.append("quality_disposition", action="end", selected_asset=asset)
+                self.store.events.append("calibration_terminated_without_delivery", round=round_number,
+                                         asset_hash=asset["sha256"], decision=(data.get("inspection") or {}).get("decision"))
+                return {"waiting": True, "phase": "terminated_without_delivery", "round": round_number,
+                        "asset": asset, "current_asset": asset, "calibration_status": "terminated_without_delivery",
+                        "termination_satisfied": False, "termination_reason": "human_ended_without_delivery",
+                        "latest_checked_asset_hash": data.get("latest_checked_asset_hash"), "selected_policy": policy_data}
+            if action.action == "human_tune_best":
+                prompt = options.get("human_prompt")
+                if not prompt:
+                    raise ValueError("human_tune_best 必须同时提供 --human-prompt。")
+                self.store.events.append("quality_disposition", action="human_tune_best", selected_asset=asset)
+                return self._human_rework({**data, "asset": asset, "current_asset": asset}, options)
+            if action.action == "add_rounds":
+                if not action.cost_confirmed or action.additional_rounds < 1:
+                    raise ValueError("add_rounds 必须提供正整数 --additional-rounds 并使用 --confirm-cost。")
+                policy_data = dict(policy_data)
+                policy_data["termination"] = "solo"
+                policy_data["max_rounds"] = round_number + action.additional_rounds
+                policy_data["fixed_rounds"] = min(int(policy_data.get("fixed_rounds", 1)), policy_data["max_rounds"])
+                self.store.events.append("quality_disposition", action="add_rounds",
+                                         additional_rounds=action.additional_rounds, cost_confirmed=True,
+                                         selected_asset=asset)
+                data = {**data, "asset": asset, "current_asset": asset, "round": round_number + 1,
+                        "phase": "additional_rounds_approved"}
+            elif action.action not in {"execute", "edit_and_execute", "skip"}:
+                raise ValueError(f"轮次上限不支持处置动作：{action.action}")
         loop = CalibrationLoop(self.store, SelfCheckPolicy(**policy_data), inspector=self._inspect,
             reworker=lambda assembled: self._image_call("self_check_rework", assembled["text"], [r["uri"] for r in assembled["references"]]),
             presenter=lambda number, result: self._present_inspection(number, result))
-        action = options.get("manual_action")
         result = loop.run(current_asset=data.get("asset") or data["master_asset"], stable_specification=specification_to_markdown(spec),
                           constraints=[], approve=(lambda _: action) if action else None,
                           start_round=int(data.get("round", 1)))

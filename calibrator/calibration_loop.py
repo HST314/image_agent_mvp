@@ -9,8 +9,10 @@ from storage.project_store import ProjectStore, content_hash
 
 class ManualAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: Literal["execute", "edit_and_execute", "skip", "end", "accept_current"]
+    action: Literal["execute", "edit_and_execute", "skip", "end", "accept_current", "add_rounds", "human_tune_best"]
     edited_delta: str | None = None
+    additional_rounds: int = 0
+    cost_confirmed: bool = False
 
     def effective_delta(self, original: str) -> str:
         if self.action == "edit_and_execute":

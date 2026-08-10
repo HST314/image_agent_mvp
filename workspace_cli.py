@@ -18,9 +18,11 @@ def _flow_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--model-config", type=Path, default=Path(__file__).parent / "configs/model_config.yaml")
     command.add_argument("--offline", action="store_true", help="显式离线测试模式（模拟图不可最终交付）")
     command.add_argument("--selected-id", help="从五张候选图中选择的编号")
-    command.add_argument("--manual-action", choices=("execute", "edit_and_execute", "skip", "end", "accept_current"),
-                         help="end=终止且不交付；accept_current=人工接受当前图并记录审计")
+    command.add_argument("--manual-action", choices=("execute", "edit_and_execute", "skip", "end", "accept_current", "add_rounds", "human_tune_best"),
+                         help="上限处置：accept_current/end/add_rounds/human_tune_best")
     command.add_argument("--edited-delta", help="选择编辑建议后执行时的新建议")
+    command.add_argument("--additional-rounds", type=int, default=0, help="add_rounds 增加的质检轮数")
+    command.add_argument("--confirm-cost", action="store_true", help="确认 add_rounds 产生的额外费用")
     command.add_argument("--human-prompt", help="质检后人工自然语言修改要求")
     command.add_argument("--edited-task-markdown", type=Path, help="编辑后的任务书；保存为结构化新版本")
     command.add_argument("--approve-final", action="store_true")
@@ -55,7 +57,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _options(args: argparse.Namespace) -> RunnerOptions:
-    action = ManualAction(action=args.manual_action, edited_delta=args.edited_delta) if getattr(args, "manual_action", None) else None
+    action = ManualAction(action=args.manual_action, edited_delta=args.edited_delta,
+                          additional_rounds=getattr(args, "additional_rounds", 0),
+                          cost_confirmed=bool(getattr(args, "confirm_cost", False))) if getattr(args, "manual_action", None) else None
     markdown = args.edited_task_markdown.read_text(encoding="utf-8") if getattr(args, "edited_task_markdown", None) else None
     answers = json.loads(args.clarification_answers.read_text(encoding="utf-8")) if getattr(args, "clarification_answers", None) else None
     return RunnerOptions(selected_id=getattr(args, "selected_id", None), manual_action=action,
