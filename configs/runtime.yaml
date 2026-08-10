@@ -11,7 +11,7 @@ max_render_retries: 0
 candidate_concurrency: 5
 model_timeout_seconds: 180
 image_api_base_url: ""
-default_output_size: "1024x1024"
+default_output_size: "2560x1440"
 response_format: "url"
 watermark: false
 offline_mode: false

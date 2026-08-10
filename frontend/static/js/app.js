@@ -53,7 +53,8 @@ function renderNav() {
   }
   for (const p of state.projects) {
     const item = el('button', { class: 'project-item', type: 'button', 'aria-current': String(state.current?.project_id === p.project_id) });
-    const status = p.failed_step ? '处理失败 · 可重试' : p.completed ? '已完成' : STATE_LABELS[p.state] || '等待开始';
+    const retryable = p.failed_step?.error?.retryable === true;
+    const status = p.failed_step ? (retryable ? '处理失败 · 可重试' : '处理失败 · 请修正配置') : p.completed ? '已完成' : STATE_LABELS[p.state] || '等待开始';
     item.append(el('strong', { text: p.project_id }), el('span', { text: status }));
     item.addEventListener('click', () => openProject(p.project_id));
     nav.append(item);

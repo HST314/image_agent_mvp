@@ -169,7 +169,8 @@ def _gateway_for_store(store: ProjectStore):
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     """仅把生产快照已有等待原因映射为 UI 动作，不执行或替代状态迁移。"""
     if manifest.get("failed_step"):
-        return ["retry"]
+        error = manifest["failed_step"].get("error", {})
+        return ["retry"] if error.get("retryable", False) else []
     if snapshot.get("completed"):
         return ["inspect", "branch"]
     phase = snapshot.get("phase")

@@ -82,6 +82,13 @@ test('其他失败 → failed 舞台并携带 failure', () => {
   assert.equal(d.failure.state, 'initial_candidate_generation');
 });
 
+test('不可重试参数错误不暴露 retry 动作', () => {
+  const manifest = { failed_step: { state: 'initial_candidate_generation', error: { message: '图片尺寸不合法', retryable: false } } };
+  const d = deriveView(view({ state: 'confirmation_build' }, manifest, []));
+  assert.equal(d.stage, 'failed');
+  assert.deepEqual(d.actions, []);
+});
+
 test('completed / terminated / resume / empty 边界', () => {
   assert.equal(deriveView(view({ state: 'final_approval', completed: true })).stage, 'completed');
   assert.equal(deriveView(view({ state: 'self_check_iteration', phase: 'terminated_without_delivery' })).stage, 'terminated');

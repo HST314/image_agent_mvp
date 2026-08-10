@@ -28,8 +28,14 @@ class CandidateBatchGenerator:
                         self.store.events.append("candidate_succeeded", index=index, attempt=attempt, asset=asset, idempotency_key=key)
                         return asset, None
                     except Exception as exc:
-                        error = exc; self.store.events.append("candidate_failed", index=index, attempt=attempt, error={"code": type(exc).__name__, "message": str(exc)}, idempotency_key=key)
-                return None, {"index": index, "error": str(error), "idempotency_key": key}
+                        error = exc
+                        detail = {"code": type(exc).__name__, "message": str(exc),
+                                  "category": getattr(exc, "category", "invalid_input"),
+                                  "retryable": bool(getattr(exc, "retryable", False))}
+                        self.store.events.append("candidate_failed", index=index, attempt=attempt, error=detail, idempotency_key=key)
+                return None, {"index": index, "error": str(error), "code": type(error).__name__,
+                              "category": getattr(error, "category", "invalid_input"),
+                              "retryable": bool(getattr(error, "retryable", False)), "idempotency_key": key}
 
             with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="candidate") as pool:
                 futures = {pool.submit(one, index, key): index for index, key in pending}

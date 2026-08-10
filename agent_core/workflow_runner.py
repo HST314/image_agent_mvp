@@ -260,6 +260,10 @@ class WorkflowRunner:
         self.output("保持主体内容、品牌色彩与空间条件一致，正在按上述 5 种风格分别生图，请稍候...\n")
 
         # 4. 生图逻辑：固定内容与品牌色，只注入各自风格
+        from render_clients.payload_mapper import validate_render_size
+        image_binding = self.gateway.router.binding_for_state("initial_candidate_generation")
+        validate_render_size(image_binding.model, self.policy.default_output_size)
+
         def render(index: int) -> dict[str, Any]:
             plan = plans[index]
             result = self._image_call("initial_candidate_generation", plan.prompt_text, [], index=index)
@@ -270,8 +274,11 @@ class WorkflowRunner:
 
         batch = CandidateBatchGenerator(self.store, render, attempts=1,
                                         max_workers=self.policy.candidate_concurrency).generate(spec.content_hash)
-        if batch["failed"]: 
-            raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
+        if batch["failed"]:
+            first = batch["failed"][0]
+            if not first.get("retryable"):
+                raise ValueError(f"候选图生成请求被拒绝且不可重试：{first['error']} 请修正配置或凭证后重新生成。")
+            raise RuntimeError(f"候选图有 {len(batch['failed'])} 项生成失败；成功项已保存，可确认后重试。")
         return {"candidates": batch["succeeded"], "style_selections": [
             {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
              "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}

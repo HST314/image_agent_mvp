@@ -210,8 +210,11 @@ function renderStage(panel, view, derived, ctx) {
   }
   if (stage === 'failed') {
     const failure = derived.failure || {};
-    const btn = el('button', { type: 'button', class: 'btn btn--primary', text: '从上一成功点重试' });
-    btn.addEventListener('click', () => jobRunner.retry({}));
+    let btn;
+    if (derived.actions.includes('retry')) {
+      btn = el('button', { type: 'button', class: 'btn btn--primary', text: '从上一成功点重试' });
+      btn.addEventListener('click', () => jobRunner.retry({}));
+    }
     panel.append(stateBlock('error', `流程在 ${stateLabel(failure.state)} 暂停`, failure?.error?.message || '后端能力暂不可用。修正模型、密钥或依赖后可安全重试。', btn));
     return;
   }
