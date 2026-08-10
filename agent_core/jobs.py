@@ -40,6 +40,11 @@ class JobRegistry:
         return not self._pool._shutdown
 
     def _write(self, record: dict[str, Any]) -> None:
+        # The projects directory is sometimes replaced while the web process is
+        # kept alive (for example when restoring/exporting a project).  The
+        # registry object survives that replacement, so do not assume its
+        # persistence directory still exists.
+        self.root.mkdir(parents=True, exist_ok=True)
         path = self._path(record["job_id"])
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")

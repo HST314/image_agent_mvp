@@ -64,6 +64,10 @@ def _persist_recovered_job(record: dict[str, Any]) -> None:
 JOBS = JobRegistry(PROJECTS_ROOT / ".jobs", on_recover=_persist_recovered_job)
 
 
+class ProjectNotFoundError(FileNotFoundError):
+    """The requested project root is absent (not an arbitrary missing file)."""
+
+
 class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,6 +140,13 @@ def _safe_project_id(value: str) -> str:
 
 def _store(project_id: str) -> ProjectStore:
     return ProjectStore(PROJECTS_ROOT, _safe_project_id(project_id))
+
+
+def _existing_store(project_id: str) -> ProjectStore:
+    store = _store(project_id)
+    if not (store.root / "manifest.json").is_file():
+        raise ProjectNotFoundError(f"工程不存在：{store.project_id}")
+    return store
 
 
 def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
@@ -231,8 +242,10 @@ def _translate_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail={"code":"JOB_NOT_FOUND","message":str(exc)})
     if isinstance(exc, CorruptProjectError):
         return HTTPException(status_code=409, detail={"code":"PROJECT_CORRUPT","message":str(exc)})
-    if isinstance(exc, FileNotFoundError):
+    if isinstance(exc, ProjectNotFoundError):
         return HTTPException(status_code=404, detail="PROJECT_NOT_FOUND: 工程不存在。")
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=409, detail={"code":"PROJECT_FILE_MISSING","message":str(exc)})
     if isinstance(exc, NotADirectoryError):
         return HTTPException(status_code=409, detail={"code":"PROJECT_PATH_INVALID","message":str(exc)})
     if isinstance(exc, FileExistsError):
@@ -333,7 +346,7 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: str) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(_project_view, _store(project_id))
+        return await asyncio.to_thread(_project_view, _existing_store(project_id))
     except Exception as exc:
         raise _translate_error(exc) from exc
 
@@ -342,7 +355,7 @@ async def get_project(project_id: str) -> dict[str, Any]:
 async def advance_project(project_id: str, body: AdvanceRequest) -> dict[str, Any]:
     try:
         def execute() -> dict[str, Any]:
-            store = _store(project_id)
+            store = _existing_store(project_id)
             snapshot = store.resume()
             if snapshot is None:
                 raise ValueError("工程还没有可恢复节点。")
@@ -359,13 +372,14 @@ async def create_advance_job(project_id: str, body: AdvanceRequest) -> JSONRespo
     project_id = _safe_project_id(project_id)
     key = body.idempotency_key or hashlib.sha256(body.model_dump_json().encode()).hexdigest()
     def execute() -> dict[str, Any]:
-        store = _store(project_id); snapshot = store.resume()
+        store = _existing_store(project_id); snapshot = store.resume()
         if snapshot is None: raise ValueError("工程还没有可恢复节点。")
         _project_runner(store).run(snapshot, _options(body))
         return {"project_id":project_id}
     try:
+        _existing_store(project_id)
         def persist_job(record: dict[str, Any]) -> None:
-            store = _store(project_id)
+            store = _existing_store(project_id)
             store.events.append("job_status_changed", job_id=record["job_id"], operation=record["operation"],
                                 status=record["status"], error=record.get("error"))
         job, created = JOBS.submit(project_id, key, "advance", execute, on_event=persist_job)
