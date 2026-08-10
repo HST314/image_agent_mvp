@@ -211,10 +211,16 @@ class WorkflowRunner:
             except (FileNotFoundError, UnicodeError, json.JSONDecodeError) as exc:
                 from uuid import uuid4
                 raise ResourceError("RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_CORRUPT", str(lib_path), f"trace_{uuid4().hex}") from exc
-            if not match:
-                from uuid import uuid4
-                raise ResourceError("RESOURCE_NO_MATCH", str(lib_path), f"trace_{uuid4().hex}")
-            return match.skill
+            if match:
+                return match.skill
+
+            # The advertising library is an optional specialization boundary.
+            # A valid visual task that has no advertising keyword must keep using
+            # the approved generic skill instead of being treated as a corrupt
+            # runtime resource.
+            from skills.category_loader import CategorySkillLoader
+            generic_index = Path(__file__).parent.parent / "skills/category_skills/index.json"
+            return CategorySkillLoader(generic_index).load_for_task(task_card)
         category_skill = load_with_policy(load_category, resource=str(lib_path),
             allow_degradation=self.policy.allow_skill_degradation, fallback=None,
             emit=lambda detail: self.store.events.append("resource_degraded", **detail))
