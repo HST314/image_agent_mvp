@@ -127,6 +127,7 @@ export const EVENT_LABELS = {
   calibration_invalidated: '质检结论已失效',
   quality_disposition: '质检分流决定',
   human_annotation_rework: '圈画微调完成',
+  human_tune_final_accepted: '人工确认终稿',
   delivery_frozen: '交付已冻结',
   delivery_exported: '交付说明已导出',
   delivery_note_retried: '交付说明已重新生成',

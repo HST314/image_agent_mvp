@@ -57,7 +57,7 @@ test('waiting_human_tune → annotate 舞台', () => {
   assert.equal(deriveView(view({ state: 'human_prompt_iteration', phase: 'waiting_human_tune' })).stage, 'annotate');
 });
 
-test('waiting_reinspection / additional_rounds_approved → 重新质检', () => {
+test('遗留 waiting_reinspection / additional_rounds_approved → 重新质检', () => {
   assert.equal(deriveView(view({ state: 'human_prompt_iteration', phase: 'waiting_reinspection' })).stage, 'reinspection');
   assert.equal(deriveView(view({ state: 'self_check_iteration', phase: 'additional_rounds_approved' })).stage, 'resume_quality');
 });

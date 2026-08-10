@@ -76,14 +76,14 @@ def test_real_cli_process_adds_confirmed_rounds_and_resumes_inspection(tmp_path:
     assert any(event["type"] == "inspection_completed" and event["round"] == 5 for event in store.history())
 
 
-def test_real_cli_process_tunes_best_asset_and_requires_reinspection(tmp_path: Path) -> None:
+def test_real_cli_process_tunes_best_asset_and_stays_in_human_tune(tmp_path: Path) -> None:
     root = tmp_path / "projects"
     store = _seed(root, "human-tune")
     original_hash = store.resume()["asset"]["sha256"]
     result = _cli(root, "human-tune", "--manual-action", "human_tune_best", "--human-prompt", "只调整主体颜色")
     assert result.returncode == 0, result.stdout + result.stderr
     snapshot = store.resume()
-    assert snapshot["phase"] == "waiting_reinspection" and snapshot["waiting"]
+    assert snapshot["phase"] == "waiting_human_tune" and snapshot["waiting"]
     assert snapshot["latest_checked_asset_hash"] is None
     assert snapshot["asset"]["sha256"] != original_hash
     assert any(event["type"] == "quality_disposition" and event["action"] == "human_tune_best" for event in store.history())

@@ -403,19 +403,22 @@ async def annotate_and_rework(project_id: str, body: AnnotationRequest) -> dict[
                 snapshot=store.resume()
                 if snapshot is None:
                     raise ValueError("工程还没有可恢复节点。")
+                if snapshot.get("phase") != "waiting_human_tune" or not snapshot.get("human_tune_mode"):
+                    raise ValueError("HUMAN_TUNE_NOT_ACTIVE")
                 source, source_record=store.artifacts.resolve(body.artifact_id)
                 guide_bytes=compose(source.read_bytes(), body.marks)
                 guide=store.artifacts.save_bytes(guide_bytes, metadata={"kind":"annotation_guide","parent_artifact_id":body.artifact_id,"marks":body.marks})
                 child=_project_runner(store)._image_call("human_prompt_rework", body.prompt, [guide["uri"]])
                 updated={**snapshot, "state":"human_prompt_iteration", "asset":child, "current_asset":child,
                          "annotation_parent_asset":source_record, "annotation_guide_asset":guide,
-                         "phase":"waiting_reinspection", "waiting":True, "calibration_status":"invalidated",
-                         "termination_satisfied":False, "termination_reason":"annotation_rework_requires_reinspection",
+                         "phase":"waiting_human_tune", "waiting":True, "human_tune_mode":True,
+                         "calibration_status":"waiting_human_tune", "termination_satisfied":False,
+                         "termination_reason":"human_tune_in_progress",
                          "latest_checked_asset_hash":None, "inspection":None}
                 store.events.append("human_annotation_rework", parent_asset=source_record, guide_asset=guide, asset=child, prompt=body.prompt)
                 checkpoint_id=store.checkpoint("human_prompt_iteration",updated)
                 return {"parent_asset":source_record,"guide_asset":guide,"asset":child,
-                        "checkpoint_id":checkpoint_id,"requires_reinspection":True}
+                        "checkpoint_id":checkpoint_id,"requires_reinspection":False,"phase":"waiting_human_tune"}
         return await asyncio.to_thread(execute)
     except Exception as exc: raise _translate_error(exc) from exc
 
@@ -441,7 +444,7 @@ async def quality_disposition(project_id: str, body: QualityDispositionRequest) 
                     status_value="abandoned"
                 elif body.action=="human_tune_best":
                     updated.update(asset=asset,current_asset=asset,phase="waiting_human_tune",calibration_status="waiting_human_tune",
-                                   termination_satisfied=False,latest_checked_asset_hash=None,inspection=None)
+                                   human_tune_mode=True,termination_satisfied=False,latest_checked_asset_hash=None,inspection=None)
                     status_value="waiting_human_tune"
                 else:
                     policy=dict(updated.get("self_check_policy") or updated.get("selected_policy") or {})

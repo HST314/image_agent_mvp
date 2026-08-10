@@ -88,7 +88,7 @@ def test_round_limit_cost_confirmation_routes_back_to_real_quality_api(api: Test
     assert delivered["frozen_delivery"]["asset_sha256"] == original["sha256"]
 
 
-def test_best_asset_human_tune_routes_to_reinspection_and_freezes_child(api: TestClient) -> None:
+def test_best_asset_human_tune_stays_in_human_review_and_freezes_child(api: TestClient) -> None:
     store, original = _seed("human-tune", color="red")
     response = api.post(
         "/api/projects/human-tune/quality-disposition",
@@ -105,16 +105,17 @@ def test_best_asset_human_tune_routes_to_reinspection_and_freezes_child(api: Tes
     )
     assert tuned.status_code == 200, tuned.text
     child = tuned.json()["snapshot"]["asset"]
-    assert tuned.json()["snapshot"]["phase"] == "waiting_reinspection"
+    assert tuned.json()["snapshot"]["phase"] == "waiting_human_tune"
+    assert tuned.json()["capabilities"] == ["submit_human_tune"]
     assert child["sha256"] != original["sha256"]
 
-    delivered = _advance_to_delivery(api, "human-tune")
+    delivered = _advance_to_delivery(api, "human-tune", manual_action="accept_current")
     assert delivered["final_asset"]["sha256"] == child["sha256"]
     assert delivered["frozen_delivery"]["asset_sha256"] == child["sha256"]
     assert store.artifacts.resolve(original["artifact_id"])[1]["sha256"] == original["sha256"]
 
 
-def test_annotation_api_atomically_checkpoints_child_then_reinspects_and_freezes(
+def test_annotation_api_atomically_checkpoints_child_then_stays_in_human_review(
     api: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, original = _seed("annotation", color="blue")
@@ -123,6 +124,9 @@ def test_annotation_api_atomically_checkpoints_child_then_reinspects_and_freezes
         return runner.store.artifacts.save_bytes(_png("green"), metadata={"kind": "annotation_child"})
 
     monkeypatch.setattr(WorkflowRunner, "_image_call", create_child)
+    assert api.post(
+        "/api/projects/annotation/quality-disposition", json={"action": "human_tune_best"}
+    ).status_code == 200
     response = api.post(
         "/api/projects/annotation/annotations",
         json={
@@ -135,14 +139,34 @@ def test_annotation_api_atomically_checkpoints_child_then_reinspects_and_freezes
     result = response.json()
     child = result["asset"]
     snapshot = store.resume()
-    assert result["requires_reinspection"] and result["checkpoint_id"]
-    assert snapshot["phase"] == "waiting_reinspection"
+    assert result["requires_reinspection"] is False and result["checkpoint_id"]
+    assert snapshot["phase"] == "waiting_human_tune"
     assert snapshot["asset"]["sha256"] == child["sha256"]
     assert snapshot["annotation_parent_asset"]["sha256"] == original["sha256"]
     assert snapshot["annotation_guide_asset"]["sha256"] == result["guide_asset"]["sha256"]
     assert store.artifacts.resolve(original["artifact_id"])[0].read_bytes() == _png("blue")
 
-    delivered = _advance_to_delivery(api, "annotation")
+    delivered = _advance_to_delivery(api, "annotation", manual_action="accept_current")
     assert delivered["latest_checked_asset_hash"] == child["sha256"]
     assert delivered["final_asset"]["sha256"] == child["sha256"]
     assert delivered["frozen_delivery"]["asset_sha256"] == child["sha256"]
+
+
+def test_human_tune_supports_multiple_rounds_without_automatic_inspection(api: TestClient) -> None:
+    store, original = _seed("human-multi", color="red")
+    assert api.post(
+        "/api/projects/human-multi/quality-disposition", json={"action": "human_tune_best"}
+    ).status_code == 200
+
+    first = api.post("/api/projects/human-multi/advance", json={"human_prompt": "第一轮微调"})
+    assert first.status_code == 200, first.text
+    second = api.post("/api/projects/human-multi/advance", json={"human_prompt": "第二轮微调"})
+    assert second.status_code == 200, second.text
+    second_snapshot = second.json()["snapshot"]
+
+    assert second_snapshot["phase"] == "waiting_human_tune"
+    assert second_snapshot["human_tune_mode"] is True
+    assert second_snapshot["asset"]["sha256"] != original["sha256"]
+    recent = store.history()
+    assert len([event for event in recent if event["type"] == "calibration_invalidated"]) == 2
+    assert not any(event["type"] == "inspection_started" for event in recent)

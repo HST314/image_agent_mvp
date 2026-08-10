@@ -337,29 +337,49 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
 function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.current_asset || snapshot.asset || snapshot.best_asset;
-  panel.append(el('p', { class: 'hint', text: '以本轮最高分/当前资产为起点；每次微调都会使旧质检结论失效并强制重新质检。' }));
+  panel.append(el('p', { class: 'hint', text: '当前已进入人工微调；修改后仍停留在本界面，可继续多轮微调或确定终稿，不再返回自动质检。' }));
   if (!asset) {
     panel.append(stateBlock('error', '没有可微调的资产', '当前快照缺少可标注图像。'));
     return;
   }
+  const busy = el('div', { class: 'job-progress', role: 'status', style: 'display:none;margin-bottom:14px' }, [
+    el('span', { class: 'spinner', 'aria-hidden': 'true' }),
+    el('span', { text: '模型正在修改…' }),
+  ]);
+  panel.append(busy);
+  const setTuneBusy = (flag) => {
+    busy.style.display = flag ? '' : 'none';
+    panel.querySelectorAll('button, textarea, input').forEach((node) => { node.disabled = flag; });
+  };
   createAnnotator(panel, {
     projectId,
     asset,
     history: view.history || [],
     onSubmitted: refresh,
+    onBusy: setTuneBusy,
   });
   const divider = el('hr', { style: 'border:none;border-top:1px solid var(--border);margin:18px 0' });
   panel.append(divider);
   panel.append(el('h3', { text: '或仅用文字微调' }));
   const textArea = el('textarea', { class: 'input', 'aria-label': '文字微调说明', placeholder: '不圈画，直接描述整体修改方向' });
   const btn = el('button', { type: 'button', class: 'btn btn--secondary', text: '提交文字微调' , style: 'margin-top:10px' });
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     const prompt = textArea.value.trim();
     if (!prompt) { toast('请填写微调说明。', 'error'); return; }
-    // 文字微调触发付费编辑模型：走后台 job，页面保持可操作。
-    jobRunner.start({ human_prompt: prompt, idempotency_key: idempotencyKey('tune') });
+    setTuneBusy(true);
+    const job = await jobRunner.start({ human_prompt: prompt, idempotency_key: idempotencyKey('tune') });
+    if (!job) setTuneBusy(false);
   });
   panel.append(textArea, btn);
+
+  const finalBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '确定终稿', style: 'margin-top:10px;margin-left:10px' });
+  finalBtn.addEventListener('click', async () => {
+    if (!window.confirm('确定将当前图片作为终稿？确认后将冻结交付。')) return;
+    setTuneBusy(true);
+    const job = await jobRunner.start({ manual_action: 'accept_current', final_approved: true, idempotency_key: idempotencyKey('human-final') });
+    if (!job) setTuneBusy(false);
+  });
+  panel.append(finalBtn);
 }
 
 function renderFinal(panel, view, { projectId, actor, refresh }) {
@@ -509,7 +529,8 @@ function makeJobRunner(box, projectId, refresh) {
         const job = await api.startAdvanceJob(projectId, payload);
         patch({ job });
         attach(job);
-      } catch (error) { toast(error.message, 'error'); }
+        return job;
+      } catch (error) { toast(error.message, 'error'); return null; }
     },
     async retry(payload) {
       // 失败重试沿用同步 retry（后端在失败点恢复；付费动作仍经生产锁与幂等键保护）。

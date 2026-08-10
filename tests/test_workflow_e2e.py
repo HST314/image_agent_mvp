@@ -177,7 +177,7 @@ def test_blocked_and_manual_end_cannot_be_delivered(tmp_path: Path):
     assert ended["calibration_status"] == "terminated_without_delivery" and not ended["termination_satisfied"]
     assert any(e["type"] == "calibration_terminated_without_delivery" for e in store.history())
 
-def test_human_rework_invalidates_old_inspection_and_forces_recheck(tmp_path: Path):
+def test_human_rework_invalidates_old_inspection_and_stays_in_human_tune(tmp_path: Path):
     store = ProjectStore(tmp_path, "rework"); store.create()
     runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
     old = normalize_image_asset({"uri":"https://x/old","provider":"ark","model":"m"})
@@ -185,7 +185,7 @@ def test_human_rework_invalidates_old_inspection_and_forces_recheck(tmp_path: Pa
             "calibration_status":"completed", "termination_satisfied":True, "termination_reason":"pass",
             "latest_checked_asset_hash":old["sha256"], "selected_policy":{"termination":"solo","release":"auto"}}
     changed = runner.run(data, RunnerOptions(human_prompt="改颜色"), only_state="human_prompt_iteration")
-    assert changed["waiting"] and changed["phase"] == "waiting_reinspection"
+    assert changed["waiting"] and changed["phase"] == "waiting_human_tune"
     assert not changed["termination_satisfied"] and changed["latest_checked_asset_hash"] is None
 
 def test_runner_rejects_illegal_transition(tmp_path: Path):

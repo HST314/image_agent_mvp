@@ -379,14 +379,24 @@ class WorkflowRunner:
         return {**result, "current_asset": result.get("asset", data.get("master_asset"))}
     
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        action = options.get("manual_action")
+        if action and action.action == "accept_current":
+            current = data.get("current_asset") or data["asset"]
+            self.store.events.append("human_tune_final_accepted", asset_hash=current["sha256"])
+            return {"asset": current, "current_asset": current, "waiting": False,
+                    "phase": "calibration_completed", "calibration_status": "human_accepted",
+                    "termination_satisfied": True, "termination_reason": "human_tune_final_accepted",
+                    "latest_checked_asset_hash": current["sha256"],
+                    "selected_policy": data.get("selected_policy") or data.get("self_check_policy") or {"release": "human"}}
         prompt = options.get("human_prompt")
-        if not prompt: return {"asset": data.get("current_asset") or data.get("asset"), "waiting": False}
+        if not prompt: return {"asset": data.get("current_asset") or data.get("asset"), "waiting": True,
+                               "phase": "waiting_human_tune", "human_tune_mode": True}
         current = data.get("current_asset") or data["asset"]
         result = self._image_call("human_prompt_rework", prompt, [str(current["uri"])])
         asset = normalize_image_asset(result)
         self.store.events.append("calibration_invalidated", reason="human_rework", previous_checked_asset_hash=data.get("latest_checked_asset_hash"), new_asset_hash=asset["sha256"])
-        return {"asset": asset, "current_asset": asset, "waiting": True, "phase": "waiting_reinspection", "calibration_status": "invalidated",
-                "termination_satisfied": False, "termination_reason": "asset_changed_after_human_rework",
+        return {"asset": asset, "current_asset": asset, "waiting": True, "phase": "waiting_human_tune", "human_tune_mode": True,
+                "calibration_status": "waiting_human_tune", "termination_satisfied": False, "termination_reason": "human_tune_in_progress",
                 "latest_checked_asset_hash": None, "inspection": None}
 
     def _present_inspection(self, number: int, result: VisualCheckResult) -> None:
