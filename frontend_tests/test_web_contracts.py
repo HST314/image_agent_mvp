@@ -46,7 +46,7 @@ def test_taskbook_approval_roundtrip_via_web(client: TestClient) -> None:
 
     approved = client.post(
         "/api/projects/web-contract/advance",
-        json={"task_approved": True, "actor": "web-user", "offline": True},
+        json={"task_approved": True, "actor": "web-user"},
     )
     assert approved.status_code == 200, approved.text
     snap = approved.json()["snapshot"]
@@ -62,7 +62,7 @@ def test_edited_markdown_at_confirmation_stage_invalidates_approval(client: Test
     markdown = view["snapshot"]["task_markdown"]
     edited = client.post(
         "/api/projects/web-contract/advance",
-        json={"edited_markdown": markdown + "\n- 补充事实：主色为品牌紫\n", "offline": True},
+        json={"edited_markdown": markdown + "\n- 补充事实：主色为品牌紫\n"},
     )
     assert edited.status_code == 200, edited.text
     snap = edited.json()["snapshot"]
@@ -80,13 +80,13 @@ def test_markdown_edit_routing_boundary_after_approval(client: TestClient) -> No
     view = _create_offline(client)
     approved = client.post(
         "/api/projects/web-contract/advance",
-        json={"task_approved": True, "actor": "web-user", "offline": True},
+        json={"task_approved": True, "actor": "web-user"},
     )
     assert approved.status_code == 200, approved.text
     rev = approved.json()["snapshot"]["task_revision"]["revision_hash"]
     edited = client.post(
         "/api/projects/web-contract/advance",
-        json={"edited_markdown": approved.json()["snapshot"]["task_markdown"] + "\n- 补充事实：x\n", "offline": True},
+        json={"edited_markdown": approved.json()["snapshot"]["task_markdown"] + "\n- 补充事实：x\n"},
     )
     assert edited.status_code == 200, edited.text
     snap = edited.json()["snapshot"]
@@ -98,7 +98,7 @@ def test_task_approval_requires_actor(client: TestClient) -> None:
     _create_offline(client)
     response = client.post(
         "/api/projects/web-contract/advance",
-        json={"task_approved": True, "offline": True},
+        json={"task_approved": True},
     )
     assert response.status_code == 200, response.text
     snap = response.json()["snapshot"]

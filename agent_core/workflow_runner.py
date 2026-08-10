@@ -398,6 +398,15 @@ class WorkflowRunner:
         if not data.get("selected_policy") or not data.get("termination_reason"):
             satisfied = False
         actor = options.get("actor") or (data.get("task_approval") or {}).get("actor")
+        if self.offline_mode and asset.get("mock") is True and "domain_state" in data:
+            if not options.get("final_approved") or not actor:
+                raise ValueError("离线演练最终验收需要操作人人工确认。")
+            if not satisfied:
+                raise ValueError("离线演练最终验收前必须完成并通过质检处置。")
+            self.store.events.append("offline_rehearsal_completed", actor=actor,
+                                     asset_sha256=asset["sha256"])
+            return {"rehearsal_asset": asset, "offline_rehearsal_completed": True,
+                    "completed": True, "phase": "offline_rehearsal_completed"}
         if "domain_state" not in data:
             # Read-only compatibility for checkpoints created before the unified
             # graph. All newly created task projects use the frozen contract.

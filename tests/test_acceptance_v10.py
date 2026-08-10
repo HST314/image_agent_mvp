@@ -64,7 +64,7 @@ def _seed(project_id: str, *, color: str = "white") -> tuple[ProjectStore, dict]
 def _advance_to_delivery(api: TestClient, project_id: str, **payload) -> dict:
     response = api.post(
         f"/api/projects/{project_id}/advance",
-        json={"offline": True, "final_approved": True, **payload},
+        json={"final_approved": True, **payload},
     )
     assert response.status_code == 200, response.text
     return response.json()["snapshot"]
@@ -101,7 +101,7 @@ def test_best_asset_human_tune_routes_to_reinspection_and_freezes_child(api: Tes
 
     tuned = api.post(
         "/api/projects/human-tune/advance",
-        json={"offline": True, "human_prompt": "仅调整主体颜色"},
+        json={"human_prompt": "仅调整主体颜色"},
     )
     assert tuned.status_code == 200, tuned.text
     child = tuned.json()["snapshot"]["asset"]
@@ -129,7 +129,6 @@ def test_annotation_api_atomically_checkpoints_child_then_reinspects_and_freezes
             "artifact_id": original["artifact_id"],
             "marks": [{"kind": "rectangle", "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5}],
             "prompt": "按圈画区域微调",
-            "offline": True,
         },
     )
     assert response.status_code == 200, response.text

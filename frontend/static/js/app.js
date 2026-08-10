@@ -34,8 +34,9 @@ async function loadProjects() {
   try {
     const [health, data] = await Promise.all([api.health(), api.listProjects()]);
     patch({ projects: data.items });
-    $('#health-text').textContent = health.model_config_available ? '服务已就绪' : '模型配置不可用';
-    $('#health-dot').style.background = health.model_config_available ? 'var(--success)' : 'var(--warning)';
+    const ready = health.status === 'ok';
+    $('#health-text').textContent = ready ? '服务已就绪' : '服务部分降级';
+    $('#health-dot').style.background = ready ? 'var(--success)' : 'var(--warning)';
   } catch (error) {
     $('#health-text').textContent = '服务未连接';
     $('#health-dot').style.background = 'var(--danger)';

@@ -109,7 +109,7 @@ function drawMarks(ctx, marks, w, h) {
   }
 }
 
-export function createAnnotator(container, { projectId, asset, history = [], offline = false, onSubmitted, onBusy }) {
+export function createAnnotator(container, { projectId, asset, history = [], onSubmitted, onBusy }) {
   const model = createMarksModel();
   let tool = 'rectangle';
   let color = '#ff0000';
@@ -260,7 +260,7 @@ export function createAnnotator(container, { projectId, asset, history = [], off
       onBusy?.(true);
       try {
         const artifactId = assetIdOf(asset);
-        await submitAnnotation(projectId, { artifact_id: artifactId, marks, prompt, offline });
+        await submitAnnotation(projectId, { artifact_id: artifactId, marks, prompt });
         toast('微调已提交，等待重新质检。');
         onSubmitted?.();
       } catch (error) {

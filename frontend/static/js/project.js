@@ -35,7 +35,8 @@ export function renderProject(view) {
 
   const actor = getActor();
 
-  if (state.offline) {
+  const projectOffline = view.runtime_policy?.offline_mode === true;
+  if (projectOffline) {
     const banner = el('div', { class: 'offline-banner', role: 'status' });
     banner.append(el('span', { 'aria-hidden': 'true' }), el('span', {}, [el('strong', { text: '离线测试模式：' }), '生成结果为模拟资产，不可用于最终交付。']));
     banner.firstChild.innerHTML = icons.info;
@@ -223,7 +224,9 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'completed') {
-    panel.append(stateBlock('empty', '视觉资产已完成最终审批', '最终资产已由生产工作流校验并冻结，见下方"结果"区。'));
+    const rehearsal = snapshot.offline_rehearsal_completed === true;
+    panel.append(stateBlock('empty', rehearsal ? '离线演练已完成最终验收' : '视觉资产已完成最终审批',
+      rehearsal ? '模拟资产仅用于流程验收，未冻结为真实交付。' : '最终资产已由生产工作流校验并冻结，见下方"结果"区。'));
     return;
   }
   // resume / empty
@@ -312,6 +315,11 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
     } catch (error) { toast(error.message, 'error'); }
   });
 
+  const acceptBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '接受当前图' });
+  acceptBtn.addEventListener('click', () => {
+    jobRunner.start({ manual_action: 'accept_current', idempotency_key: idempotencyKey('accept-current') });
+  });
+
   const abandonBtn = el('button', { type: 'button', class: 'btn btn--danger', text: '放弃且不交付' });
   abandonBtn.addEventListener('click', async () => {
     if (!window.confirm('确定放弃本工程？该决定会进入审计事件。')) return;
@@ -322,7 +330,7 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
     } catch (error) { toast(error.message, 'error'); }
   });
 
-  row.append(addBtn, tuneBtn, abandonBtn);
+  row.append(addBtn, tuneBtn, acceptBtn, abandonBtn);
   panel.append(row);
 }
 
@@ -338,7 +346,6 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
     projectId,
     asset,
     history: view.history || [],
-    offline: state.offline,
     onSubmitted: refresh,
   });
   const divider = el('hr', { style: 'border:none;border-top:1px solid var(--border);margin:18px 0' });
@@ -499,7 +506,7 @@ function makeJobRunner(box, projectId, refresh) {
     attach,
     async start(payload) {
       try {
-        const job = await api.startAdvanceJob(projectId, { offline: state.offline, ...payload });
+        const job = await api.startAdvanceJob(projectId, payload);
         patch({ job });
         attach(job);
       } catch (error) { toast(error.message, 'error'); }
@@ -507,7 +514,7 @@ function makeJobRunner(box, projectId, refresh) {
     async retry(payload) {
       // 失败重试沿用同步 retry（后端在失败点恢复；付费动作仍经生产锁与幂等键保护）。
       try {
-        const updated = await api.retryProject(projectId, { offline: state.offline, ...payload });
+        const updated = await api.retryProject(projectId, payload);
         toast('已从上一成功点恢复。');
         refresh(updated);
       } catch (error) { toast(error.message, 'error'); }

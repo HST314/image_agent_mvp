@@ -84,14 +84,12 @@ class AdvanceRequest(StrictRequest):
     final_approved: bool = False
     task_approved: bool = False
     actor: str | None = Field(default=None, min_length=1, max_length=128)
-    offline: bool = False
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 class AnnotationRequest(StrictRequest):
     artifact_id: str = Field(pattern=r"^[a-zA-Z0-9._-]{1,160}$")
     marks: list[dict[str, Any]] = Field(min_length=1, max_length=5000)
     prompt: str = Field(min_length=1, max_length=8_000)
-    offline: bool = False
 
 class QualityDispositionRequest(StrictRequest):
     action: Literal["add_rounds_with_cost_confirmation", "human_tune_best", "abandon"]
@@ -146,6 +144,19 @@ def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
     return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline)
 
 
+def _project_policy(store: ProjectStore) -> RuntimePolicy:
+    """Load the immutable project runtime policy; requests never choose its mode."""
+    policy_file = store.root / "runtime_policy.json"
+    if not policy_file.is_file():
+        raise FileNotFoundError(f"工程运行策略不存在：{store.project_id}")
+    payload = json.loads(policy_file.read_text(encoding="utf-8"))
+    return RuntimePolicy.model_validate(payload["policy"])
+
+
+def _project_runner(store: ProjectStore) -> WorkflowRunner:
+    return _runner(store, _project_policy(store).offline_mode)
+
+
 def _options(body: AdvanceRequest) -> RunnerOptions:
     action = None
     if body.manual_action:
@@ -177,8 +188,7 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
     }
 
 def _gateway_for_store(store: ProjectStore):
-    policy = RuntimePolicy.model_validate(json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"])
-    return _runner(store, policy.offline_mode).gateway
+    return _project_runner(store).gateway
 
 
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
@@ -336,7 +346,7 @@ async def advance_project(project_id: str, body: AdvanceRequest) -> dict[str, An
             snapshot = store.resume()
             if snapshot is None:
                 raise ValueError("工程还没有可恢复节点。")
-            _runner(store, body.offline).run(snapshot, _options(body))
+            _project_runner(store).run(snapshot, _options(body))
             return _project_view(store)
 
         return await asyncio.to_thread(execute)
@@ -351,7 +361,7 @@ async def create_advance_job(project_id: str, body: AdvanceRequest) -> JSONRespo
     def execute() -> dict[str, Any]:
         store = _store(project_id); snapshot = store.resume()
         if snapshot is None: raise ValueError("工程还没有可恢复节点。")
-        _runner(store, body.offline).run(snapshot, _options(body))
+        _project_runner(store).run(snapshot, _options(body))
         return {"project_id":project_id}
     try:
         def persist_job(record: dict[str, Any]) -> None:
@@ -396,7 +406,7 @@ async def annotate_and_rework(project_id: str, body: AnnotationRequest) -> dict[
                 source, source_record=store.artifacts.resolve(body.artifact_id)
                 guide_bytes=compose(source.read_bytes(), body.marks)
                 guide=store.artifacts.save_bytes(guide_bytes, metadata={"kind":"annotation_guide","parent_artifact_id":body.artifact_id,"marks":body.marks})
-                child=_runner(store, body.offline)._image_call("human_prompt_rework", body.prompt, [guide["uri"]])
+                child=_project_runner(store)._image_call("human_prompt_rework", body.prompt, [guide["uri"]])
                 updated={**snapshot, "state":"human_prompt_iteration", "asset":child, "current_asset":child,
                          "annotation_parent_asset":source_record, "annotation_guide_asset":guide,
                          "phase":"waiting_reinspection", "waiting":True, "calibration_status":"invalidated",
@@ -469,7 +479,7 @@ async def retry_project(project_id: str, body: AdvanceRequest) -> dict[str, Any]
     try:
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            runner = _runner(store, body.offline)
+            runner = _project_runner(store)
             store.retry(lambda state_name, snapshot: runner.run(snapshot, _options(body), only_state=state_name))
             return _project_view(store)
 
