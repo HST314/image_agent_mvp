@@ -19,15 +19,16 @@ class JobNotFoundError(FileNotFoundError):
 
 
 class JobRegistry:
-    """Persist job facts while deliberately not promising restart recovery."""
+    """Persist job facts and mark, but never replay, work interrupted by restart."""
 
-    def __init__(self, root: Path, workers: int = 5) -> None:
+    def __init__(self, root: Path, workers: int = 5, *,
+                 on_recover: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="image-job")
         self._lock = threading.RLock()
         self._cancel: set[str] = set()
-        self._interrupt_orphans()
+        self._interrupt_orphans(on_recover)
 
     def _path(self, job_id: str) -> Path:
         if not job_id.startswith("job_") or not job_id[4:].isalnum():
@@ -40,13 +41,16 @@ class JobRegistry:
         temp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(path)
 
-    def _interrupt_orphans(self) -> None:
+    def _interrupt_orphans(self, on_recover: Callable[[dict[str, Any]], None] | None) -> None:
         for path in self.root.glob("job_*.json"):
             try:
                 item = json.loads(path.read_text(encoding="utf-8"))
                 if item.get("status") in {"queued", "running", "cancelling"}:
                     item.update(status="interrupted", finished_at=_now(), error={"code":"PROCESS_RESTARTED","message":"服务重启，在途任务未恢复且不会自动补调用。"})
+                    self._event(item, "interrupted", error=item["error"])
                     self._write(item)
+                    if on_recover:
+                        on_recover(item)
             except (OSError, ValueError, KeyError, json.JSONDecodeError):
                 continue
 
@@ -95,7 +99,8 @@ class JobRegistry:
                 if on_event: on_event(record)
         except Exception as exc:
             with self._lock:
-                record = self.get(job_id); record.update(status="failed", finished_at=_now(), error={"code":exc.__class__.__name__,"message":str(exc)})
+                code = getattr(exc, "code", exc.__class__.__name__)
+                record = self.get(job_id); record.update(status="failed", finished_at=_now(), error={"code":code,"message":str(exc)})
                 self._event(record, "failed", error=record["error"]); self._write(record)
                 if on_event: on_event(record)
 

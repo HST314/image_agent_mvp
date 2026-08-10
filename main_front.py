@@ -48,7 +48,19 @@ app = FastAPI(
     description="生产 Image Agent 的 Web 薄适配接口",
     version="1.0.0",
 )
-JOBS = JobRegistry(PROJECTS_ROOT / ".jobs")
+def _persist_recovered_job(record: dict[str, Any]) -> None:
+    """Mirror restart interruption into the owning project's durable timeline."""
+    project_id = str(record["project_id"])
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}", project_id):
+        raise ValueError("PROJECT_ID_INVALID")
+    store = ProjectStore(PROJECTS_ROOT, project_id)
+    if not (store.root / "manifest.json").is_file():
+        raise FileNotFoundError(f"工程不存在：{project_id}")
+    store.events.append("job_status_changed", job_id=record["job_id"], operation=record.get("operation"),
+                        status=record["status"], error=record.get("error"))
+
+
+JOBS = JobRegistry(PROJECTS_ROOT / ".jobs", on_recover=_persist_recovered_job)
 
 
 class StrictRequest(BaseModel):
