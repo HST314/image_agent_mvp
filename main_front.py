@@ -27,8 +27,10 @@ from storage.project_store import ProjectStore
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 from configs.runtime_policy import RuntimePolicy
 from skills.errors import ResourceError
-from agent_core.jobs import JobRegistry
+from agent_core.jobs import JobNotFoundError, JobRegistry
 from agent_core.annotation import compose
+from storage.project_store import CorruptProjectError
+from storage.provider_assets import ArtifactCorruptError, ArtifactNotFoundError
 
 load_dotenv(".env")  # 在程序启动时自动读取当前目录下的 .env 文件
 
@@ -198,8 +200,18 @@ def _translate_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=422, detail=exc.errors(include_url=False))
     if isinstance(exc, ResourceError):
         return HTTPException(status_code=503, detail=exc.as_dict())
-    if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
-        return HTTPException(status_code=404, detail="工程或资源不存在。")
+    if isinstance(exc, ArtifactNotFoundError):
+        return HTTPException(status_code=404, detail={"code":"ARTIFACT_NOT_FOUND","message":str(exc)})
+    if isinstance(exc, ArtifactCorruptError):
+        return HTTPException(status_code=409, detail={"code":"ARTIFACT_CORRUPT","message":str(exc)})
+    if isinstance(exc, JobNotFoundError):
+        return HTTPException(status_code=404, detail={"code":"JOB_NOT_FOUND","message":str(exc)})
+    if isinstance(exc, CorruptProjectError):
+        return HTTPException(status_code=409, detail={"code":"PROJECT_CORRUPT","message":str(exc)})
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="PROJECT_NOT_FOUND: 工程不存在。")
+    if isinstance(exc, NotADirectoryError):
+        return HTTPException(status_code=409, detail={"code":"PROJECT_PATH_INVALID","message":str(exc)})
     if isinstance(exc, FileExistsError):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -327,7 +339,11 @@ async def create_advance_job(project_id: str, body: AdvanceRequest) -> JSONRespo
         _runner(store, body.offline).run(snapshot, _options(body))
         return {"project_id":project_id}
     try:
-        job, created = JOBS.submit(project_id, key, "advance", execute)
+        def persist_job(record: dict[str, Any]) -> None:
+            store = _store(project_id)
+            store.events.append("job_status_changed", job_id=record["job_id"], operation=record["operation"],
+                                status=record["status"], error=record.get("error"))
+        job, created = JOBS.submit(project_id, key, "advance", execute, on_event=persist_job)
         return JSONResponse(status_code=202 if created else 200, content=job)
     except Exception as exc:
         raise _translate_error(exc) from exc

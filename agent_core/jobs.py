@@ -14,6 +14,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class JobNotFoundError(FileNotFoundError):
+    """The requested persisted job record does not exist."""
+
+
 class JobRegistry:
     """Persist job facts while deliberately not promising restart recovery."""
 
@@ -47,7 +51,7 @@ class JobRegistry:
                 continue
 
     def submit(self, project_id: str, idempotency_key: str, operation: str,
-               execute: Callable[[], Any]) -> tuple[dict[str, Any], bool]:
+               execute: Callable[[], Any], *, on_event: Callable[[dict[str, Any]], None] | None = None) -> tuple[dict[str, Any], bool]:
         with self._lock:
             for path in self.root.glob("job_*.json"):
                 item = json.loads(path.read_text(encoding="utf-8"))
@@ -58,16 +62,18 @@ class JobRegistry:
                       "idempotency_key":idempotency_key, "status":"queued", "created_at":_now(),
                       "events":[{"seq":1,"type":"queued","timestamp":_now()}]}
             self._write(record)
-            self._pool.submit(self._run, job_id, execute)
+            if on_event: on_event(record)
+            self._pool.submit(self._run, job_id, execute, on_event)
             return record, True
 
     def _event(self, record: dict[str, Any], kind: str, **payload: Any) -> None:
         record["events"].append({"seq":len(record["events"])+1,"type":kind,"timestamp":_now(),**payload})
 
-    def _run(self, job_id: str, execute: Callable[[], Any]) -> None:
+    def _run(self, job_id: str, execute: Callable[[], Any], on_event: Callable[[dict[str, Any]], None] | None = None) -> None:
         with self._lock:
             record = self.get(job_id); record.update(status="running", started_at=_now())
             self._event(record, "running"); self._write(record)
+            if on_event: on_event(record)
         try:
             if job_id in self._cancel:
                 raise InterruptedError("任务在开始前已取消。")
@@ -81,17 +87,23 @@ class JobRegistry:
                     record.update(status="succeeded", finished_at=_now(), result=result)
                     self._event(record, "succeeded")
                 self._write(record)
+                if on_event: on_event(record)
         except InterruptedError:
             with self._lock:
                 record = self.get(job_id); record.update(status="cancelled", finished_at=_now())
                 self._event(record, "cancelled"); self._write(record)
+                if on_event: on_event(record)
         except Exception as exc:
             with self._lock:
                 record = self.get(job_id); record.update(status="failed", finished_at=_now(), error={"code":exc.__class__.__name__,"message":str(exc)})
                 self._event(record, "failed", error=record["error"]); self._write(record)
+                if on_event: on_event(record)
 
     def get(self, job_id: str) -> dict[str, Any]:
-        return json.loads(self._path(job_id).read_text(encoding="utf-8"))
+        try:
+            return json.loads(self._path(job_id).read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise JobNotFoundError(f"任务不存在：{job_id}") from exc
 
     def events(self, job_id: str, after: int = 0) -> list[dict[str, Any]]:
         return [event for event in self.get(job_id)["events"] if event["seq"] > after]

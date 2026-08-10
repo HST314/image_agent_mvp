@@ -22,6 +22,7 @@ from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore, content_hash
 from storage.assets import normalize_image_asset
+from storage.provider_assets import ProviderImageAdapter
 from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
 from model_router.executor import ModelExecutor
@@ -75,6 +76,7 @@ class WorkflowRunner:
         self.output = output or (lambda _: None)
         self.presenter = Presenter()
         self.workflow = RecoverableWorkflow(store)
+        self.provider_assets = ProviderImageAdapter(store)
         self.handlers: dict[str, Handler] = {
             "intake_clarify": self._clarify, "confirmation_build": self._confirmation,
             "initial_candidate_generation": self._candidates, "master_candidate_selection": self._selection,
@@ -298,7 +300,12 @@ class WorkflowRunner:
     def _selection(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         selected = options.get("selected_id")
         if not selected: return {"waiting": True, "phase": "waiting_master_selection"}
-        return {"master_asset": self.workflow.select_master(data["candidates"], selected), "waiting": False, "phase": "master_selected"}
+        master = self.workflow.select_master(data["candidates"], selected)
+        selection = {"candidate_id": selected, "artifact_id": master.get("artifact_id"),
+                     "actor": options.get("actor") or "manual-user"}
+        self.store.events.append("master_selected", selection=selection, asset=master)
+        return {"master_asset": master, "selected_master": selection,
+                "waiting": False, "phase": "master_selected"}
 
     @staticmethod
     def _fallback_style_cards():
@@ -388,14 +395,15 @@ class WorkflowRunner:
                 f"设计任务书要求：\n{prompt}"
             )
             
+            provider_image = self.provider_assets.resolve(image_uri)
             raw = self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
-                lambda route: self._vlm(route).inspect(image_uri, inspection_prompt), 
+                lambda route: self._vlm(route).inspect(provider_image, inspection_prompt),
                 messages=[{"role":"user","content":inspection_prompt},{"role":"image","content":image_uri}],
                 variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
             def repair(response: str, errors: str):
                 repair_prompt = f"只修复为指定 JSON Schema，不改变语义。校验错误：{errors}\n原响应：{response}"
                 return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
-                    lambda route: self._vlm(route).inspect(image_uri, repair_prompt), messages=[{"role":"user","content":repair_prompt}],
+                    lambda route: self._vlm(route).inspect(provider_image, repair_prompt), messages=[{"role":"user","content":repair_prompt}],
                     variables={"repair":True}, template_id="visual-check-repair", template_version="1", input_refs=[image_uri], needs_images=1)
             try:
                 return parse_with_one_repair(raw, repair).model_dump(mode="json")
@@ -426,12 +434,13 @@ class WorkflowRunner:
             saved = persist_image_response(self.store.artifacts, result,
                                            metadata={"state": state, "candidate_index": index, "mock": True})
             return normalize_image_asset({**saved, "mock": True})
+        provider_references = self.provider_assets.resolve_all(references)
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
             lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or "https://ark.cn-beijing.volces.com/api/v3",
                 model=route.binding.model, timeout=self.policy.model_timeout_seconds, max_retries=0,
                 idempotency_key=str(route.binding.parameters.get("_idempotency_key", ""))).render(build_render_payload(route.binding.model, prompt,
                 self.policy.default_output_size, {"state":state}, response_format=self.policy.response_format,
-                watermark=self.policy.watermark, reference_images=references)),
+                watermark=self.policy.watermark, reference_images=provider_references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
         from storage.image_ingest import persist_image_response
