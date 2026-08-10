@@ -30,7 +30,7 @@ where = ["."]
 include = ["agent_core*", "interaction*", "storage*", "prompt_engine*", "skills*", "model_router*", "render_clients*", "calibrator*", "review*", "configs*", "schemas*", "examples*", "frontend*"]
 
 [tool.setuptools]
-py-modules = ["workspace_cli", "main", "main_front"]
+py-modules = ["workspace_cli", "main", "main_front", "diagnostics"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.json", "*.md", "*.html"]

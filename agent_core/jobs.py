@@ -35,6 +35,10 @@ class JobRegistry:
             raise ValueError("JOB_ID_INVALID")
         return self.root / f"{job_id}.json"
 
+    def is_ready(self) -> bool:
+        """Return whether the in-process executor can accept work."""
+        return not self._pool._shutdown
+
     def _write(self, record: dict[str, Any]) -> None:
         path = self._path(record["job_id"])
         temp = path.with_suffix(".tmp")

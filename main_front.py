@@ -14,7 +14,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -31,6 +31,7 @@ from agent_core.jobs import JobNotFoundError, JobRegistry
 from agent_core.annotation import compose
 from storage.project_store import CorruptProjectError
 from storage.provider_assets import ArtifactCorruptError, ArtifactNotFoundError
+from diagnostics import run_diagnostics
 
 load_dotenv(".env")  # 在程序启动时自动读取当前目录下的 .env 文件
 
@@ -267,12 +268,14 @@ app.mount("/static", StaticFiles(directory=FRONTEND_ROOT / "static"), name="stat
 
 
 @app.get("/api/health")
-async def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "model_config_available": MODEL_CONFIG.is_file(),
-        "projects_root": str(PROJECTS_ROOT),
-    }
+async def health(response: Response) -> dict[str, Any]:
+    result = await asyncio.to_thread(
+        run_diagnostics, projects_root=PROJECTS_ROOT, model_config=MODEL_CONFIG,
+        app_root=APP_ROOT, job_registry=JOBS,
+    )
+    if result["status"] != "ok":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return result
 
 
 @app.get("/api/projects")

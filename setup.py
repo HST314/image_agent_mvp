@@ -23,7 +23,7 @@ setup(
         "model_router*", "render_clients*", "calibrator*", "review*", "configs*",
         "schemas*", "examples*", "frontend*",
     ]),
-    py_modules=["workspace_cli", "main", "main_front"],
+    py_modules=["workspace_cli", "main", "main_front", "diagnostics"],
     include_package_data=True,
     package_data={
         "": ["*.yaml", "*.json", "*.md", "*.html"],
