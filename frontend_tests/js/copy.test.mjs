@@ -105,8 +105,16 @@ test('mechanism 维度前缀中文化，中文内容原样保留', () => {
   assert.equal(mechanismLabel('composition: 非对称网格'), '构图：非对称网格');
   assert.equal(mechanismLabel('graphic_language: 扁平插画'), '图形语言：扁平插画');
   assert.equal(mechanismLabel('lighting: 顶光'), '光影：顶光');
-  assert.equal(mechanismLabel('非对称网格'), '非对称网格'); // 无前缀内容原样
+  assert.equal(mechanismLabel('非对称网格'), '非对称网格'); // 无前缀中文内容原样
   assert.equal(mechanismLabel(''), '');
+});
+
+test('mechanism 负向：未知英文维度 / 全英文机制不原样上屏', () => {
+  assert.equal(mechanismLabel('camera: close-up'), '其他机制'); // 未知维度 + 全英文值
+  assert.equal(mechanismLabel('lens_effect: bokeh blur'), '其他机制');
+  assert.equal(mechanismLabel('close-up portrait'), '其他机制'); // 无前缀全英文
+  assert.equal(mechanismLabel('camera: 近景特写'), '近景特写'); // 未知维度 + 中文值，保留中文自由文本
+  assert.equal(mechanismLabel('视角：俯视'), '视角：俯视'); // 中文维度前缀不匹配英文正则，整体原样
 });
 
 test('candidate-N 映射为方向 N，其他标识符保留', () => {
@@ -186,12 +194,19 @@ test('formatError：对象 detail 的英文 code 不直接上屏', () => {
 
 /* ---- 任务书预览字段标签 ---- */
 
-test('任务书 markdown 预览：已知字段标签中文化，其余内容不动', () => {
-  const md = '# 创作任务书\n\n## 根据材料提取\n\n- audience：内部审核人员\n- tone：清晰、精致\n- 主体：产品\n- future_field：x\n';
+test('任务书 markdown 预览：已知字段标签中文化，中文内容不动', () => {
+  const md = '# 创作任务书\n\n## 根据材料提取\n\n- audience：内部审核人员\n- tone：清晰、精致\n- 主体：产品\n';
   const out = localizeFactLabelsInMarkdown(md);
   assert.ok(out.includes('- 目标受众：内部审核人员'));
   assert.ok(out.includes('- 语气风格：清晰、精致'));
   assert.ok(out.includes('- 主体：产品')); // 中文标签不动
-  assert.ok(out.includes('- future_field：x')); // 未收录标签不伪造语义（T4 整体重构覆盖）
   assert.ok(out.includes('## 根据材料提取'));
+});
+
+test('任务书 markdown 预览负向：未收录英文字段标签兜底中文，不原样上屏', () => {
+  const md = '- future_field：x\n- market_segment：一二线城市\n';
+  const out = localizeFactLabelsInMarkdown(md);
+  assert.ok(out.includes('- 其他信息：x')); // 未收录英文标签 → 中文兜底
+  assert.ok(out.includes('- 其他信息：一二线城市')); // 英文标签即使值是中文也兜底
+  assert.ok(!/[A-Za-z_]+：/.test(out)); // 预览不出现英文字段名（§11）
 });

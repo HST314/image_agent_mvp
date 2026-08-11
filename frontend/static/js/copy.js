@@ -197,13 +197,21 @@ const DIMENSION_LABELS = {
   graphic_language: '图形语言',
 };
 
+/**
+ * 风格机制 → 展示文案。"dimension: value" 的已知英文维度映射为中文前缀；
+ * 未知英文维度时，值含中文则保留该中文自由文本，全英文机制不原样上屏，
+ * 兜底为「其他机制」（§11）；无维度前缀的中文自由文本原样保留。
+ */
 export function mechanismLabel(mechanism) {
   const text = String(mechanism || '');
+  if (!text) return text;
   const match = /^([A-Za-z][A-Za-z0-9_]*)[:：]\s*(.+)$/.exec(text);
-  if (!match) return text;
-  const [, dimension, value] = match;
-  if (DIMENSION_LABELS[dimension]) return `${DIMENSION_LABELS[dimension]}：${value}`;
-  return hasCJK(value) ? value : text;
+  if (match) {
+    const [, dimension, value] = match;
+    if (DIMENSION_LABELS[dimension]) return `${DIMENSION_LABELS[dimension]}：${value}`;
+    return hasCJK(value) ? value : '其他机制';
+  }
+  return hasCJK(text) ? text : '其他机制';
 }
 
 /* ---------- 候选 / 任务状态标识 ---------- */
@@ -321,13 +329,15 @@ export function validationText(raw) {
 
 /**
  * 任务书 Markdown 预览的中文化：后端 confirmation_builder 以任务卡字段名
- * 作为事实标签（如 "- audience：内部审核"），仅替换已收录的字段标签，
- * 不改动其余内容；编辑区仍持有原始 Markdown，回写后端的数据不受影响。
- * （任务书阶段的整体重构属 T4，本函数只保证预览不出现已知英文字段名。）
+ * 作为事实标签（如 "- audience：内部审核"），英文字段标签一律中文化——
+ * 已收录的映射为中文名，未收录的经 fieldLabel 兜底为「其他信息」，不原样
+ * 上屏（§11）；中文自由文本标签不匹配本正则，原样保留。编辑区仍持有原始
+ * Markdown，回写后端的数据不受影响。
+ * （任务书阶段的整体重构属 T4，本函数只保证预览不出现英文字段名。）
  */
 export function localizeFactLabelsInMarkdown(markdown) {
   return String(markdown ?? '').replace(
     /^(-\s*)([A-Za-z][A-Za-z0-9_]*)(：)/gm,
-    (full, prefix, key, colon) => (FIELD_LABELS[key] ? `${prefix}${FIELD_LABELS[key]}${colon}` : full),
+    (full, prefix, key, colon) => `${prefix}${fieldLabel(key)}${colon}`,
   );
 }
