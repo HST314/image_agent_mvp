@@ -10,16 +10,32 @@
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
-  <div class="app">
-    <aside class="sidebar" id="sidebar" aria-label="工程导航">
-      <div class="brand"><div class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M5 19 19 5M7 5h12v12M5 9v10h10"/></svg></div><div><strong>Image Agent</strong><span>Studio workspace</span></div></div>
-      <p class="sidebar__title">最近工程</p><nav id="project-list" class="project-list" aria-label="工程列表"><div class="sidebar__empty">正在读取工程…</div></nav>
-      <div class="sidebar__footer"><div class="system-state"><span class="dot" id="health-dot"></span><span id="health-text">正在连接服务</span></div></div>
-    </aside>
-    <main class="main" id="main" tabindex="-1">
-      <header class="topbar"><button class="icon-btn mobile-menu" id="menu-button" aria-label="打开工程导航" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><div class="topbar__context"><p class="eyebrow" id="context-label">创作工作台</p><h1 id="page-title">开始一项新的视觉创作</h1></div><div class="topbar__actions"><button class="btn btn--secondary" id="refresh-button"><svg viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 11m16 2-2 4.5A7 7 0 0 1 5.5 15"/></svg><span>刷新</span></button><button class="btn btn--primary" id="new-button"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>新建工程</span></button></div></header>
-      <div class="content" id="content" aria-live="polite"></div>
-    </main>
+  <div class="app" id="app">
+    <!-- T1 布局总框架：顶部导航栏（工作区/状态/设置 + 工程名·分支标识），无汉堡按钮 -->
+    <header class="topnav">
+      <div class="topnav__brand"><div class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M5 19 19 5M7 5h12v12M5 9v10h10"/></svg></div><strong>Image Agent</strong></div>
+      <nav class="topnav__tabs" aria-label="主导航">
+        <button type="button" class="topnav__tab" data-view="workspace" aria-current="page">工作区</button>
+        <button type="button" class="topnav__tab" data-view="status">状态</button>
+        <button type="button" class="topnav__tab" data-view="settings">设置</button>
+      </nav>
+      <div class="topnav__context">
+        <span class="topnav__project" id="topnav-project" hidden><strong id="topnav-project-name"></strong><span class="badge badge--info" id="topnav-branch">分支 main</span></span>
+        <button class="btn btn--secondary" id="refresh-button"><svg viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 11m16 2-2 4.5A7 7 0 0 1 5.5 15"/></svg><span>刷新</span></button>
+        <button class="btn btn--primary" id="new-button"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>新建工程</span></button>
+      </div>
+    </header>
+    <div class="app-body">
+      <!-- 左侧项目目录栏：默认收成窄条只留图标，悬停或点击展开（Q1-A） -->
+      <aside class="sidebar" id="sidebar" aria-label="工程导航">
+        <button type="button" class="sidebar__toggle" id="sidebar-toggle" aria-expanded="false" aria-label="展开或收起工程目录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
+        <p class="sidebar__title">最近工程</p><nav id="project-list" class="project-list" aria-label="工程列表"><div class="sidebar__empty">正在读取工程…</div></nav>
+        <div class="sidebar__footer"><div class="system-state"><span class="dot" id="health-dot"></span><span id="health-text">正在连接服务</span></div></div>
+      </aside>
+      <main class="main" id="main" tabindex="-1">
+        <div class="content" id="content" aria-live="polite"></div>
+      </main>
+    </div>
   </div>
   <div class="toast-region" id="toasts" aria-live="polite" aria-atomic="true"></div>
 

@@ -13,6 +13,7 @@ import { renderGalleryStage } from './gallery.js';
 import { createAnnotator } from './annotate.js';
 import { renderTimeline, renderJobProgress } from './history.js';
 import { renderSettings } from './settings.js';
+import { markActiveTab, setTopContext } from './topnav.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -30,7 +31,9 @@ export function stopJobTracking() { viewOperations.leave(); }
 
 export function renderProject(view) {
   viewOperations.begin();
-  patch({ current: view });
+  /* 渲染工程即回到工作区视图，并同步顶栏「工程名 · 分支」标识（T1）。 */
+  patch({ current: view, view: 'workspace' });
+  markActiveTab('workspace');
   const content = $('#content');
   content.textContent = '';
   const snapshot = view.snapshot || {};
@@ -38,8 +41,7 @@ export function renderProject(view) {
   const projectId = view.project_id;
   const derived = deriveView(view);
 
-  $('#page-title').textContent = projectId;
-  $('#context-label').textContent = snapshot.completed ? '已完成工程' : stateLabel(snapshot.state);
+  setTopContext({ projectId, branch: manifest.current_branch });
 
   const actor = getActor();
 

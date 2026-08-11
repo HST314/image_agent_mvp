@@ -1,12 +1,13 @@
-/* 应用入口：导航、工程列表、新建工程对话框与全局接线。 */
+/* 应用入口：顶部导航视图切换、可折叠工程目录、新建工程对话框与全局接线（T1）。 */
 
-import { $, $$, el, toast, escapeHtml } from './dom.js';
+import { $, $$, el, toast, escapeHtml, stateBlock } from './dom.js';
 import { state, patch } from './store.js';
 import * as api from './api.js';
 import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
 import { renderProject, stopJobTracking } from './project.js';
 import { createNavigator } from './jobrunner.js';
+import { VIEWS, markActiveTab, setTopContext } from './topnav.js';
 
 const SAMPLE_TASK = {
   task_id: 'task_new',
@@ -57,17 +58,53 @@ function renderNav() {
     const item = el('button', { class: 'project-item', type: 'button', 'aria-current': String(state.current?.project_id === p.project_id) });
     const retryable = p.failed_step?.error?.retryable === true;
     const status = p.failed_step ? (retryable ? '处理失败 · 可重试' : '处理失败 · 请修正配置') : p.completed ? '已完成' : STATE_LABELS[p.state] || '等待开始';
-    item.append(el('strong', { text: p.project_id }), el('span', { text: status }));
+    const avatar = el('span', { class: 'project-item__avatar', 'aria-hidden': 'true', text: (p.project_id || '?').slice(0, 1).toUpperCase() });
+    const text = el('span', { class: 'project-item__text' }, [el('strong', { text: p.project_id }), el('span', { text: status })]);
+    item.append(avatar, text);
     item.addEventListener('click', () => openProject(p.project_id));
     nav.append(item);
   }
 }
 
+/* ---- 顶部导航视图切换（T1：工作区默认；状态/设置页由 T2/T3 填充） ---- */
+
+const PLACEHOLDERS = {
+  status: ['状态页（建设中）', 'T2 任务将在此集中呈现：Agent 运行状态、工程信息、最近活动、原始任务，以及实时滚动刷新、当前动作高亮、可暂停的事件日志。'],
+  settings: ['设置页（建设中）', 'T3 任务将把运行策略迁移到此页：全部字段中文化表单，分「常用 / 高级」两组；保存即生效并自动创建新分支。'],
+};
+
+function renderPlaceholder(view) {
+  const content = $('#content');
+  content.textContent = '';
+  const [title, detail] = PLACEHOLDERS[view];
+  content.append(stateBlock('empty', title, detail));
+}
+
+function setView(view) {
+  if (!VIEWS.includes(view) || view === state.view) return;
+  if (view === 'workspace') {
+    if (state.current) {
+      patch({ view });
+      markActiveTab(view);
+      openProject(state.current.project_id);
+    } else {
+      goHome();
+    }
+    return;
+  }
+  /* 离开工作区：中止进行中的操作与跟踪循环（后台 job 仍继续，
+   * 回到工作区重新打开工程时会按既有逻辑恢复挂载）。 */
+  stopJobTracking();
+  patch({ view });
+  markActiveTab(view);
+  renderPlaceholder(view);
+}
+
 function goHome() {
   stopJobTracking();
-  patch({ current: null });
-  $('#page-title').textContent = '开始一项新的视觉创作';
-  $('#context-label').textContent = '创作工作台';
+  patch({ current: null, view: 'workspace' });
+  markActiveTab('workspace');
+  setTopContext({});
   renderHome($('#content'), { onNew: showCreate, onOpen: openProject });
   renderNav();
 }
@@ -78,7 +115,7 @@ function goHome() {
 const navigation = createNavigator({
   getProject: (id, opts) => api.getProject(id, opts),
   renderProject,
-  afterOpen: () => { renderNav(); closeSidebar(); },
+  afterOpen: () => { renderNav(); collapseSidebar(); },
   notify: toast,
 });
 export const openProject = navigation.openProject;
@@ -132,24 +169,35 @@ async function createProject(event) {
 
 /* ---- 全局接线 ---- */
 
-function closeSidebar() {
-  $('#sidebar').classList.remove('is-open');
-  $('#menu-button').setAttribute('aria-expanded', 'false');
+/* 左侧目录栏折叠（Q1-A）：默认窄条只留图标；悬停临时展开，点击图钉按钮固定展开。 */
+let sidebarPinned = false;
+
+function applySidebar(hover) {
+  const expanded = sidebarPinned || hover;
+  $('#app').classList.toggle('sidebar-expanded', expanded);
+  $('#sidebar-toggle').setAttribute('aria-expanded', String(expanded));
+}
+
+function collapseSidebar() {
+  sidebarPinned = false;
+  applySidebar(false);
 }
 
 function bindChrome() {
   $('#new-button').addEventListener('click', showCreate);
   $('#refresh-button').addEventListener('click', () => {
+    if (state.view !== 'workspace') { loadProjects(); return; }
     if (state.current) openProject(state.current.project_id);
     else loadProjects().then(goHome);
   });
   $('#project-form').addEventListener('submit', createProject);
   $$('#project-dialog [data-close]').forEach((b) => b.addEventListener('click', () => $('#project-dialog').close()));
   $('#project-dialog').addEventListener('cancel', (event) => { event.preventDefault(); $('#project-dialog').close(); });
-  $('#menu-button').addEventListener('click', () => {
-    const open = $('#sidebar').classList.toggle('is-open');
-    $('#menu-button').setAttribute('aria-expanded', String(open));
-  });
+  $$('.topnav__tab').forEach((tab) => tab.addEventListener('click', () => setView(tab.dataset.view)));
+  const sidebar = $('#sidebar');
+  sidebar.addEventListener('mouseenter', () => applySidebar(true));
+  sidebar.addEventListener('mouseleave', () => applySidebar(false));
+  $('#sidebar-toggle').addEventListener('click', () => { sidebarPinned = !sidebarPinned; applySidebar(false); });
 }
 
 boot();
