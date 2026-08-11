@@ -6,7 +6,7 @@ import * as api from './api.js';
 import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
 import { renderProject, stopJobTracking } from './project.js';
-import { createNavigator } from './jobrunner.js';
+import { createNavigator, viewOperations } from './jobrunner.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { createViewSwitcher } from './viewswitch.js';
 
@@ -147,13 +147,26 @@ async function createProject(event) {
   safeSet('studio-offline', String(state.offline));
   const button = $('#create-button');
   button.disabled = true;
+  /* T10（契约 §7/Q10-A）：defer_run 创建仅持久化工程与任务卡、立即返回；
+   * 点击后立即关弹窗跳工作台，首个推进由 renderProject 经 jobs 异步启动，
+   * 状态区实时显示真实后端状态（job 事件 + timeline），界面不再长时间停留。
+   * 创建 POST 绑定视图操作世代：等待期间用户经侧栏打开其他工程时，本次迟到
+   * 返回被丢弃，不覆盖用户正在浏览的视图（H1 语义）；工程已在侧栏可手动启动。 */
+  const op = viewOperations.begin();
   try {
-    const view = await api.createProject({ project_id: id, task_card: task, offline: state.offline });
+    const view = await api.createProject(
+      { project_id: id, task_card: task, offline: state.offline, defer_run: true },
+      { signal: op.controller.signal },
+    );
     $('#project-dialog').close();
     await loadProjects();
-    renderProject(view);
-    toast('工程已创建并保存首个检查点。');
+    if (!viewOperations.isCurrent(op)) return;
+    renderProject(view, { autostartBootstrap: true });
+    renderNav();
+    collapseSidebar();
+    toast('工程已创建，正在启动创作流程。');
   } catch (error) {
+    if (!viewOperations.isCurrent(op)) return; // 已导航离开：静默，不打扰新视图
     $('#task-error').textContent = error.message;
     toast(error.message, 'error');
   } finally {

@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent_core.models import ImageTaskCard
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
-from storage.project_store import ProjectStore
+from storage.project_store import ProjectStore, atomic_json
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 from configs.runtime_policy import RuntimePolicy
@@ -43,6 +43,8 @@ MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+# T10：defer_run 创建时持久化的入站任务卡文件名；jobs 引导路径据此启动首个推进。
+INTAKE_TASK_FILE = "intake_task.json"
 
 app = FastAPI(
     title="Image Agent Studio",
@@ -76,6 +78,9 @@ class CreateProjectRequest(StrictRequest):
     project_id: str = Field(min_length=2, max_length=64)
     task_card: dict[str, Any]
     offline: bool = False
+    # T10（契约 §7）：True 时仅持久化工程与入站任务卡并立即返回，首个工作流
+    # 推进交由 POST /api/projects/{id}/jobs 以异步 job 执行，前端不再长时间等待。
+    defer_run: bool = False
 
 
 class AdvanceRequest(StrictRequest):
@@ -350,6 +355,11 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
             store = _store(project_id)
             policy = RuntimePolicy.from_file(APP_ROOT / "configs/runtime.yaml").model_copy(update={"offline_mode": body.offline})
             store.create(policy.snapshot())
+            if body.defer_run:
+                # T10（契约 §7）：仅持久化工程与入站任务卡，立即返回视图（不做任何
+                # 模型调用）；首个工作流推进由 POST /api/projects/{id}/jobs 异步执行。
+                atomic_json(store.root / INTAKE_TASK_FILE, task.model_dump(mode="json"))
+                return _project_view(store)
             _runner(store, body.offline).run({"task_card": task.model_dump(mode="json")}, RunnerOptions())
             return _project_view(store)
 
@@ -388,16 +398,27 @@ async def create_advance_job(project_id: str, body: AdvanceRequest) -> JSONRespo
     key = body.idempotency_key or hashlib.sha256(body.model_dump_json().encode()).hexdigest()
     def execute() -> dict[str, Any]:
         store = _existing_store(project_id); snapshot = store.resume()
-        if snapshot is None: raise ValueError("工程还没有可恢复节点。")
+        if snapshot is None:
+            # T10 引导路径（契约 §7）：工程已创建但尚无检查点（defer_run 创建或首个
+            # 推进失败）——从持久化的入站任务卡启动首个工作流推进；无任务卡则维持
+            # 原拒绝语义。成功后 checkpoint 自动清除 failed_step，支持失败后重启。
+            intake = store.root / INTAKE_TASK_FILE
+            if not intake.is_file():
+                raise ValueError("工程还没有可恢复节点。")
+            task = json.loads(intake.read_text(encoding="utf-8"))
+            _project_runner(store).run({"task_card": task}, _options(body))
+            return {"project_id":project_id}
         _project_runner(store).run(snapshot, _options(body))
         return {"project_id":project_id}
     try:
-        _existing_store(project_id)
+        store = _existing_store(project_id)
+        bootstrapping = store.resume() is None and (store.root / INTAKE_TASK_FILE).is_file()
         def persist_job(record: dict[str, Any]) -> None:
             store = _existing_store(project_id)
             store.events.append("job_status_changed", job_id=record["job_id"], operation=record["operation"],
                                 status=record["status"], error=record.get("error"))
-        job, created = JOBS.submit(project_id, key, _job_operation(body), execute, on_event=persist_job)
+        operation = "初始化工程" if bootstrapping else _job_operation(body)
+        job, created = JOBS.submit(project_id, key, operation, execute, on_event=persist_job)
         return JSONResponse(status_code=202 if created else 200, content=job)
     except Exception as exc:
         raise _translate_error(exc) from exc

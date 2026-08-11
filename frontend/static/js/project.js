@@ -7,6 +7,7 @@ import * as api from './api.js';
 import { viewOperations, createJobRunner, isTerminalJobStatus } from './jobrunner.js';
 import { renderMarkdownInto } from './markdown.js';
 import { deriveView, stepIndex, WORKFLOW_STATES, stateLabel } from './states.js';
+import { createTimelineFollower } from './stepstatus.js';
 import { renderClarify } from './clarify.js';
 import { renderTaskbook } from './taskbook.js';
 import { renderGalleryStage } from './gallery.js';
@@ -30,7 +31,7 @@ const MANUAL_ACTIONS = [
 /** 离开工程视图（回首页等）时调用：中止仍在进行中的操作与 job 跟踪循环。 */
 export function stopJobTracking() { viewOperations.leave(); }
 
-export function renderProject(view) {
+export function renderProject(view, { autostartBootstrap = false } = {}) {
   viewOperations.begin();
   /* 渲染工程即回到工作区视图，并同步顶栏「工程名 · 分支」标识（T1）。 */
   patch({ current: view, view: 'workspace' });
@@ -135,6 +136,11 @@ export function renderProject(view) {
   if (activeJob) {
     patch({ job: activeJob });
     jobRunner.attach(activeJob);
+  } else if (autostartBootstrap && derived.stage === 'empty' && !manifest.failed_step) {
+    /* T10（契约 §7/Q10-A）：创建后立即跳工作台，首个推进经 jobs 异步启动；
+     * 幂等键走 M1 机制（intent=bootstrap，指纹=空检查点+空负载），重复点击
+     * 或刷新重进不会重复执行（后端 JOBS.submit 按工程+键去重）。 */
+    jobRunner.start({}, { intent: 'bootstrap', operation: '初始化工程' });
   }
 }
 
@@ -225,7 +231,13 @@ function renderStage(panel, view, derived, ctx) {
   if (stage === 'failed') {
     const failure = derived.failure || {};
     let btn;
-    if (derived.actions.includes('retry')) {
+    if (!view.manifest?.current_checkpoint) {
+      /* T10：首个推进失败且尚无成功检查点时，同步 retry 契约不可用（后端要求
+       * 已有检查点）；改为重新引导——jobs 引导路径从持久化任务卡重启首个推进，
+       * 成功后 checkpoint 自动清除失败标记。 */
+      btn = el('button', { type: 'button', class: 'btn btn--primary', text: '重新启动创作流程' });
+      btn.addEventListener('click', () => jobRunner.start({}, { intent: 'bootstrap', operation: '初始化工程' }));
+    } else if (derived.actions.includes('retry')) {
       btn = el('button', { type: 'button', class: 'btn btn--primary', text: '从上一成功点重试' });
       btn.addEventListener('click', () => jobRunner.retry({}));
     }
@@ -242,7 +254,13 @@ function renderStage(panel, view, derived, ctx) {
       rehearsal ? '模拟资产仅用于流程验收，未冻结为真实交付。' : '最终资产已由生产工作流校验并冻结，见下方"结果"区。'));
     return;
   }
-  // resume / empty
+  // empty（T10：defer_run 创建后未启动/启动失败）与 resume（有检查点可继续）
+  if (stage === 'empty') {
+    const btn = el('button', { type: 'button', class: 'btn btn--primary', text: '启动创作流程' });
+    btn.addEventListener('click', () => jobRunner.start({}, { intent: 'bootstrap', operation: '初始化工程' }));
+    panel.append(stateBlock('empty', '工程已创建', '启动后系统开始理解任务书并生成澄清问题，进度在上方状态区实时显示。', btn));
+    return;
+  }
   const btn = el('button', { type: 'button', class: 'btn btn--primary', text: '继续工作流' });
   btn.addEventListener('click', () => jobRunner.start({}));
   panel.append(stateBlock('empty', stateLabel(snapshot.state) || '工程已保存', '从当前检查点继续推进。若外部模型或密钥不可用，系统会保存真实错误供恢复。', btn));
@@ -526,6 +544,19 @@ function makeJobRunner(box, projectId, refresh, actionRoot) {
     track: api.trackJob,
     cancelJob: api.cancelJob,
     onJobRecord: (record) => patch({ job: record }),
+    /* T10（契约 §7）：job 运行期间跟随工程 timeline，把真实步骤文案推到进度行。
+     * 游标从视图已载历史尾部起（向前回退 30 条兜底在途 step_started），只读新增
+     * 事件；signal 随操作世代中止，job 终态由 jobrunner 调 stop。 */
+    startLiveStatus: (job, { signal, onText }) => {
+      const historyLen = Array.isArray(state.current?.history) ? state.current.history.length : 0;
+      const follower = createTimelineFollower({
+        fetchPage: (after, { signal: pageSignal } = {}) => api.getTimeline(projectId, { after, signal: pageSignal }),
+        signal,
+        onText,
+        initialAfter: Math.max(0, historyLen - 30),
+      });
+      return follower.stop;
+    },
   });
   return {
     attach: runner.attach,

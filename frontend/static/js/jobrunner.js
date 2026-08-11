@@ -112,18 +112,23 @@ export function jobOperation(payload) {
  * - notify(message, kind?), refresh(op)（世代守卫后的工程刷新）, getProjectId()
  * - postJob(body, {signal}), track(jobId, {signal,onEvent,onDone}), cancelJob(jobId)
  * - onJobRecord(record), getCheckpoint(), schedule(fn, ms)（默认 setTimeout）, refreshDelayMs
+ * - startLiveStatus?(job, {signal, onText}) → stop()：T10 可选，job 运行期间把
+ *   后端 timeline 的真实步骤文案推到进度行；终态/新操作/切页时停止。
  */
 export function createJobRunner(deps, registry = viewOperations) {
   const {
     projectId, renderProgress, clearProgress, setBusy, notify = () => {}, refresh,
     postJob, track, cancelJob, onJobRecord, getProjectId, getCheckpoint,
-    schedule = setTimeout, refreshDelayMs = 300,
+    schedule = setTimeout, refreshDelayMs = 300, startLiveStatus,
   } = deps;
   let progress = null;
   let busy = false;
+  let liveStop = null;
   const applyBusy = (flag) => { busy = flag; setBusy?.(flag); };
+  const stopLive = () => { liveStop?.(); liveStop = null; };
 
   const attach = (job, op = registry.begin(), intent = null) => {
+    stopLive();
     applyBusy(!isTerminalJobStatus(job.status));
     clearProgress?.();
     progress = renderProgress(job, {
@@ -131,11 +136,19 @@ export function createJobRunner(deps, registry = viewOperations) {
         try { await cancelJob(job.job_id); notify('已请求取消。'); } catch (error) { notify(error.message, 'error'); }
       },
     });
+    // T10：非终态 job 跟随真实 timeline 状态；文案回调先过世代守卫再上屏。
+    if (!isTerminalJobStatus(job.status) && startLiveStatus) {
+      liveStop = startLiveStatus(job, {
+        signal: op.controller.signal,
+        onText: (text) => { if (registry.isCurrent(op)) progress?.setLive?.(text); },
+      }) || null;
+    }
     track(job.job_id, {
       signal: op.controller.signal,
       onEvent: (event) => { if (registry.isCurrent(op)) progress?.update({ status: event.type }); },
       onDone: (record) => {
         if (!registry.isCurrent(op)) return;
+        stopLive();
         progress?.done(record);
         applyBusy(false);
         onJobRecord?.(record);
@@ -157,14 +170,16 @@ export function createJobRunner(deps, registry = viewOperations) {
 
   return {
     attach,
-    async start(payload, { intent } = {}) {
+    async start(payload, { intent, operation } = {}) {
       if (busy) return state.job;
       // POST in-flight 窗口：发请求前先建立本次操作的 controller/世代——离开
       // 视图或新操作接管时这次提交被中止，其迟到的返回不得 attach 或影响新视图。
       const op = registry.begin();
+      stopLive();
       applyBusy(true);
       clearProgress?.();
-      progress = renderProgress({ project_id: projectId, operation: jobOperation(payload), status: 'submitting' }, {});
+      // operation 覆盖用于引导等 payload 无法推断操作名的场景（T10）。
+      progress = renderProgress({ project_id: projectId, operation: operation || jobOperation(payload), status: 'submitting' }, {});
       // M1：幂等键按「工程+意图」持久化、以「检查点+负载」为指纹——同一意图
       // 重试（如 120s 超时响应丢失）复用同一键供后端去重；键的去留见 onDone。
       const body = { ...payload };

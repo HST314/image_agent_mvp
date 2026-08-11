@@ -84,7 +84,11 @@ export function assetIdOf(asset) {
 export const listProjects = () => api('/api/projects');
 export const health = () => api('/api/health');
 export const getProject = (id, { signal } = {}) => api(`/api/projects/${encodeURIComponent(id)}`, { signal });
-export const createProject = (payload) => api('/api/projects', { method: 'POST', body: JSON.stringify(payload) });
+export const createProject = (payload, { signal } = {}) =>
+  api('/api/projects', { method: 'POST', body: JSON.stringify(payload), signal });
+/* T10：时间线增量拉取（契约 §7——实时状态只来自后端真实事件，不做前端假状态）。 */
+export const getTimeline = (id, { after = 0, limit = 100, signal } = {}) =>
+  api(`/api/projects/${encodeURIComponent(id)}/timeline?after=${after}&limit=${limit}`, { signal });
 
 /* ---- 推进（同步，仅用于不触发付费模型调用的动作） ---- */
 export const advance = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/advance`, { method: 'POST', body: JSON.stringify(payload) });

@@ -86,7 +86,9 @@
 input[type=color].input{padding:4px;min-height:40px}input[type=range].input{padding:0}
 
 /* ===== T29 时间线/进度 ===== */
-.job-progress{display:flex;align-items:center;gap:10px;padding:12px;border-radius:10px;background:var(--primary-soft);color:color-mix(in srgb,var(--primary) 85%,var(--text));font-size:13px}
+.job-progress{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px;border-radius:10px;background:var(--primary-soft);color:color-mix(in srgb,var(--primary) 85%,var(--text));font-size:13px}
+/* T10：job 运行中的真实步骤文案（timeline step_started），作为主文案的弱化补充行 */
+.job-progress__live{flex-basis:100%;color:var(--muted);font-size:12px}
 .timeline-more{margin-top:6px}
 
 /* ===== T35 一致状态体验 ===== */

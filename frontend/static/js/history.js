@@ -39,13 +39,16 @@ function formatTime(value) {
   } catch { return String(value); }
 }
 
-/** 实时进度条：仅展示 job 真实事件流（queued/running/succeeded/failed）。 */
+/** 实时进度条：仅展示 job 真实事件流（queued/running/succeeded/failed）。
+ * T10：setLive 展示来自 timeline 真实事件的进行中文案（step_started），
+ * 终态时移除——不做前端假状态（契约 §4/§7）。 */
 export function renderJobProgress(container, job, { onCancel } = {}) {
   let current = job || {};
   const box = el('div', { class: 'job-progress', role: 'status' });
   const spinner = el('span', { class: 'spinner', 'aria-hidden': 'true' });
   const text = el('span', { text: describeJob(job) });
-  box.append(spinner, text);
+  const live = el('span', { class: 'job-progress__live', hidden: true });
+  box.append(spinner, text, live);
   if (job && (job.status === 'queued' || job.status === 'running')) {
     const cancel = el('button', { type: 'button', class: 'btn btn--secondary', text: '取消任务' });
     cancel.addEventListener('click', () => onCancel?.());
@@ -54,8 +57,14 @@ export function renderJobProgress(container, job, { onCancel } = {}) {
   container.append(box);
   return {
     update(next) { current = { ...current, ...next }; text.textContent = describeJob(current); },
+    setLive(next) {
+      if (!next) return;
+      live.hidden = false;
+      live.textContent = next;
+    },
     done(record) {
       spinner.remove();
+      live.remove();
       text.textContent = describeJob(record);
     },
   };

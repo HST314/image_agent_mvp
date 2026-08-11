@@ -300,3 +300,85 @@ test('isTerminalJobStatus 终态集合', () => {
   for (const s of ['succeeded', 'failed', 'cancelled', 'interrupted']) assert.equal(isTerminalJobStatus(s), true);
   for (const s of ['queued', 'running', 'cancelling', 'submitting', 'unknown']) assert.equal(isTerminalJobStatus(s), false);
 });
+
+/* ---- T10：实时状态（timeline 真实文案）生命周期 ----
+ * startLiveStatus 由 project.js 接线（createTimelineFollower + api.getTimeline）；
+ * 此处验证 jobrunner 侧的启动/停止/世代守卫语义：非终态 attach 启动、终态不启动、
+ * onDone 停止、新 start 停止旧跟随、文案回调过期（操作被取代）不上屏。 */
+function fakeLiveDeps(projectId = 'p-live') {
+  const calls = { post: [], track: [], live: [], timers: [], texts: [], stops: 0 };
+  const deps = {
+    projectId,
+    renderProgress: (job) => ({
+      job,
+      update() {},
+      setLive(text) { calls.texts.push(text); },
+      done() {},
+    }),
+    clearProgress: () => {},
+    setBusy: () => {},
+    notify: () => {},
+    refresh: () => {},
+    getProjectId: () => projectId,
+    getCheckpoint: () => '',
+    postJob: (body, opts) => new Promise((resolve, reject) => {
+      calls.post.push({ body, signal: opts?.signal, resolve, reject });
+    }),
+    track: (jobId, { signal, onEvent, onDone }) => { calls.track.push({ jobId, signal, onEvent, onDone }); },
+    cancelJob: async () => {},
+    onJobRecord: () => {},
+    schedule: (fn) => { calls.timers.push(fn); },
+    startLiveStatus: (job, { signal, onText }) => {
+      const entry = { job, signal, onText, stopped: false };
+      calls.live.push(entry);
+      return () => { entry.stopped = true; calls.stops += 1; };
+    },
+  };
+  return { calls, deps };
+}
+
+test('T10：非终态 job attach 启动实时状态，文案经世代守卫上屏，onDone 停止', () => {
+  const registry = createOperationRegistry();
+  const { calls, deps } = fakeLiveDeps();
+  const runner = createJobRunner(deps, registry);
+  runner.attach({ job_id: 'j1', project_id: 'p-live', operation: '初始化工程', status: 'running' });
+  assert.equal(calls.live.length, 1, '非终态 job 应启动 timeline 跟随');
+  calls.live[0].onText('正在理解任务书，生成澄清问题…');
+  assert.deepEqual(calls.texts, ['正在理解任务书，生成澄清问题…']);
+  calls.track[0].onDone({ job_id: 'j1', status: 'succeeded' });
+  assert.equal(calls.live[0].stopped, true, '终态后跟随应停止');
+});
+
+test('T10：终态 job attach 不启动实时状态', () => {
+  const registry = createOperationRegistry();
+  const { calls, deps } = fakeLiveDeps();
+  const runner = createJobRunner(deps, registry);
+  runner.attach({ job_id: 'j2', project_id: 'p-live', status: 'failed', error: { message: 'x' } });
+  assert.equal(calls.live.length, 0);
+});
+
+test('T10：失败后新 start 启动新跟随；过期文案回调不上屏', async () => {
+  const registry = createOperationRegistry();
+  const { calls, deps } = fakeLiveDeps();
+  const runner = createJobRunner(deps, registry);
+  runner.attach({ job_id: 'jA', project_id: 'p-live', status: 'running' });
+  assert.equal(calls.live.length, 1);
+
+  // job A 失败终态：跟随停止、busy 复位（真实 UI 中 busy 期间按钮禁用，start 只在非 busy 时可达）
+  calls.track[0].onDone({ job_id: 'jA', status: 'failed', error: { code: 'TimeoutError', message: 'x' } });
+  assert.equal(calls.live[0].stopped, true, '终态后旧跟随应停止');
+
+  const pending = runner.start({}, { intent: 'bootstrap', operation: '初始化工程' });
+  calls.post[0].resolve({ job_id: 'jB', project_id: 'p-live', operation: '初始化工程', status: 'queued' });
+  await pending;
+  assert.equal(calls.live.length, 2, '新 job 应启动新跟随');
+
+  // 旧跟随的迟到文案（其操作已被 start 的新世代取代）不得上屏
+  calls.live[0].onText('过期文案');
+  assert.deepEqual(calls.texts, []);
+  calls.live[1].onText('正在理解任务书，生成澄清问题…');
+  assert.deepEqual(calls.texts, ['正在理解任务书，生成澄清问题…']);
+
+  // bootstrap 意图应携带幂等键（M1 机制：同意图重试复用同一键）
+  assert.equal(calls.post[0].body.idempotency_key.length >= 8, true);
+});
