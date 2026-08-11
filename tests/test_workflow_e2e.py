@@ -7,7 +7,7 @@ from agent_core.batch import CandidateBatchGenerator
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from render_clients.payload_mapper import build_render_payload
-from storage.project_store import ProjectStore
+from storage.project_store import ProjectStore, content_hash
 from workspace_cli import main
 import pytest
 from agent_core.workflow import SelfCheckPolicy, InvalidTransitionError
@@ -177,26 +177,53 @@ def test_blocked_and_manual_end_cannot_be_delivered(tmp_path: Path):
     assert ended["calibration_status"] == "terminated_without_delivery" and not ended["termination_satisfied"]
     assert any(e["type"] == "calibration_terminated_without_delivery" for e in store.history())
 
-def test_blocked_inspection_execute_runs_rework_instead_of_noop(tmp_path: Path):
-    store = ProjectStore(tmp_path, "blocked-execute"); store.create()
+@pytest.mark.parametrize(
+    ("action", "edited_delta", "expected_delta"),
+    [
+        ("execute", None, "修正文案"),
+        ("edit_and_execute", "改为人工修订建议", "改为人工修订建议"),
+    ],
+)
+def test_cached_blocked_inspection_executes_rework_and_inspects_new_asset(
+    tmp_path: Path, action: str, edited_delta: str | None, expected_delta: str
+):
+    store = ProjectStore(tmp_path, f"blocked-{action}"); store.create()
     reworks = []
-    inspections = iter([
-        {"passed":False, "decision":"blocked", "rework_prompt_delta":"修正文案", "confidence":.8},
-        {"passed":True, "decision":"pass", "rework_prompt_delta":"", "confidence":.99},
-    ])
-    loop = CalibrationLoop(store, SelfCheckPolicy("solo", "auto", max_rounds=4),
-        inspector=lambda *_: next(inspections),
-        reworker=lambda assembled: reworks.append(assembled) or {"uri":"https://x/reworked", "sha256":"reworked"})
+    inspected_uris = []
+    original = {"uri":"https://x/original", "sha256":"original"}
+    blocked = {"passed":False, "decision":"blocked", "rework_prompt_delta":"修正文案", "confidence":.8}
+    inspection_key = store.idempotency_key(
+        "inspection", content_hash(original), content_hash("s"), "vlm"
+    )
+    store.events.append(
+        "inspection_completed", round=1, asset=original, result=blocked,
+        idempotency_key=inspection_key,
+    )
 
-    result = loop.run(current_asset={"uri":"https://x/original", "sha256":"original"},
+    def inspect(uri: str, _specification: str):
+        inspected_uris.append(uri)
+        return {"passed":True, "decision":"pass", "rework_prompt_delta":"", "confidence":.99}
+
+    loop = CalibrationLoop(store, SelfCheckPolicy("solo", "auto", max_rounds=4),
+        inspector=inspect,
+        reworker=lambda assembled: reworks.append(assembled) or {
+            "uri":f"https://x/reworked-{action}", "sha256":f"reworked-{action}"
+        })
+
+    result = loop.run(current_asset=original,
         stable_specification="s", constraints=[], start_round=2,
-        approve=lambda _: ManualAction(action="execute"))
+        approve=lambda _: ManualAction(action=action, edited_delta=edited_delta))
 
     assert len(reworks) == 1
-    assert reworks[0]["feedback"] == "修正文案"
-    assert result["asset"]["sha256"] == "reworked"
+    assert expected_delta in reworks[0]["text"]
+    assert result["asset"]["sha256"] == f"reworked-{action}"
+    assert result["asset"]["sha256"] != original["sha256"]
     assert result["termination_satisfied"] is True
-    assert any(event["type"] == "rework_started" for event in store.history())
+    assert inspected_uris == [f"https://x/reworked-{action}"]
+    history = store.history()
+    assert any(event["type"] == "inspection_reused" and event["asset"]["sha256"] == "original" for event in history)
+    assert any(event["type"] == "rework_started" for event in history)
+    assert any(event["type"] == "inspection_completed" and event["asset"]["sha256"] == f"reworked-{action}" for event in history)
 
 def test_human_rework_invalidates_old_inspection_and_stays_in_human_tune(tmp_path: Path):
     store = ProjectStore(tmp_path, "rework"); store.create()

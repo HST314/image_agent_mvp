@@ -379,6 +379,13 @@ class WorkflowRunner:
         return {**result, "current_asset": result.get("asset", data.get("master_asset"))}
     
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        # Human tuning is an optional graph stage. Automatic inspection success
+        # traverses it without creating a synthetic waiting_human_tune gate;
+        # only an explicit human-tune disposition activates the interactive
+        # branch below.
+        if data.get("phase") == "calibration_completed" and not data.get("human_tune_mode"):
+            return {"asset": data.get("current_asset") or data.get("asset"),
+                    "waiting": False, "phase": "calibration_completed"}
         action = options.get("manual_action")
         if action and action.action == "accept_current":
             current = data.get("current_asset") or data["asset"]
