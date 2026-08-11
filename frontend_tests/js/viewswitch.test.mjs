@@ -1,0 +1,139 @@
+/* T1 视图切换的 H1 交错回归：占位页 → 慢工程 GET → 重点击当前页签。
+ * 真实 createNavigator（app.js 侧栏接线同一实现）+ 真实 createViewSwitcher
+ * （app.js 顶栏接线同一实现），GET 手工 settle，精确编排返回顺序。 */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createOperationRegistry, createNavigator } from '../../frontend/static/js/jobrunner.js';
+import { createViewSwitcher } from '../../frontend/static/js/viewswitch.js';
+
+/* 可控应用假依赖：镜像 app.js 的接线（stopJobTracking 即 registry.leave；
+ * renderProject 挂载即进入工作区视图）。 */
+function fakeApp(registry, initialView = 'status') {
+  const state = { view: initialView, current: null };
+  const calls = {
+    gets: [], rendered: [], placeholders: [], tabs: [], notified: [],
+    leaves: 0, home: 0,
+  };
+  const nav = createNavigator({
+    getProject: (id, opts) => new Promise((resolve, reject) => {
+      calls.gets.push({ id, signal: opts?.signal, resolve, reject });
+    }),
+    renderProject: (view) => { state.view = 'workspace'; state.current = view; calls.rendered.push(view.project_id); },
+    notify: (message, kind) => calls.notified.push({ message, kind }),
+  }, registry);
+  const switcher = createViewSwitcher({
+    getState: () => state,
+    patch: (partial) => Object.assign(state, partial),
+    markActiveTab: (view) => calls.tabs.push(view),
+    stopJobTracking: () => { calls.leaves += 1; registry.leave(); },
+    renderPlaceholder: (view) => calls.placeholders.push(view),
+    openProject: nav.openProject,
+    goHome: () => { calls.home += 1; },
+  });
+  return {
+    state, calls, nav, switcher,
+    settleGet(index, value, isError = false) {
+      const call = calls.gets[index];
+      if (isError) call.reject(value); else call.resolve(value);
+    },
+  };
+}
+
+test('占位页→慢工程 GET→重点击当前页签：中止在途导航，迟到 GET 不得切回工作区', async () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'status'); // 已在「状态」占位页
+
+  // 侧栏点击某工程 → 慢 GET in-flight（视图仍停留在状态页）
+  const opening = app.nav.openProject('p1');
+  assert.equal(app.calls.gets.length, 1);
+  assert.equal(app.calls.gets[0].signal.aborted, false);
+
+  // GET 返回前再次点击「状态」页签 = 留在本页的最新意图
+  app.switcher.setView('status');
+  assert.equal(app.calls.leaves, 1, '同占位页签重点击必须中止在途工程导航');
+  assert.equal(app.calls.gets[0].signal.aborted, true, '在途 GET 应立即中止');
+  assert.equal(app.state.view, 'status');
+  assert.deepEqual(app.calls.tabs, [], '同页签点击不重复置激活态');
+
+  // 慢 GET 迟到返回：世代守卫丢弃——不渲染、不报错、不切视图
+  app.settleGet(0, { project_id: 'p1' });
+  await opening;
+  assert.deepEqual(app.calls.rendered, [], '迟到 GET 不得执行 renderProject');
+  assert.equal(app.state.view, 'status', '界面必须停留在状态页');
+  assert.equal(app.calls.notified.length, 0, '被中止的导航不得 toast 打扰');
+});
+
+test('对照：占位页打开工程后未再点击页签，GET 返回正常进入工作区', async () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'status');
+
+  const opening = app.nav.openProject('p1');
+  app.settleGet(0, { project_id: 'p1' });
+  await opening;
+  assert.deepEqual(app.calls.rendered, ['p1']);
+  assert.equal(app.state.view, 'workspace');
+  assert.equal(app.calls.leaves, 0);
+});
+
+test('工作区同页签点击为忽略操作：不得中止在途工程导航（保护 job 跟踪语义）', async () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'workspace');
+
+  const opening = app.nav.openProject('p1'); // 工作区内刷新/重开工程的在途 GET
+  app.switcher.setView('workspace');
+  assert.equal(app.calls.leaves, 0, '工作区同页签点击不得触发 leave');
+  assert.equal(app.calls.gets[0].signal.aborted, false, '在途 GET 不受影响');
+
+  app.settleGet(0, { project_id: 'p1' });
+  await opening;
+  assert.deepEqual(app.calls.rendered, ['p1']);
+});
+
+test('占位页间切换仍中止在途工程导航（原 H1 语义不退化）', async () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'status');
+
+  const opening = app.nav.openProject('p1');
+  app.switcher.setView('settings'); // 状态 → 设置：离开本页的正常切换
+  assert.equal(app.calls.leaves, 1);
+  assert.equal(app.calls.gets[0].signal.aborted, true);
+  assert.equal(app.state.view, 'settings');
+  assert.deepEqual(app.calls.tabs, ['settings']);
+  assert.deepEqual(app.calls.placeholders, ['settings']);
+
+  app.settleGet(0, { project_id: 'p1' }); // 迟到响应丢弃
+  await opening;
+  assert.deepEqual(app.calls.rendered, []);
+  assert.equal(app.state.view, 'settings');
+});
+
+test('切回工作区：有当前工程则重新打开，无当前工程则回首页', async () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'status');
+
+  // 无当前工程 → goHome
+  app.switcher.setView('workspace');
+  assert.equal(app.calls.home, 1);
+  assert.equal(app.calls.gets.length, 0);
+
+  // 有当前工程 → patch 视图 + 激活页签 + 经真实导航入口重开
+  app.state.view = 'settings';
+  app.state.current = { project_id: 'p9' };
+  app.switcher.setView('workspace');
+  assert.equal(app.calls.home, 1);
+  assert.equal(app.state.view, 'workspace');
+  assert.deepEqual(app.calls.tabs, ['workspace']);
+  assert.equal(app.calls.gets.length, 1);
+  assert.equal(app.calls.gets[0].id, 'p9');
+  app.settleGet(0, { project_id: 'p9' });
+  await Promise.resolve();
+});
+
+test('非法视图名直接忽略', () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'status');
+  app.switcher.setView('bogus');
+  assert.equal(app.state.view, 'status');
+  assert.equal(app.calls.leaves, 0);
+  assert.deepEqual(app.calls.placeholders, []);
+});

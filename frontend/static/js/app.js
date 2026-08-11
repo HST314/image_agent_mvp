@@ -7,7 +7,8 @@ import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
 import { renderProject, stopJobTracking } from './project.js';
 import { createNavigator } from './jobrunner.js';
-import { VIEWS, markActiveTab, setTopContext } from './topnav.js';
+import { markActiveTab, setTopContext } from './topnav.js';
+import { createViewSwitcher } from './viewswitch.js';
 
 const SAMPLE_TASK = {
   task_id: 'task_new',
@@ -80,26 +81,6 @@ function renderPlaceholder(view) {
   content.append(stateBlock('empty', title, detail));
 }
 
-function setView(view) {
-  if (!VIEWS.includes(view) || view === state.view) return;
-  if (view === 'workspace') {
-    if (state.current) {
-      patch({ view });
-      markActiveTab(view);
-      openProject(state.current.project_id);
-    } else {
-      goHome();
-    }
-    return;
-  }
-  /* 离开工作区：中止进行中的操作与跟踪循环（后台 job 仍继续，
-   * 回到工作区重新打开工程时会按既有逻辑恢复挂载）。 */
-  stopJobTracking();
-  patch({ view });
-  markActiveTab(view);
-  renderPlaceholder(view);
-}
-
 function goHome() {
   stopJobTracking();
   patch({ current: null, view: 'workspace' });
@@ -119,6 +100,19 @@ const navigation = createNavigator({
   notify: toast,
 });
 export const openProject = navigation.openProject;
+
+/* 视图切换决策（逻辑在 viewswitch.js，可 Node 侧回归）：真实依赖在此接线。
+ * 重点击当前占位页签会中止在途工程导航（H1），迟到 GET 不得切回工作区。 */
+const viewSwitcher = createViewSwitcher({
+  getState: () => state,
+  patch,
+  markActiveTab,
+  stopJobTracking,
+  renderPlaceholder,
+  openProject,
+  goHome,
+});
+const setView = viewSwitcher.setView;
 
 /* ---- 新建工程对话框 ---- */
 
