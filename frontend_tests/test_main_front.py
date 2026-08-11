@@ -19,7 +19,8 @@ def test_health_and_frontend_are_served(client: TestClient) -> None:
     assert client.get("/api/health").json()["status"] == "ok"
     page = client.get("/")
     assert page.status_code == 200
-    assert "Image Agent Studio" in page.text
+    # T11 后首屏品牌与标题已中文化（契约 §11）。
+    assert "Image Agent 创作工作台" in page.text
     # 样式已模块化到静态资源（T35）；可访问性媒体查询随样式表一起提供。
     assert '/static/css/main.css' in page.text
     css = client.get("/static/css/main.css")

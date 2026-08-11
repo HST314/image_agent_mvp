@@ -69,9 +69,10 @@ export function createNavigator(deps, registry = viewOperations) {
  *   调用结果确定（未发生或已完成并记录在案）→ 清除；同一动作入口的重试是
  *   知情新执行，应创建新 job 真正重执行。
  * - failed 且结果未知（超时/传输/提供方不可用等，可能已扣费）→ 保留原键，
- *   重试复用同一键供后端去重，并走既有 unknown/retry 人工处置恢复路径。
+ *   重试复用同一键供后端去重；若后端对账确认原 job 已达终态（见 start() 的
+ *   T10 对账分支），再轮换新尝试键恢复执行，并走既有 unknown/retry 人工处置。
  * - cancelled / interrupted / unknown（轮询失败的合成记录）：执行结果不可知
- *   （running 期取消可能已提交副作用；重启中断同理）→ 保留。
+ *   （running 期取消可能已提交副作用；重启中断同理）→ 保留（恢复同上对账）。
  *
  * 分类对齐后端真实契约（agent_core/jobs.py 写入的 error 记录）：
  * ① error.category——异常携带的规范化分类（ModelCallError 等经 jobs.py 透出）。
@@ -187,10 +188,26 @@ export function createJobRunner(deps, registry = viewOperations) {
         body.idempotency_key = intentIdempotencyKey(projectId, intent, `${getCheckpoint?.() ?? ''}:${JSON.stringify(payload)}`);
       }
       try {
-        const job = await postJob(body, { signal: op.controller.signal });
+        let job = await postJob(body, { signal: op.controller.signal });
         // 返回后确认本操作仍当前（未切页/未被新操作取代）再登记与 attach；
         // 否则静默丢弃——后端已创建的 job 会在下次进入工程时由恢复逻辑接管。
         if (!registry.isCurrent(op)) return null;
+        /* T10 对账（M1 恢复契约闭合）：后端 JOBS.submit 按「工程+幂等键」去重，
+         * 同一键返回的若已是终态记录，即后端对原尝试结果的权威确认（新建记录
+         * 必为 queued，终态只可能来自去重命中）：
+         * - succeeded：原尝试已成功——走既有成功流程（onDone 清键+刷新），绝不重发；
+         * - failed/cancelled/interrupted：原尝试已被后端确认终结、不会再产生新
+         *   副作用，原键的去重使命完成——清除旧键、生成新尝试键重发一次（知情
+         *   新执行）。未知结果（*_unknown）不再死锁于旧失败记录，也无需无条件
+         *   清键：在途记录仍走下方 attach 正常跟踪，不会生成第二次执行（M1
+         *   防重复语义保留）。
+         * 重发有界：换新键后无论返回什么都直接 attach（新键不会再去重命中）。 */
+        if (intent && isTerminalJobStatus(job.status) && job.status !== 'succeeded') {
+          clearIntentIdempotencyKey(projectId, intent);
+          body.idempotency_key = intentIdempotencyKey(projectId, intent, `${getCheckpoint?.() ?? ''}:${JSON.stringify(payload)}`);
+          job = await postJob(body, { signal: op.controller.signal });
+          if (!registry.isCurrent(op)) return null;
+        }
         onJobRecord?.(job);
         attach(job, op, intent);
         return job;

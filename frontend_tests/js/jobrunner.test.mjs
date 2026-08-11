@@ -301,6 +301,93 @@ test('isTerminalJobStatus 终态集合', () => {
   for (const s of ['queued', 'running', 'cancelling', 'submitting', 'unknown']) assert.equal(isTerminalJobStatus(s), false);
 });
 
+/* ---- T10 对账：同一键去重命中终态记录 = 后端确认原尝试终结 ----
+ * 后端 JOBS.submit 按「工程+幂等键」去重；新建记录必为 queued，故 POST 返回
+ * 终态记录只可能是去重命中的旧记录（对账应答）。失败/取消/中断 → 清旧键、
+ * 生成新尝试键有界重发一次；在途/成功 → 原样 attach，绝不产生第二次执行。 */
+test('T10 对账：同键返回未知失败终态→轮换新尝试键重发，恢复真实执行', async () => {
+  const registry = createOperationRegistry();
+  const { calls, deps, settlePost } = fakeDeps('p-recon');
+  const runner = createJobRunner(deps, registry);
+
+  const pending = runner.start({}, { intent: 'bootstrap', operation: '初始化工程' });
+  // body 以引用入列（重发分支会就地换键），首个键必须在 settle 前捕获。
+  const firstKey = calls.post[0].body.idempotency_key;
+  // 对账应答：与持久化键匹配的旧 job 已 failed（transport_unknown——保留键策略
+  // 下旧实现在此死锁：重发同键只会反复拿到这条失败记录）。
+  settlePost(0, {
+    job_id: 'job_old', project_id: 'p-recon', status: 'failed',
+    error: { code: 'ModelCallError', message: 'x', category: 'transport_unknown' },
+  });
+  await Promise.resolve(); // 让重发分支执行
+  assert.equal(calls.post.length, 2, '终态对账后必须以新尝试键重发一次');
+  assert.notEqual(calls.post[1].body.idempotency_key, firstKey);
+  // 旧键已被替换：当前持久化的是新尝试键
+  assert.equal(loadDraft('p-recon', 'idem:bootstrap').value.key, calls.post[1].body.idempotency_key);
+
+  settlePost(1, { job_id: 'job_new', project_id: 'p-recon', status: 'queued' });
+  const job = await pending;
+  assert.equal(job.job_id, 'job_new');
+  assert.equal(calls.track[0].jobId, 'job_new', '跟踪必须落在重发产生的新 job 上');
+});
+
+test('T10 对账：cancelled/interrupted 终态同样轮换新键；succeeded 绝不重发', async () => {
+  for (const [projectId, status] of [['p-recon-cancel', 'cancelled'], ['p-recon-interrupt', 'interrupted']]) {
+    const registry = createOperationRegistry();
+    const { calls, deps, settlePost } = fakeDeps(projectId);
+    const runner = createJobRunner(deps, registry);
+    const pending = runner.start({}, { intent: 'bootstrap' });
+    const firstKey = calls.post[0].body.idempotency_key;
+    settlePost(0, { job_id: 'job_old', project_id: projectId, status });
+    await Promise.resolve();
+    assert.equal(calls.post.length, 2, `${status} 终态对账后应重发`);
+    assert.notEqual(calls.post[1].body.idempotency_key, firstKey);
+    settlePost(1, { job_id: 'job_new', project_id: projectId, status: 'queued' });
+    await pending;
+  }
+
+  // succeeded：原尝试已成功，attach 走既有成功流程（onDone 清键），不产生新执行
+  const registry = createOperationRegistry();
+  const { calls, deps, settlePost } = fakeDeps('p-recon-done');
+  const runner = createJobRunner(deps, registry);
+  const pending = runner.start({}, { intent: 'bootstrap' });
+  settlePost(0, { job_id: 'job_ok', project_id: 'p-recon-done', status: 'succeeded' });
+  await pending;
+  assert.equal(calls.post.length, 1, '成功记录不得触发重发');
+  calls.track[0].onDone({ job_id: 'job_ok', status: 'succeeded' });
+  assert.equal(loadDraft('p-recon-done', 'idem:bootstrap'), null, '成功终态应清除幂等键');
+});
+
+test('T10 对账：在途记录（queued/running）直接去重 attach，不重发、不动键', async () => {
+  for (const status of ['queued', 'running']) {
+    const registry = createOperationRegistry();
+    const { calls, deps, settlePost } = fakeDeps(`p-recon-live-${status}`);
+    const runner = createJobRunner(deps, registry);
+    const pending = runner.start({}, { intent: 'bootstrap' });
+    settlePost(0, { job_id: 'job_live', project_id: `p-recon-live-${status}`, status });
+    await pending;
+    assert.equal(calls.post.length, 1, `${status} 在途去重不得重发（M1 防重复）`);
+    assert.equal(calls.track[0].jobId, 'job_live');
+    assert.ok(loadDraft(`p-recon-live-${status}`, 'idem:bootstrap'), '在途时键必须保留');
+  }
+});
+
+test('T10 对账：重发有界——换新键后即使再返回终态也只 attach，不循环重发', async () => {
+  const registry = createOperationRegistry();
+  const { calls, deps, settlePost } = fakeDeps('p-recon-bound');
+  const runner = createJobRunner(deps, registry);
+
+  const pending = runner.start({}, { intent: 'bootstrap' });
+  settlePost(0, { job_id: 'job_1', project_id: 'p-recon-bound', status: 'failed', error: { message: 'x' } });
+  await Promise.resolve();
+  // 异常情形：新键仍返回终态（真实后端不会发生——新键不会去重命中）
+  settlePost(1, { job_id: 'job_2', project_id: 'p-recon-bound', status: 'failed', error: { message: 'y' } });
+  const job = await pending;
+  assert.equal(calls.post.length, 2, '重发严格一次，不得循环');
+  assert.equal(job.job_id, 'job_2');
+  assert.equal(calls.track[0].jobId, 'job_2');
+});
+
 /* ---- T10：实时状态（timeline 真实文案）生命周期 ----
  * startLiveStatus 由 project.js 接线（createTimelineFollower + api.getTimeline）；
  * 此处验证 jobrunner 侧的启动/停止/世代守卫语义：非终态 attach 启动、终态不启动、
