@@ -68,11 +68,6 @@ class CalibrationLoop:
                         "inspection": result.model_dump(mode="json"), "calibration_status": "human_accepted",
                         "termination_satisfied": True, "termination_reason": "human_accepted_current_asset",
                         "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
-            if result.decision == "blocked":
-                return {"waiting": True, "phase": "waiting_human_approval", "round": number, "asset": current,
-                        "inspection": result.model_dump(mode="json"), "calibration_status": "waiting_human_decision",
-                        "termination_satisfied": False, "termination_reason": "inspection_blocked",
-                        "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
             if result.decision == "pass":
                 # A passing asset is already the asset that was just inspected.
                 # Fixed-round mode may perform the remaining inspections, but
