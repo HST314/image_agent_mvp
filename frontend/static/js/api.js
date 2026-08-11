@@ -16,10 +16,18 @@ export function formatError(detail) {
 export async function api(path, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs || 120000);
+  // 外部 signal（如视图操作 controller）与 120s 超时组合：任一触发都中止请求，
+  // 避免传入 signal 后丢失超时保护（M1 的 120s 超时重试路径依赖该保护）。
+  const external = options.signal;
+  const onExternalAbort = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onExternalAbort, { once: true });
+  }
   try {
     const res = await fetch(path, {
       ...options,
-      signal: options.signal || controller.signal,
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     });
     let data;
@@ -27,11 +35,15 @@ export async function api(path, options = {}) {
     if (!res.ok) throw new ApiError(formatError(data.detail));
     return data;
   } catch (error) {
-    if (error.name === 'AbortError') throw new ApiError('请求超时。后端可能仍在处理，请稍后刷新工程状态。');
+    if (error.name === 'AbortError') {
+      if (external?.aborted) throw new ApiError('操作已随视图切换取消。');
+      throw new ApiError('请求超时。后端可能仍在处理，请稍后刷新工程状态。');
+    }
     if (error instanceof TypeError) throw new ApiError('无法连接服务。请检查 FastAPI 是否运行，然后重试。');
     throw error;
   } finally {
     clearTimeout(timer);
+    external?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -56,7 +68,7 @@ export function assetIdOf(asset) {
 /* ---- 工程 ---- */
 export const listProjects = () => api('/api/projects');
 export const health = () => api('/api/health');
-export const getProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`);
+export const getProject = (id, { signal } = {}) => api(`/api/projects/${encodeURIComponent(id)}`, { signal });
 export const createProject = (payload) => api('/api/projects', { method: 'POST', body: JSON.stringify(payload) });
 
 /* ---- 推进（同步，仅用于不触发付费模型调用的动作） ---- */
@@ -64,8 +76,8 @@ export const advance = (id, payload) => api(`/api/projects/${encodeURIComponent(
 export const retryProject = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify(payload) });
 
 /* ---- 后台 job（T23：会触发付费/长耗时调用的推进一律走 job） ---- */
-export async function startAdvanceJob(id, payload) {
-  const res = await api(`/api/projects/${encodeURIComponent(id)}/jobs`, { method: 'POST', body: JSON.stringify(payload) });
+export async function startAdvanceJob(id, payload, { signal } = {}) {
+  const res = await api(`/api/projects/${encodeURIComponent(id)}/jobs`, { method: 'POST', body: JSON.stringify(payload), signal });
   return res;
 }
 export const getJob = (jobId) => api(`/api/jobs/${encodeURIComponent(jobId)}`);

@@ -5,7 +5,8 @@ import { state, patch } from './store.js';
 import * as api from './api.js';
 import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
-import { renderProject } from './project.js';
+import { renderProject, stopJobTracking } from './project.js';
+import { createNavigator } from './jobrunner.js';
 
 const SAMPLE_TASK = {
   task_id: 'task_new',
@@ -63,6 +64,7 @@ function renderNav() {
 }
 
 function goHome() {
+  stopJobTracking();
   patch({ current: null });
   $('#page-title').textContent = '开始一项新的视觉创作';
   $('#context-label').textContent = '创作工作台';
@@ -70,16 +72,16 @@ function goHome() {
   renderNav();
 }
 
-export async function openProject(id) {
-  try {
-    const view = await api.getProject(id);
-    renderProject(view);
-    renderNav();
-    closeSidebar();
-  } catch (error) {
-    toast(error.message, 'error');
-  }
-}
+/* 侧栏/首页/刷新共用的真实导航入口（逻辑在 jobrunner.js createNavigator）：
+ * 导航意图发生即中止当前操作（含 in-flight POST 与跟踪循环），GET 绑定导航
+ * 世代并在返回前复核——慢 GET/连续点击的迟到响应不会覆盖新视图（H1）。 */
+const navigation = createNavigator({
+  getProject: (id, opts) => api.getProject(id, opts),
+  renderProject,
+  afterOpen: () => { renderNav(); closeSidebar(); },
+  notify: toast,
+});
+export const openProject = navigation.openProject;
 
 /* ---- 新建工程对话框 ---- */
 

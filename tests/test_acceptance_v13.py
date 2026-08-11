@@ -115,3 +115,27 @@ def test_async_job_preserves_domain_error_code(tmp_path: Path, error_type, code)
         if record["status"] == "failed": break
         time.sleep(.01)
     assert record["error"]["code"] == code
+
+
+def test_async_job_preserves_normalized_error_category(tmp_path: Path) -> None:
+    """异常携带的规范化 category（如 ModelCallError 的 timeout_unknown）随 job
+    记录透出，前端依 *_unknown 约定判定结果未知并保留幂等键；无 category 的
+    异常不新增该字段（向后兼容既有 {code, message} 契约）。"""
+    registry = JobRegistry(tmp_path / "jobs")
+
+    class ClassifiedError(RuntimeError):
+        category = "timeout_unknown"
+
+    def fail_classified(): raise ClassifiedError("x")
+    def fail_plain(): raise ValueError("TASK_APPROVAL_REQUIRED")
+
+    job_unknown, _ = registry.submit("project", "failure-key-unknown", "advance", fail_classified)
+    job_known, _ = registry.submit("project2", "failure-key-known", "advance", fail_plain)
+    for job_id in (job_unknown["job_id"], job_known["job_id"]):
+        for _ in range(200):
+            if registry.get(job_id)["status"] == "failed": break
+            time.sleep(.01)
+    unknown_error = registry.get(job_unknown["job_id"])["error"]
+    assert unknown_error["code"] == "ClassifiedError" and unknown_error["category"] == "timeout_unknown"
+    known_error = registry.get(job_known["job_id"])["error"]
+    assert known_error["code"] == "ValueError" and "category" not in known_error

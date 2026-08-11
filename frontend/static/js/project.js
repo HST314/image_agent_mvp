@@ -1,9 +1,10 @@
 /* 工作台视图（T32 信息架构）：原始任务 / 当前决策 / 实时进度 / 结果 / 历史。
  * 长任务一律经后台 job + SSE 序号续传，页面在长任务期间保持可操作（T35）。 */
 
-import { $, el, toast, stateBlock, icons, formatDate, idempotencyKey } from './dom.js';
+import { $, el, toast, stateBlock, icons, formatDate } from './dom.js';
 import { state, patch } from './store.js';
 import * as api from './api.js';
+import { viewOperations, createJobRunner, isTerminalJobStatus } from './jobrunner.js';
 import { renderMarkdownInto } from './markdown.js';
 import { deriveView, stepIndex, WORKFLOW_STATES, stateLabel } from './states.js';
 import { renderClarify } from './clarify.js';
@@ -21,7 +22,14 @@ const MANUAL_ACTIONS = [
   { id: 'end', label: '终止且不交付', danger: true },
 ];
 
+/* 当前活动的视图操作（全局唯一，见 jobrunner.js）。视图切换/重渲染/回首页
+ * 时中止旧操作，避免旧 job 的回调覆盖用户正在浏览的页面（H1 竞态修复）。 */
+
+/** 离开工程视图（回首页等）时调用：中止仍在进行中的操作与 job 跟踪循环。 */
+export function stopJobTracking() { viewOperations.leave(); }
+
 export function renderProject(view) {
+  viewOperations.begin();
   patch({ current: view });
   const content = $('#content');
   content.textContent = '';
@@ -120,7 +128,7 @@ export function renderProject(view) {
   }
 
   /* 恢复进行中的 job 展示（刷新后） */
-  const activeJob = view.active_job || (state.job && state.job.project_id === projectId && !isTerminal(state.job.status) ? state.job : null);
+  const activeJob = view.active_job || (state.job && state.job.project_id === projectId && !isTerminalJobStatus(state.job.status) ? state.job : null);
   if (activeJob) {
     patch({ job: activeJob });
     jobRunner.attach(activeJob);
@@ -179,7 +187,7 @@ function renderStage(panel, view, derived, ctx) {
       onCompensate() { jobRunner.start({}); },
     });
     confirmButton.addEventListener('click', () => {
-      if (selectedId) jobRunner.start({ selected_id: selectedId, idempotency_key: idempotencyKey('select') });
+      if (selectedId) jobRunner.start({ selected_id: selectedId }, { intent: 'select' });
     });
     return;
   }
@@ -267,11 +275,11 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
       if (action.needsDelta) {
         const delta = window.prompt('请输入修改建议（将指导下一轮返工）');
         if (!delta) return;
-        jobRunner.start({ manual_action: action.id, edited_delta: delta, idempotency_key: idempotencyKey('manual') });
+        jobRunner.start({ manual_action: action.id, edited_delta: delta }, { intent: 'manual' });
         return;
       }
       if (action.danger && !window.confirm('确定终止本工程且不交付？该决定会进入审计事件。')) return;
-      jobRunner.start({ manual_action: action.id, idempotency_key: idempotencyKey('manual') });
+      jobRunner.start({ manual_action: action.id }, { intent: 'manual' });
     });
     row.append(btn);
   }
@@ -319,7 +327,7 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
 
   const acceptBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '接受当前图' });
   acceptBtn.addEventListener('click', () => {
-    jobRunner.start({ manual_action: 'accept_current', idempotency_key: idempotencyKey('accept-current') });
+    jobRunner.start({ manual_action: 'accept_current' }, { intent: 'accept-current' });
   });
 
   const abandonBtn = el('button', { type: 'button', class: 'btn btn--danger', text: '放弃且不交付' });
@@ -369,7 +377,7 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
     const prompt = textArea.value.trim();
     if (!prompt) { toast('请填写微调说明。', 'error'); return; }
     setTuneBusy(true);
-    const job = await jobRunner.start({ human_prompt: prompt, idempotency_key: idempotencyKey('tune') });
+    const job = await jobRunner.start({ human_prompt: prompt }, { intent: 'tune' });
     if (!job) setTuneBusy(false);
   });
   panel.append(textArea, btn);
@@ -378,7 +386,7 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
   finalBtn.addEventListener('click', async () => {
     if (!window.confirm('确定将当前图片作为终稿？确认后将冻结交付。')) return;
     setTuneBusy(true);
-    const job = await jobRunner.start({ manual_action: 'accept_current', final_approved: true, idempotency_key: idempotencyKey('human-final') });
+    const job = await jobRunner.start({ manual_action: 'accept_current', final_approved: true }, { intent: 'human-final' });
     if (!job) setTuneBusy(false);
   });
   panel.append(finalBtn);
@@ -401,7 +409,7 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
       await jobRunner.retry({ final_approved: true });
       return;
     }
-    const job = await jobRunner.start({ final_approved: true, idempotency_key: idempotencyKey('final') });
+    const job = await jobRunner.start({ final_approved: true }, { intent: 'final' });
     if (!job) approve.disabled = false;
   });
   panel.append(approve);
@@ -497,50 +505,28 @@ function renderUnknowns(items, { projectId, refresh }) {
 
 /* ---------- job 运行器 ---------- */
 
-function isTerminal(status) { return ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(status); }
-
 function makeJobRunner(box, projectId, refresh, actionRoot) {
-  let progress = null;
-  let busy = false;
-  const setBusy = (flag) => {
-    busy = flag;
-    actionRoot.setAttribute('aria-busy', String(flag));
-    actionRoot.querySelectorAll('button, textarea, input, select').forEach((node) => { node.disabled = flag; });
-  };
-  const attach = (job) => {
-    setBusy(!isTerminal(job.status));
-    box.textContent = '';
-    progress = renderJobProgress(box, job, {
-      onCancel: async () => {
-        try { await api.cancelJob(job.job_id); toast('已请求取消。'); } catch (error) { toast(error.message, 'error'); }
-      },
-    });
-    api.trackJob(job.job_id, {
-      onEvent: (event) => progress?.update({ status: event.type }),
-      onDone: (record) => {
-        progress?.done(record);
-        setBusy(false);
-        patch({ job: record });
-        if (record.status === 'succeeded') { toast('已保存到新的工作流检查点。'); }
-        else if (record.status === 'failed') { toast(record.error?.message || '任务失败。', 'error'); }
-        setTimeout(() => refresh(), 300);
-      },
-    });
-  };
-  return {
-    attach,
-    async start(payload) {
-      if (busy) return state.job;
-      setBusy(true);
-      box.textContent = '';
-      progress = renderJobProgress(box, { project_id: projectId, operation: jobOperation(payload), status: 'submitting' });
-      try {
-        const job = await api.startAdvanceJob(projectId, payload);
-        patch({ job });
-        attach(job);
-        return job;
-      } catch (error) { setBusy(false); progress?.done({ status: 'failed', error: { message: error.message } }); toast(error.message, 'error'); return null; }
+  const runner = createJobRunner({
+    projectId,
+    renderProgress: (job, handlers) => renderJobProgress(box, job, handlers),
+    clearProgress: () => { box.textContent = ''; },
+    setBusy: (flag) => {
+      actionRoot.setAttribute('aria-busy', String(flag));
+      actionRoot.querySelectorAll('button, textarea, input, select').forEach((node) => { node.disabled = flag; });
     },
+    notify: toast,
+    // 延时刷新的世代守卫在 jobrunner 内完成；此处再校验拉取期间世代未变。
+    refresh: (op) => openProject(projectId, op),
+    getProjectId: () => state.current?.project_id,
+    getCheckpoint: () => state.current?.manifest?.current_checkpoint?.sequence ?? '',
+    postJob: (body, opts) => api.startAdvanceJob(projectId, body, opts),
+    track: api.trackJob,
+    cancelJob: api.cancelJob,
+    onJobRecord: (record) => patch({ job: record }),
+  });
+  return {
+    attach: runner.attach,
+    start: runner.start,
     async retry(payload) {
       // 失败重试沿用同步 retry（后端在失败点恢复；付费动作仍经生产锁与幂等键保护）。
       try {
@@ -550,15 +536,6 @@ function makeJobRunner(box, projectId, refresh, actionRoot) {
       } catch (error) { toast(error.message, 'error'); }
     },
   };
-}
-
-function jobOperation(payload) {
-  if (['execute', 'edit_and_execute'].includes(payload.manual_action)) return '执行质检建议';
-  if (payload.human_prompt) return '模型微调图像';
-  if (payload.selected_id) return '确认主图并开始质检';
-  if (payload.task_approved) return '生成候选图像';
-  if (payload.final_approved || payload.manual_action === 'accept_current') return '确认最终图像';
-  return '推进工作流';
 }
 
 /* ---------- 小工具 ---------- */
@@ -584,11 +561,17 @@ function summarizeFacts(facts) {
 function getActor() { try { return localStorage.getItem('studio-actor') || ''; } catch { return ''; } }
 function setActor(value) { try { localStorage.setItem('studio-actor', value); } catch { /* ignore */ } }
 
-async function openProject(id) {
+async function openProject(id, op) {
+  // 视图拉取即一次操作：无调用方世代时登记新世代（意图发生即中止 in-flight
+  // 的旧拉取/跟踪）；GET 绑定该世代 signal，返回前复核——拉取期间接管的
+  // 新操作（如用户启动 job B 或侧栏切页）使本响应过期丢弃，不得覆盖新视图（H1）。
+  const fetchOp = op ?? viewOperations.begin();
   try {
-    const view = await api.getProject(id);
+    const view = await api.getProject(id, { signal: fetchOp.controller.signal });
+    if (!viewOperations.isCurrent(fetchOp)) return;
     renderProject(view);
   } catch (error) {
+    if (!viewOperations.isCurrent(fetchOp)) return;
     toast(error.message, 'error');
   }
 }

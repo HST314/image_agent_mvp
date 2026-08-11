@@ -67,9 +67,3 @@ export function formatDate(value) {
     return new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
   } catch { return String(value); }
 }
-
-/** 生成一次会话内唯一的幂等键（用于可安全重试的付费动作提交）。 */
-export function idempotencyKey(prefix = 'ui') {
-  const random = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/[^a-zA-Z0-9-]/g, '');
-  return `${prefix}-${random}`.slice(0, 128);
-}

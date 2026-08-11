@@ -19,7 +19,7 @@ CSS_DIR = ROOT / "frontend" / "static" / "css"
 EXPECTED_JS = {
     "app.js", "api.js", "dom.js", "markdown.js", "store.js", "states.js",
     "home.js", "project.js", "taskbook.js", "clarify.js", "gallery.js",
-    "annotate.js", "history.js", "settings.js",
+    "annotate.js", "history.js", "settings.js", "jobrunner.js",
 }
 
 

@@ -45,3 +45,31 @@ export function clearDraft(projectId, name, storage = defaultStorage()) {
   if (!projectId) return;
   try { storage.removeItem(draftKey(projectId, name)); } catch { /* ignore */ }
 }
+
+/* ---- 幂等键（M1：同一意图在同一检查点的重试复用同一键；提交成功后清除，
+ * 检查点推进后指纹变化自动轮换，避免付费动作因响应丢失而重复执行）。 ---- */
+
+function randomId() {
+  const random = (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+  return String(random).replace(/[^a-zA-Z0-9-]/g, '');
+}
+
+/**
+ * 取「工程 + 意图 + 指纹」对应的持久化幂等键：指纹不变则复用已存键（重试去重），
+ * 指纹变化（输入或检查点不同）则生成并持久化新键。
+ */
+export function intentIdempotencyKey(projectId, intent, fingerprint = '', storage = defaultStorage()) {
+  const name = `idem:${intent}`;
+  const existing = loadDraft(projectId, name, storage);
+  if (existing && existing.value?.fingerprint === fingerprint && typeof existing.value?.key === 'string') {
+    return existing.value.key;
+  }
+  const key = `${intent}-${randomId()}`.slice(0, 128);
+  saveDraft(projectId, name, { key, fingerprint }, storage);
+  return key;
+}
+
+/** 提交成功后清除对应意图的幂等键，使下一次新意图使用新键。 */
+export function clearIntentIdempotencyKey(projectId, intent, storage = defaultStorage()) {
+  clearDraft(projectId, `idem:${intent}`, storage);
+}

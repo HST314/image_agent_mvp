@@ -128,7 +128,14 @@ class JobRegistry:
         except Exception as exc:
             with self._lock:
                 code = getattr(exc, "code", exc.__class__.__name__)
-                record = self.get(job_id); record.update(status="failed", finished_at=_now(), error={"code":code,"message":str(exc)})
+                error: dict[str, Any] = {"code":code,"message":str(exc)}
+                # 规范化失败分类（如 ModelCallError.category 的 timeout_unknown 等）
+                # 随 job 记录暴露：调用方依 *_unknown 约定区分「结果未知、可能已扣费」
+                # 与「已知失败」，决定幂等重试去重策略（对齐 gateway 的 possible_charge 语义）。
+                category = getattr(exc, "category", None)
+                if isinstance(category, str) and category:
+                    error["category"] = category
+                record = self.get(job_id); record.update(status="failed", finished_at=_now(), error=error)
                 self._event(record, "failed", error=record["error"]); self._write(record)
                 if on_event: on_event(record)
 

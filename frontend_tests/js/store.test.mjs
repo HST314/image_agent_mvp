@@ -1,7 +1,7 @@
 /* T32：草稿保存/恢复/清除 + T33 资产 URL 协议转换。 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { saveDraft, loadDraft, clearDraft } from '../../frontend/static/js/store.js';
+import { saveDraft, loadDraft, clearDraft, intentIdempotencyKey, clearIntentIdempotencyKey } from '../../frontend/static/js/store.js';
 import { assetUrl, assetIdOf } from '../../frontend/static/js/api.js';
 
 function memoryStorage() {
@@ -38,6 +38,39 @@ test('损坏的草稿 JSON 安全降级为 null', () => {
   const storage = memoryStorage();
   storage.map.set('studio-draft:p1:a', '{broken');
   assert.equal(loadDraft('p1', 'a', storage), null);
+});
+
+test('幂等键：同一意图同一指纹复用同一键（重试去重）', () => {
+  const storage = memoryStorage();
+  const first = intentIdempotencyKey('p1', 'select', '3:{"selected_id":"a"}', storage);
+  const retry = intentIdempotencyKey('p1', 'select', '3:{"selected_id":"a"}', storage);
+  assert.equal(first, retry);
+  assert.ok(first.startsWith('select-'));
+  assert.ok(first.length <= 128);
+});
+
+test('幂等键：指纹变化（输入或检查点不同）时轮换新键', () => {
+  const storage = memoryStorage();
+  const base = intentIdempotencyKey('p1', 'manual', '3:{"manual_action":"execute"}', storage);
+  const otherPayload = intentIdempotencyKey('p1', 'manual', '3:{"manual_action":"skip"}', storage);
+  assert.notEqual(base, otherPayload);
+  const nextCheckpoint = intentIdempotencyKey('p1', 'manual', '4:{"manual_action":"execute"}', storage);
+  assert.notEqual(otherPayload, nextCheckpoint);
+});
+
+test('幂等键：按工程与意图隔离，清除后重新生成', () => {
+  const storage = memoryStorage();
+  const a = intentIdempotencyKey('p1', 'task', 'fp', storage);
+  const b = intentIdempotencyKey('p2', 'task', 'fp', storage);
+  const c = intentIdempotencyKey('p1', 'final', 'fp', storage);
+  assert.notEqual(a, b);
+  assert.notEqual(a, c);
+  clearIntentIdempotencyKey('p1', 'task', storage);
+  const regenerated = intentIdempotencyKey('p1', 'task', 'fp', storage);
+  assert.notEqual(a, regenerated);
+  // 其他工程/意图的键不受影响
+  assert.equal(intentIdempotencyKey('p2', 'task', 'fp', storage), b);
+  assert.equal(intentIdempotencyKey('p1', 'final', 'fp', storage), c);
 });
 
 test('artifact:// 转换为受控资产 API 路径', () => {
