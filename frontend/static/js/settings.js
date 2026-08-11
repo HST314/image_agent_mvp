@@ -3,14 +3,15 @@
 
 import { el, toast } from './dom.js';
 import { revisePolicy } from './api.js';
+import { policyEntries } from './copy.js';
 
 export function renderSettings(container, view, { projectId, onChanged }) {
   const tpl = document.getElementById('tpl-policy-section');
   const section = tpl.content.firstElementChild.cloneNode(true);
   const values = section.querySelector('.policy-section__values');
-  const policy = view.runtime_policy || {};
-  for (const [key, value] of Object.entries(policy)) {
-    values.append(el('dt', { text: key }), el('dd', { text: typeof value === 'object' ? JSON.stringify(value) : String(value) }));
+  /* T11（契约 §8/§11）：策略键名与枚举值一律中文展示，不出现英文字段名。 */
+  for (const entry of policyEntries(view.runtime_policy)) {
+    values.append(el('dt', { text: entry.label }), el('dd', { text: entry.valueText }));
   }
   section.querySelector('[data-revise-policy]').addEventListener('click', () => openRevisionDialog(view, { projectId, onChanged }));
   container.append(section);

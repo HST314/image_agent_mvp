@@ -14,6 +14,7 @@ import { createAnnotator } from './annotate.js';
 import { renderTimeline, renderJobProgress } from './history.js';
 import { renderSettings } from './settings.js';
 import { markActiveTab, setTopContext } from './topnav.js';
+import { errorText, phaseLabel, capabilityLabel, terminationReasonLabel, fieldLabel } from './copy.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -228,7 +229,7 @@ function renderStage(panel, view, derived, ctx) {
       btn = el('button', { type: 'button', class: 'btn btn--primary', text: '从上一成功点重试' });
       btn.addEventListener('click', () => jobRunner.retry({}));
     }
-    panel.append(stateBlock('error', `流程在 ${stateLabel(failure.state)} 暂停`, failure?.error?.message || '后端能力暂不可用。修正模型、密钥或依赖后可安全重试。', btn));
+    panel.append(stateBlock('error', `流程在 ${stateLabel(failure.state)} 暂停`, failure?.error?.message ? errorText(failure.error.message) : '后端能力暂不可用。修正模型、密钥或依赖后可安全重试。', btn));
     return;
   }
   if (stage === 'terminated') {
@@ -292,7 +293,7 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.best_asset || snapshot.asset;
   const inspection = snapshot.inspection || {};
-  panel.append(el('p', { class: 'hint', text: `终止原因：${snapshot.termination_reason || '达到轮次上限'}；当前为第 ${snapshot.round || 1} 轮。` }));
+  panel.append(el('p', { class: 'hint', text: `终止原因：${terminationReasonLabel(snapshot.termination_reason)}；当前为第 ${snapshot.round || 1} 轮。` }));
   if (Array.isArray(inspection.deviations) && inspection.deviations.length) {
     const ul = el('ul');
     inspection.deviations.forEach((d) => ul.append(el('li', { text: d })));
@@ -463,10 +464,10 @@ function renderInfo(view, derived, onActorChanged) {
   const list = el('dl', { class: 'kv' });
   list.append(
     el('dt', { text: '当前状态' }), el('dd', { text: stateLabel(snapshot.state) }),
-    el('dt', { text: '当前阶段' }), el('dd', { text: snapshot.phase || '—' }),
+    el('dt', { text: '当前阶段' }), el('dd', { text: phaseLabel(snapshot.phase) }),
     el('dt', { text: '当前分支' }), el('dd', { text: manifest.current_branch || 'main' }),
     el('dt', { text: '更新时间' }), el('dd', { text: formatDate(manifest.updated_at) }),
-    el('dt', { text: '可用动作' }), el('dd', { text: (view.capabilities || []).join('、') || '无' }),
+    el('dt', { text: '可用动作' }), el('dd', { text: (view.capabilities || []).map(capabilityLabel).join('、') || '无' }),
   );
   panel.append(list);
   const actorField = el('div', { class: 'field', style: 'margin-top:12px' });
@@ -553,11 +554,21 @@ function sectionPanel(title, subtitle) {
   return panel;
 }
 
+/* 任务卡事实展示：键名一律中文化（T11 §11），嵌套对象/数组的值拍平为可读文本。 */
+function formatFactValue(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (Array.isArray(value)) return value.map(formatFactValue).join('、');
+  if (typeof value === 'object') {
+    return Object.entries(value).map(([k, v]) => `${fieldLabel(k)} ${formatFactValue(v)}`).join('，');
+  }
+  return String(value);
+}
+
 function summarizeFacts(facts) {
   if (!facts || typeof facts !== 'object') return '—';
   const entries = Object.entries(facts);
   if (!entries.length) return '—';
-  return entries.map(([k, v]) => `${k}：${typeof v === 'object' ? JSON.stringify(v) : v}`).join('；');
+  return entries.map(([k, v]) => `${fieldLabel(k)}：${formatFactValue(v)}`).join('；');
 }
 
 function getActor() { try { return localStorage.getItem('studio-actor') || ''; } catch { return ''; } }

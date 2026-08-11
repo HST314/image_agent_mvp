@@ -37,7 +37,8 @@ export const CAPABILITY_ACTIONS = {
 
 const FINAL_APPROVAL_HINT = '人工确认';
 
-export function stateLabel(id) { return STATE_LABELS[id] || id || '未开始'; }
+/* T11（契约 §11）：未知状态不得把英文 state id 原样上屏，统一兜底中文。 */
+export function stateLabel(id) { return STATE_LABELS[id] || (id ? '状态未知' : '未开始'); }
 
 export function stepIndex(snapshot) {
   const idx = WORKFLOW_STATES.findIndex((s) => s.id === snapshot?.state);

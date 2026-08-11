@@ -3,6 +3,7 @@
 import { el, toast } from './dom.js';
 import { saveDraft, loadDraft, clearDraft } from './store.js';
 import { advance } from './api.js';
+import { fieldLabel } from './copy.js';
 
 const DRAFT_NAME = 'clarification-answers';
 
@@ -25,10 +26,12 @@ export function renderClarify(container, view, { projectId, onSubmitted }) {
 
   questions.forEach((q, i) => {
     const fieldset = el('fieldset', { class: 'field' });
-    fieldset.append(el('legend', { text: `${i + 1}. ${q.question || q.field}` }));
+    // T11：question 缺失时不兜底展示英文字段名，映射为中文标签。
+    const questionText = q.question || fieldLabel(q.field, '补充信息');
+    fieldset.append(el('legend', { text: `${i + 1}. ${questionText}` }));
     if (q.impact) fieldset.append(el('small', { text: q.impact }));
 
-    const cards = el('div', { class: 'option-cards', role: 'radiogroup', 'aria-label': q.question || q.field });
+    const cards = el('div', { class: 'option-cards', role: 'radiogroup', 'aria-label': questionText });
     (q.options || []).forEach((opt, j) => {
       const id = `q${i}-opt${j}`;
       const input = el('input', { type: 'radio', name: q.field, id, value: opt.label });
@@ -45,7 +48,7 @@ export function renderClarify(container, view, { projectId, onSubmitted }) {
     });
     fieldset.append(cards);
 
-    const custom = el('input', { class: 'input', placeholder: '也可以输入自己的答案', 'aria-label': `${q.question || q.field} 自定义答案` });
+    const custom = el('input', { class: 'input', placeholder: '也可以输入自己的答案', 'aria-label': `${questionText} 自定义答案` });
     if (draft[q.field] && !(q.options || []).some((o) => o.label === draft[q.field])) custom.value = draft[q.field];
     custom.addEventListener('input', () => {
       if (custom.value) cards.querySelectorAll('input[type=radio]').forEach((r) => { r.checked = false; });

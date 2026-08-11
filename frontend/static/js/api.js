@@ -1,15 +1,30 @@
 /* API client（T35 独立模块）：统一错误格式、120s 超时、资产 URL 协议转换、
- * 后台 job 提交/轮询/SSE 序号续传（对齐 T23 契约）。 */
+ * 后台 job 提交/轮询/SSE 序号续传（对齐 T23 契约）。
+ * T11：所有 HTTP 错误文案在此统一中文化（契约 §11），英文错误码/字段名不上屏。 */
+
+import { errorText, validationText, fieldLabel, hasCJK } from './copy.js';
 
 const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
 const TERMINAL_EVENTS = new Set(['succeeded', 'failed', 'cancelled']);
 
 export class ApiError extends Error {}
 
+/* 422 校验错误的字段路径（body.policy.self_check…）→ 中文路径；含未收录英文段时整体兜底。 */
+function locLabel(loc) {
+  const segments = (loc || []).slice(1);
+  if (!segments.length) return '输入';
+  const labels = segments.map((seg) => {
+    const text = String(seg);
+    if (/^\d+$/.test(text)) return null; // 数组下标不参与展示
+    return hasCJK(text) ? text : fieldLabel(text, null);
+  }).filter(Boolean);
+  return labels.length ? labels.join(' · ') : '输入';
+}
+
 export function formatError(detail) {
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) return detail.map((x) => `${(x.loc || []).slice(1).join('.') || '输入'}：${x.msg}`).join('；');
-  if (detail && typeof detail === 'object') return detail.message || detail.code || JSON.stringify(detail);
+  if (typeof detail === 'string') return errorText(detail);
+  if (Array.isArray(detail)) return detail.map((x) => `${locLabel(x.loc)}：${validationText(x.msg)}`).join('；');
+  if (detail && typeof detail === 'object') return errorText(detail.message || detail.code || '');
   return '请求未完成，请检查输入后重试。';
 }
 

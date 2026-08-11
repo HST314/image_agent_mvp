@@ -3,6 +3,7 @@
 
 import { el, icons } from './dom.js';
 import { assetUrl } from './api.js';
+import { mechanismLabel, candidateLabel } from './copy.js';
 
 export const SLOT_COUNT = 5;
 
@@ -39,7 +40,8 @@ export function buildSlots(candidates = [], styleSelections = []) {
       key: asset ? (asset.sha256 || asset.artifact_id || asset.id || `slot-${index}`) : `missing-${index}`,
       asset,
       style,
-      styleName: asset?.style_name || style?.style_id || null,
+      // T11：缺 style_name 时不再兜底展示英文 style_id。
+      styleName: asset?.style_name || null,
     });
   }
   return slots;
@@ -71,7 +73,11 @@ function slotFrame(slot, projectId) {
 function slotBody(slot, { selectedId, onSelect, onZoom, onCompensate }) {
   const body = el('div', { class: 'slot__body' });
   body.append(el('span', { class: 'slot__title', text: `方向 ${slot.index + 1}${slot.styleName ? ` · ${slot.styleName}` : ''}` }));
-  if (slot.style?.mechanism) body.append(el('span', { class: 'slot__meta', text: slot.style.mechanism, title: slot.style.mechanism }));
+  if (slot.style?.mechanism) {
+    // T11："dimension: value" 的英文维度前缀映射为中文（构图/材质/光影…）。
+    const mechanism = mechanismLabel(slot.style.mechanism);
+    body.append(el('span', { class: 'slot__meta', text: mechanism, title: mechanism }));
+  }
   const actions = el('div', { class: 'slot__actions' });
   if (slot.status === 'ready') {
     const select = el('button', { type: 'button', class: 'btn btn--secondary', text: '选为主图' });
@@ -165,7 +171,7 @@ export function renderGalleryStage(container, view, { projectId, selectedId, onS
   });
   const bar = el('div', { class: 'gallery-select-bar' });
   const confirm = el('button', { type: 'button', class: 'btn btn--primary', id: 'select-button', text: '确认当前主图', disabled: selectedId ? null : 'disabled' });
-  const note = el('span', { class: 'badge badge--info', text: selectedId ? `已选择：${selectedId}` : '请先选择一个方向' });
+  const note = el('span', { class: 'badge badge--info', text: selectedId ? `已选择：${candidateLabel(selectedId)}` : '请先选择一个方向' });
   bar.append(confirm, note);
   container.append(head, grid, bar);
   return { confirmButton: confirm, slots };

@@ -3,6 +3,7 @@
 
 import { el } from './dom.js';
 import { eventLabel } from './states.js';
+import { errorText, jobStatusLabel } from './copy.js';
 
 const PAGE_SIZE = 20;
 
@@ -66,8 +67,10 @@ function describeJob(job) {
   const map = {
     submitting: `正在提交“${operation}”…`, queued: `“${operation}”已排队…`,
     running: `正在${operation}…`, cancelling: `正在取消“${operation}”…`,
-    succeeded: '任务完成。', failed: `任务失败：${job.error?.message || '未知错误'}`,
+    succeeded: '任务完成。',
+    failed: `任务失败：${job.error?.message ? errorText(job.error.message) : '未知错误'}`,
     cancelled: '任务已取消。', interrupted: '服务重启，任务中断且不会自动补调用。',
   };
-  return map[job.status] || `任务状态：${job.status}`;
+  // T11：未知状态不原样上屏英文 status。
+  return map[job.status] || `任务状态：${jobStatusLabel(job.status)}`;
 }

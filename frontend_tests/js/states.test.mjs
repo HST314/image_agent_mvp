@@ -108,5 +108,6 @@ test('事件标签有兜底且不泄露未知类型细节', () => {
   assert.equal(eventLabel({ type: 'delivery_frozen' }), '交付已冻结');
   assert.equal(eventLabel({ type: 'step_succeeded', state: 'self_check_iteration' }), '完成节点 · 画面质检');
   assert.equal(eventLabel({ type: 'some_future_event' }), '记录进度');
-  assert.equal(stateLabel('unknown_state'), 'unknown_state');
+  // T11（契约 §11）：未知状态不再把英文 state id 原样上屏
+  assert.equal(stateLabel('unknown_state'), '状态未知');
 });

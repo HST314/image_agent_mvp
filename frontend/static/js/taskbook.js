@@ -6,6 +6,7 @@ import { renderMarkdownInto } from './markdown.js';
 import { approvalValid } from './states.js';
 import { saveDraft, loadDraft, clearDraft } from './store.js';
 import { advance } from './api.js';
+import { localizeFactLabelsInMarkdown } from './copy.js';
 
 const DRAFT_NAME = 'taskbook-markdown';
 
@@ -24,7 +25,9 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   head.append(headText, status);
 
   const preview = el('div', { class: 'markdown-body' });
-  renderMarkdownInto(preview, markdown);
+  /* T11：预览中将后端以任务卡字段名生成的事实标签（如 audience）替换为中文；
+   * 编辑区仍持有原始 Markdown，保存回写后端的数据不受影响（任务书整体重构属 T4）。 */
+  renderMarkdownInto(preview, localizeFactLabelsInMarkdown(markdown));
 
   /* 编辑区：草稿随输入自动保存，刷新后可恢复 */
   const editor = el('textarea', { class: 'input', id: 'taskbook-editor', 'aria-label': '编辑任务书 Markdown', style: 'display:none;min-height:220px' });

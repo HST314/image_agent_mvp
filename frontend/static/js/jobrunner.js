@@ -4,6 +4,7 @@
  * 测试（H1/M1）。 */
 
 import { state, intentIdempotencyKey, clearIntentIdempotencyKey } from './store.js';
+import { errorText } from './copy.js';
 
 /* ---------- 视图/操作世代注册表 ----------
  * 工程视图每次渲染、每次提交新操作都 begin() 一个新操作并中止旧操作的
@@ -139,7 +140,8 @@ export function createJobRunner(deps, registry = viewOperations) {
         applyBusy(false);
         onJobRecord?.(record);
         if (record.status === 'succeeded') notify('已保存到新的工作流检查点。');
-        else if (record.status === 'failed') notify(record.error?.message || '任务失败。', 'error');
+        // T11：后端英文错误信息经 copy.errorText 中文化后再 toast。
+        else if (record.status === 'failed') notify(record.error?.message ? errorText(record.error.message) : '任务失败。', 'error');
         // M1：仅在工作流成功或确认无副作用的终态清除幂等键；未知结果保留。
         if (intent && shouldClearIntentKey(record)) clearIntentIdempotencyKey(projectId, intent);
         schedule(() => {

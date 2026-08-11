@@ -45,7 +45,7 @@ export function renderHome(content, { onNew, onOpen }) {
   } else {
     const emptyBtn = el('button', { class: 'btn btn--secondary', type: 'button', text: '创建第一个工程' });
     emptyBtn.addEventListener('click', onNew);
-    recent.append(stateBlock('empty', '尚无创作工程', '准备一份 ImageTaskCard，系统会从真实后端工作流开始推进。', emptyBtn));
+    recent.append(stateBlock('empty', '尚无创作工程', '准备一份任务卡 JSON，系统会从真实后端工作流开始推进。', emptyBtn));
   }
   content.append(recent);
 }
