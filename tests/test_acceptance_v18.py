@@ -89,6 +89,43 @@ def test_corrupt_prompt_log_is_reported_and_never_extended(tmp_path: Path) -> No
     assert path.read_text(encoding="utf-8") == damaged
 
 
+def _prompt_record(trace_id: str) -> dict:
+    return {
+        "messages": [], "template_id": "test", "template_version": "1",
+        "template_hash": "hash", "variables": {}, "input_refs": [], "model": "offline",
+        "parameters": {}, "config_hash": "config", "state": "test", "trace_id": trace_id,
+    }
+
+
+@pytest.mark.parametrize("corruption", ["record_hash", "format_version"])
+@pytest.mark.parametrize("operation", ["begin", "complete", "fail"])
+def test_integrity_corruption_rejects_every_prompt_write_without_changing_bytes(
+    tmp_path: Path, corruption: str, operation: str,
+) -> None:
+    path = tmp_path / "prompts.jsonl"
+    store = PromptStore(path)
+    damaged_id = store.begin(_prompt_record("damaged"))
+    target_id = store.begin(_prompt_record("target"))
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    damaged = next(record for record in records if record["prompt_id"] == damaged_id)
+    if corruption == "record_hash":
+        damaged["record_hash"] = "0" * 64
+    else:
+        damaged["format_version"] = 999
+    original = "\n".join(json.dumps(record, ensure_ascii=False, sort_keys=True) for record in records) + "\n"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(CorruptPromptLogError, match="第 1 行"):
+        if operation == "begin":
+            store.begin(_prompt_record("new"))
+        elif operation == "complete":
+            store.complete(target_id, output_raw={"ok": True})
+        else:
+            store.fail(target_id, {"message": "failed"})
+
+    assert path.read_bytes() == original.encode("utf-8")
+
+
 def test_resource_error_can_receive_python_traceback() -> None:
     error = ResourceError("RESOURCE_NO_MATCH", "library.json", "trace_test")
     try:

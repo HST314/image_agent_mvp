@@ -114,11 +114,19 @@ class PromptStore:
                 item = json.loads(line)
                 if not isinstance(item, dict):
                     raise TypeError("record is not an object")
-                items.append(item)
             except (json.JSONDecodeError, TypeError) as exc:
                 raise CorruptPromptLogError(
                     f"Prompt 审计日志已损坏（第 {line_number} 行），已拒绝继续写入。"
                 ) from exc
+            checksum = item.get("record_hash")
+            hashed_item = {key: value for key, value in item.items() if key != "record_hash"}
+            if (item.get("format_version") != FORMAT_VERSION
+                    or checksum != content_hash(hashed_item)):
+                raise CorruptPromptLogError(
+                    f"Prompt 审计日志版本或完整性校验失败（第 {line_number} 行），"
+                    "已拒绝继续写入。"
+                )
+            items.append(item)
         for item in reversed(items):
             if item.get("prompt_id") == prompt_id and (status is None or item.get("status") == status):
                 return item
