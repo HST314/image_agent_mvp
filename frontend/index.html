@@ -43,9 +43,16 @@
     <form id="project-form">
       <div class="dialog__head"><h2 id="dialog-title">新建创作工程</h2><button type="button" class="icon-btn" data-close aria-label="关闭对话框"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div class="dialog__body">
-        <p class="hint"><strong>调试入口</strong>：一期保留手工下发任务（任务卡 JSON），用于契约联调；正式环境由主 Agent 自动下发。</p>
-        <div class="field"><label for="project-id">工程 ID <span aria-hidden="true">*</span></label><input class="input" id="project-id" name="project_id" required minlength="2" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,63}" placeholder="campaign-visual-01" aria-describedby="project-help project-error"><small id="project-help">使用字母、数字、下划线或连字符，创建后不可更改。</small><div class="field-error" id="project-error" role="alert"></div></div>
-        <div class="field"><label for="task-json">任务卡 JSON <span aria-hidden="true">*</span></label><textarea class="input" id="task-json" name="task_json" required spellcheck="false" aria-describedby="task-help task-error"></textarea><small id="task-help">必须符合生产后端的任务卡 JSON 契约，最多 512 KiB。</small><div class="field-error" id="task-error" role="alert"></div></div>
+        <p class="hint"><strong>描述创作需求</strong>：填写面向创作的信息，系统会自动整理为任务卡并进入澄清流程。</p>
+        <div class="field"><label for="project-id">工程 ID <span aria-hidden="true">*</span></label><input class="input" id="project-id" name="projectCode" required minlength="2" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,63}" placeholder="campaign-visual-01" aria-describedby="project-help project-error"><small id="project-help">使用字母、数字、下划线或连字符，创建后不可更改。</small><div class="field-error" id="project-error" role="alert"></div></div>
+        <div class="field"><label for="creative-goal">创作目标 <span aria-hidden="true">*</span></label><textarea class="input" id="creative-goal" name="creativeGoal" required aria-describedby="goal-help task-error" placeholder="例如：设计一张突出新品轻盈质感的社交媒体海报"></textarea><small id="goal-help">说明要创作的内容、主体与希望传达的重点。</small></div>
+        <div class="create-form-grid">
+          <div class="field"><label for="usage-scene">使用场景 <span aria-hidden="true">*</span></label><input class="input" id="usage-scene" name="usageScene" required placeholder="例如：社交媒体发布"></div>
+          <div class="field"><label for="target-group">目标人群</label><input class="input" id="target-group" name="targetGroup" placeholder="例如：20–35 岁城市通勤人群"></div>
+          <div class="field"><label for="style-tone">风格与语气</label><input class="input" id="style-tone" name="styleTone" placeholder="例如：清爽、现代、有活力"></div>
+          <div class="field"><label for="delivery-spec">交付规格</label><input class="input" id="delivery-spec" name="deliverySpec" placeholder="例如：正方形图片；可留空待澄清"></div>
+        </div>
+        <div class="field-error" id="task-error" role="alert" aria-live="polite"></div>
         <label class="switch-row"><input type="checkbox" id="offline"><span><strong>显式离线测试模式</strong><span>使用模拟图片验证流程；模拟结果不能最终交付。</span></span></label>
       </div>
       <div class="dialog__foot"><button type="button" class="btn btn--secondary" data-close>取消</button><button type="submit" class="btn btn--primary" id="create-button">创建并启动</button></div>

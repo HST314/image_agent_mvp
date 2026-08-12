@@ -21,7 +21,7 @@ EXPECTED_JS = {
     "home.js", "project.js", "taskbook.js", "clarify.js", "gallery.js",
     "annotate.js", "history.js", "settings.js", "jobrunner.js",
     "copy.js", "topnav.js", "viewswitch.js", "stepstatus.js",
-    "createflow.js",
+    "createflow.js", "createform.js",
     # T2 状态页 / T3 设置页
     "statuspage.js", "eventlog.js", "policyform.js",
     # T9 进度卡只读快照与历史分支
@@ -63,6 +63,17 @@ def test_index_shell_references_module_entry(client: TestClient) -> None:
     # 生产恢复控件模板仍在首屏 HTML 中（保持 v4 安装态验收口径）。
     assert "data-revise-policy" in page.text
     assert "data-unknown" in page.text
+
+
+def test_t11_create_dialog_has_no_raw_contract_editor_or_english_keys(client: TestClient) -> None:
+    """普通新建入口只展示中文表单；领域键可以存在于 JS 提交边界，但不得进入 DOM。"""
+    page = client.get("/")
+    assert page.status_code == 200
+    assert 'id="task-json"' not in page.text
+    for raw_key in ("audience", "output_spec", "task_id", "project_id", "source_refs"):
+        assert raw_key not in page.text
+    for label in ("创作目标", "使用场景", "目标人群", "风格与语气", "交付规格"):
+        assert label in page.text
 
 
 def test_wheel_contains_static_frontend_modules(tmp_path: Path) -> None:

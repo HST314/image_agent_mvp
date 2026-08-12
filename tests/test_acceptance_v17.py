@@ -1,7 +1,6 @@
 """v1.7.7 release gate: immutable mode and a real offline browser journey."""
 from __future__ import annotations
 
-import json
 import socket
 import threading
 import time
@@ -94,8 +93,13 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
     try:
         driver.get(f"http://127.0.0.1:{port}/")
         click_button("新建工程")
+        dialog_text = driver.find_element(By.ID, "project-dialog").text
+        assert all(key not in dialog_text for key in ("audience", "output_spec", "task_id", "project_id", "source_refs"))
+        assert not driver.find_elements(By.ID, "task-json")
         driver.find_element(By.ID, "project-id").send_keys("v17-browser")
-        driver.execute_script("arguments[0].value = arguments[1]", driver.find_element(By.ID, "task-json"), json.dumps(TASK))
+        driver.find_element(By.ID, "creative-goal").send_keys("广告 海报")
+        driver.find_element(By.ID, "usage-scene").send_keys("内部审核")
+        driver.find_element(By.ID, "target-group").send_keys("审核人员")
         checkbox = driver.find_element(By.ID, "offline")
         if not checkbox.is_selected():
             checkbox.click()

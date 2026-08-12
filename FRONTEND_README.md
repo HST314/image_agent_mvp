@@ -59,6 +59,12 @@ python3 -m py_compile main_front.py
 长任务超时和断线恢复；支持 375、768、1024、1440px，键盘焦点、跳转链接、
 语义表单、`aria-live`、44px 触控目标与 `prefers-reduced-motion`。
 
+## T9 历史分支契约
+
+`POST /api/projects/{id}/branches` 原子完成“创建并切换”，成功响应直接返回已位于
+新分支的完整工程视图。前端不得再调用 `/branches/switch`，也不得因响应异常而补发
+创建请求；响应丢失时只允许 `GET /api/projects/{id}` 对账当前分支，避免同名分支冲突。
+
 ## 生产基线证据
 
 - 指定附件：`image_agent_mvp_production.zip`

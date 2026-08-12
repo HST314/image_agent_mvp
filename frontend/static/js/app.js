@@ -11,22 +11,10 @@ import { renderStatusPage } from './statuspage.js';
 import { renderSettingsPage } from './settings.js';
 import { createNavigator, viewOperations } from './jobrunner.js';
 import { createImmediateProjectFlow } from './createflow.js';
+import { buildNewProjectTask } from './createform.js';
 import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { createAuxPageRefresher, createViewSwitcher } from './viewswitch.js';
-
-const SAMPLE_TASK = {
-  task_id: 'task_new',
-  project_id: 'campaign-visual-01',
-  source_refs: [{ ref_id: 'brief-001', ref_type: 'brief', excerpt: '请描述已确认的创作输入。', source_hash: null }],
-  deliverable_goal: '描述需要生成的视觉内容、主体、风格和画面重点。',
-  usage_context: '内部审核与决策',
-  category_ref: { category_id: 'generic_visual_delivery', version: '1.0' },
-  known_facts: { audience: '内部审核人员', tone: '清晰、精致' },
-  unknowns: { output_spec: '待确认' },
-  asset_inputs: [],
-  status: 'draft',
-};
 
 async function boot() {
   patch({ offline: safeGet('studio-offline') === 'true' });
@@ -162,8 +150,7 @@ const setView = viewSwitcher.setView;
 
 function showCreate() {
   const dialog = $('#project-dialog');
-  $('#task-json').value = JSON.stringify({ ...SAMPLE_TASK, project_id: 'campaign-visual-01' }, null, 2);
-  $('#project-id').value = '';
+  $('#project-form').reset();
   $('#offline').checked = state.offline;
   $('#project-error').textContent = '';
   $('#task-error').textContent = '';
@@ -232,12 +219,26 @@ async function createProject(event) {
     $('#project-id').focus();
     return;
   }
-  let task;
-  try { task = JSON.parse($('#task-json').value); } catch {
-    $('#task-error').textContent = 'JSON 格式无效，请检查逗号、引号和括号。';
-    $('#task-json').focus();
+  const goal = $('#creative-goal').value.trim();
+  const usageScene = $('#usage-scene').value.trim();
+  if (!goal) {
+    $('#task-error').textContent = '请填写创作目标。';
+    $('#creative-goal').focus();
     return;
   }
+  if (!usageScene) {
+    $('#task-error').textContent = '请填写使用场景。';
+    $('#usage-scene').focus();
+    return;
+  }
+  const task = buildNewProjectTask({
+    projectId: id,
+    goal,
+    usageScene,
+    targetGroup: $('#target-group').value,
+    styleTone: $('#style-tone').value,
+    deliverySpec: $('#delivery-spec').value,
+  });
   patch({ offline: $('#offline').checked });
   safeSet('studio-offline', String(state.offline));
   /* T10（契约 §7/Q10-A）：等待创建接口前已经关闭弹窗并切至工作台等待态；
