@@ -1,5 +1,8 @@
 """v1.7.8 regression gate for generic offline task submission."""
+import json
 from pathlib import Path
+
+import pytest
 
 from agent_core.models import ImageTaskCard
 from agent_core.workflow_runner import WorkflowRunner
@@ -7,6 +10,7 @@ from configs.runtime_policy import RuntimePolicy
 from interaction.confirmation_builder import specification_from_task
 from skills.errors import ResourceError
 from storage.project_store import ProjectStore
+from storage.prompt_store import CorruptPromptLogError, PromptStore
 
 
 def _generic_task() -> ImageTaskCard:
@@ -43,6 +47,46 @@ def test_generic_offline_task_uses_approved_fallback_skill(tmp_path: Path) -> No
     assert {item["provenance"]["category_id"] for item in result["candidates"]} == {
         "generic_visual_delivery"
     }
+
+
+def test_five_way_offline_generation_keeps_prompt_log_valid(tmp_path: Path) -> None:
+    """The five candidate workers share one atomic prompt audit log."""
+    store = ProjectStore(tmp_path, "five-way")
+    store.create(RuntimePolicy(offline_mode=True).snapshot())
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    task = _generic_task()
+    specification = specification_from_task(task)
+
+    result = runner._candidates({
+        "task_card": task.model_dump(mode="json"),
+        "task_specification": specification.model_dump(mode="json"),
+        "task_revision": {"revision_hash": "approved-revision"},
+        "task_approval": {"revision_hash": "approved-revision", "actor": "reviewer"},
+    }, {})
+
+    lines = (store.root / "runtime/prompts.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    assert len(result["candidates"]) == 5
+    assert len(records) == 10
+    assert sum(record["status"] == "started" for record in records) == 5
+    assert sum(record["status"] == "completed" for record in records) == 5
+    assert len({record["prompt_id"] for record in records}) == 10
+
+
+def test_corrupt_prompt_log_is_reported_and_never_extended(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.jsonl"
+    damaged = '{"prompt_id":"truncated"'
+    path.write_text(damaged, encoding="utf-8")
+    store = PromptStore(path)
+    record = {
+        "messages": [], "template_id": "test", "template_version": "1",
+        "template_hash": "hash", "variables": {}, "input_refs": [], "model": "offline",
+        "parameters": {}, "config_hash": "config", "state": "test", "trace_id": "trace",
+    }
+
+    with pytest.raises(CorruptPromptLogError, match="第 1 行"):
+        store.begin(record)
+    assert path.read_text(encoding="utf-8") == damaged
 
 
 def test_resource_error_can_receive_python_traceback() -> None:

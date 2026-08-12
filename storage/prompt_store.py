@@ -3,11 +3,19 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, TextIO
 from uuid import uuid4
 
+import portalocker
+
 from storage.project_store import FORMAT_VERSION, ImmutableRecordError, content_hash, _now
+
+
+class CorruptPromptLogError(ValueError):
+    """The prompt audit log cannot be parsed safely."""
 
 
 class PromptStore:
@@ -16,53 +24,67 @@ class PromptStore:
     SECRET_WORDS = ("api_key", "apikey", "authorization", "token", "secret")
     REQUIRED = {"messages", "template_id", "template_version", "template_hash", "variables",
                 "input_refs", "model", "parameters", "config_hash", "state", "trace_id"}
+    _guards: dict[str, threading.RLock] = {}
+    _guards_lock = threading.Lock()
 
     def __init__(self, path: Path) -> None:
         self.path = path if path.suffix == ".jsonl" else path / "prompts.jsonl"
+        key = os.path.normcase(str(self.path.resolve()))
+        with self._guards_lock:
+            self._guard = self._guards.setdefault(key, threading.RLock())
 
     def begin(self, record: dict[str, Any]) -> str:
         missing = self.REQUIRED - record.keys()
         if missing:
             raise ValueError(f"Prompt 审计记录缺少必填项：{', '.join(sorted(missing))}")
         prompt_id = str(record.get("prompt_id") or f"prompt_{uuid4().hex}")
-        if self._find(prompt_id, "started") is not None:
-            raise ImmutableRecordError("Prompt 记录不可覆盖。")
-        data = {"format_version": FORMAT_VERSION, "prompt_id": prompt_id, "created_at": _now(),
-                "status": "started", **self._redact(record)}
-        data["record_hash"] = content_hash(data)
-        self._append(data)
+        with self._locked_stream() as stream:
+            if self._find_in(stream, prompt_id, "started") is not None:
+                raise ImmutableRecordError("Prompt 记录不可覆盖。")
+            data = {"format_version": FORMAT_VERSION, "prompt_id": prompt_id, "created_at": _now(),
+                    "status": "started", **self._redact(record)}
+            data["record_hash"] = content_hash(data)
+            self._append_to(stream, data)
         return prompt_id
 
     def complete(self, prompt_id: str, *, output_raw: Any, output_parsed: Any = None,
                  output_ref: str | None = None) -> str:
-        original = self.get(prompt_id)
         result_id = f"{prompt_id}.result"
-        if self._find(result_id) is not None:
-            raise ImmutableRecordError("Prompt 输出审计记录不可覆盖。")
-        record = {"format_version": FORMAT_VERSION, "prompt_id": result_id,
-                  "call_prompt_id": prompt_id, "parent_record_hash": original["record_hash"],
-                  "status": "completed", "completed_at": _now(),
-                  "output_raw": self._redact(output_raw), "output_parsed": self._redact(output_parsed),
-                  "output_ref": output_ref}
-        record["record_hash"] = content_hash(record)
-        self._append(record)
+        with self._locked_stream() as stream:
+            original = self._get_in(stream, prompt_id)
+            if self._find_in(stream, result_id) is not None:
+                raise ImmutableRecordError("Prompt 输出审计记录不可覆盖。")
+            record = {"format_version": FORMAT_VERSION, "prompt_id": result_id,
+                      "call_prompt_id": prompt_id, "parent_record_hash": original["record_hash"],
+                      "status": "completed", "completed_at": _now(),
+                      "output_raw": self._redact(output_raw), "output_parsed": self._redact(output_parsed),
+                      "output_ref": output_ref}
+            record["record_hash"] = content_hash(record)
+            self._append_to(stream, record)
         return result_id
 
     def fail(self, prompt_id: str, error: dict[str, Any]) -> str:
-        original = self.get(prompt_id)
         result_id = f"{prompt_id}.failed"
-        record = {"format_version": FORMAT_VERSION, "prompt_id": result_id,
-                  "call_prompt_id": prompt_id, "parent_record_hash": original["record_hash"],
-                  "status": "failed", "completed_at": _now(), "error": self._redact(error)}
-        record["record_hash"] = content_hash(record)
-        self._append(record)
+        with self._locked_stream() as stream:
+            original = self._get_in(stream, prompt_id)
+            if self._find_in(stream, result_id) is not None:
+                raise ImmutableRecordError("Prompt 失败审计记录不可覆盖。")
+            record = {"format_version": FORMAT_VERSION, "prompt_id": result_id,
+                      "call_prompt_id": prompt_id, "parent_record_hash": original["record_hash"],
+                      "status": "failed", "completed_at": _now(), "error": self._redact(error)}
+            record["record_hash"] = content_hash(record)
+            self._append_to(stream, record)
         return result_id
 
     def save(self, record: dict[str, Any]) -> str:
         return self.begin(record)
 
     def get(self, prompt_id: str) -> dict[str, Any]:
-        data = self._find(prompt_id)
+        with self._locked_stream() as stream:
+            return self._get_in(stream, prompt_id)
+
+    def _get_in(self, stream: TextIO, prompt_id: str) -> dict[str, Any]:
+        data = self._find_in(stream, prompt_id)
         if data is None:
             raise FileNotFoundError(prompt_id)
         checksum = data.pop("record_hash", None)
@@ -72,20 +94,52 @@ class PromptStore:
         return data
 
     def _find(self, prompt_id: str, status: str | None = None) -> dict[str, Any] | None:
-        if not self.path.exists():
-            return None
-        for line in reversed(self.path.read_text(encoding="utf-8").splitlines()):
-            item = json.loads(line)
+        with self._locked_stream() as stream:
+            return self._find_in(stream, prompt_id, status)
+
+    def _find_in(self, stream: TextIO, prompt_id: str,
+        status: str | None = None) -> dict[str, Any] | None:
+        stream.seek(0)
+        items = []
+        try:
+            lines = stream.read().splitlines()
+        except UnicodeDecodeError as exc:
+            raise CorruptPromptLogError(
+                "Prompt 审计日志编码已损坏，已拒绝继续写入。"
+            ) from exc
+        for line_number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+                if not isinstance(item, dict):
+                    raise TypeError("record is not an object")
+                items.append(item)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise CorruptPromptLogError(
+                    f"Prompt 审计日志已损坏（第 {line_number} 行），已拒绝继续写入。"
+                ) from exc
+        for item in reversed(items):
             if item.get("prompt_id") == prompt_id and (status is None or item.get("status") == status):
                 return item
         return None
 
-    def _append(self, record: dict[str, Any]) -> None:
+    @contextmanager
+    def _locked_stream(self) -> Iterator[TextIO]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        with self._guard, self.path.open("a+", encoding="utf-8") as stream:
+            portalocker.lock(stream, portalocker.LOCK_EX)
+            try:
+                yield stream
+            finally:
+                portalocker.unlock(stream)
+
+    @staticmethod
+    def _append_to(stream: TextIO, record: dict[str, Any]) -> None:
+        stream.seek(0, os.SEEK_END)
+        stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
     @classmethod
     def _redact(cls, value: Any) -> Any:
