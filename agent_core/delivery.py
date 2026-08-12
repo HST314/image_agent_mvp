@@ -1,8 +1,11 @@
 """Generate and persist the minimal, machine-readable delivery bundle."""
 from __future__ import annotations
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from agent_core.contracts import DesignDeliveryEnvelopeV1
 
 def build_delivery(snapshot: dict[str, Any], project_id: str, asset: dict[str, Any], trace_ref: str) -> DesignDeliveryEnvelopeV1:
@@ -25,3 +28,26 @@ def persist_delivery(root: Path, envelope: DesignDeliveryEnvelopeV1) -> dict[str
     md.write_text(envelope.design_note_markdown,encoding="utf-8")
     js.write_text(envelope.model_dump_json(indent=2),encoding="utf-8")
     return {"markdown":str(md.relative_to(root)),"json":str(js.relative_to(root))}
+
+
+def finalize_delivery(root: Path, envelope: DesignDeliveryEnvelopeV1, source_image: Path) -> dict[str, str]:
+    """Persist the user-facing delivery bundle, including the immutable image.
+
+    The image filename contains its content hash, so retrying finalize is idempotent and
+    a later branch can never silently overwrite an earlier branch's delivered image.
+    """
+    files = persist_delivery(root, envelope)
+    suffix = source_image.suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        raise ValueError("最终图片格式不受支持。")
+    directory = root / "delivery"
+    destination = directory / f"final-image-{envelope.final_image.sha256[:12]}{suffix}"
+    if not destination.exists():
+        temporary = directory / f".{destination.name}.{uuid4().hex}.tmp"
+        try:
+            shutil.copyfile(source_image, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    files["image"] = str(destination.relative_to(root))
+    return files

@@ -70,7 +70,7 @@ function slotFrame(slot, projectId) {
   return frame;
 }
 
-function slotBody(slot, { selectedId, onSelect, onZoom, onCompensate }) {
+function slotBody(slot, { selectedId, onSelect, onZoom }) {
   const body = el('div', { class: 'slot__body' });
   body.append(el('span', { class: 'slot__title', text: `方向 ${slot.index + 1}${slot.styleName ? ` · ${slot.styleName}` : ''}` }));
   if (slot.style?.mechanism) {
@@ -80,15 +80,17 @@ function slotBody(slot, { selectedId, onSelect, onZoom, onCompensate }) {
   }
   const actions = el('div', { class: 'slot__actions' });
   if (slot.status === 'ready') {
-    const select = el('button', { type: 'button', class: 'btn btn--secondary', text: '选为主图' });
+    const selected = selectedId === (slot.asset.id || `candidate-${slot.index + 1}`);
+    const select = el('button', {
+      type: 'button', class: 'btn btn--secondary', text: selected ? '已选为主图' : '选为主图',
+      'aria-pressed': String(selected), dataset: { selectCandidate: 'true' },
+    });
     select.addEventListener('click', () => onSelect?.(slot));
     const zoom = el('button', { type: 'button', class: 'btn btn--secondary', text: '放大' });
     zoom.addEventListener('click', () => onZoom?.(slot));
     actions.append(select, zoom);
   } else {
-    const fill = el('button', { type: 'button', class: 'btn btn--secondary', text: '补齐此槽位' });
-    fill.addEventListener('click', () => onCompensate?.(slot));
-    actions.append(fill);
+    actions.append(el('span', { class: 'slot__missing-note', text: '本轮生成未返回此方向' }));
   }
   body.append(actions);
   return body;
@@ -108,6 +110,7 @@ export function syncSlots(container, slots, options) {
     if (!node) {
       node = el('div', { class: 'slot', role: 'option', 'aria-label': `候选方向 ${slot.index + 1}` });
       node.dataset.key = slot.key;
+      node.dataset.candidateId = slot.asset?.id || '';
       node.append(slotFrame(slot, options.projectId), slotBody(slot, options));
       container.append(node);
     } else {
@@ -164,15 +167,40 @@ export function renderGalleryStage(container, view, { projectId, selectedId, onS
   headText.append(el('h2', { text: '选择一张当前主图' }), el('p', { text: '五个方向共享任务书与硬约束，仅艺术机制不同；缺失槽位可单独补齐。' }));
   head.append(headText, el('span', { class: 'badge', text: `${slots.filter((s) => s.status === 'ready').length}/${SLOT_COUNT} 已生成` }));
   const grid = el('div', { class: 'gallery-grid', role: 'listbox', 'aria-label': '五个候选方向' });
+  let currentSelectedId = selectedId;
+  const selectSlot = (slot) => {
+    currentSelectedId = slot.asset.id || `candidate-${slot.index + 1}`;
+    for (const node of grid.children) {
+      const pressed = node.dataset.key === slot.key;
+      node.classList.toggle('is-selected', pressed);
+      node.setAttribute('aria-selected', String(pressed));
+      const button = node.querySelector('[data-select-candidate]');
+      if (button) {
+        button.setAttribute('aria-pressed', String(pressed));
+        button.textContent = pressed ? '已选为主图' : '选为主图';
+      }
+    }
+    note.textContent = `已选择：${candidateLabel(currentSelectedId)}`;
+    onSelect?.(slot);
+  };
   syncSlots(grid, slots, {
-    projectId, selectedId,
-    onSelect, onCompensate,
+    projectId, selectedId: currentSelectedId,
+    onSelect: selectSlot,
     onZoom: (slot) => openZoomDialog(slot, projectId),
   });
   const bar = el('div', { class: 'gallery-select-bar' });
   const confirm = el('button', { type: 'button', class: 'btn btn--primary', id: 'select-button', text: '确认当前主图', disabled: selectedId ? null : 'disabled' });
   const note = el('span', { class: 'badge badge--info', text: selectedId ? `已选择：${candidateLabel(selectedId)}` : '请先选择一个方向' });
   bar.append(confirm, note);
+  const missingCount = slots.filter((slot) => slot.status === 'missing').length;
+  if (missingCount) {
+    const compensate = el('button', {
+      type: 'button', class: 'btn btn--secondary',
+      text: `补齐缺失方向（${missingCount}）`,
+    });
+    compensate.addEventListener('click', () => onCompensate?.());
+    bar.append(compensate);
+  }
   container.append(head, grid, bar);
   return { confirmButton: confirm, slots };
 }

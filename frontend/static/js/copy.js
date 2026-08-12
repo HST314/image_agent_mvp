@@ -401,3 +401,14 @@ export function localizeFactLabelsInMarkdown(markdown) {
     (full, prefix, key, colon) => `${prefix}${fieldLabel(key)}${colon}`,
   );
 }
+
+/**
+ * 任务书工作区展示稿：保留可审阅事实，移除与页面标题和编辑控件重复的模板说明。
+ * 原始 Markdown 仍在编辑器中完整保留，提交数据不受影响。
+ */
+export function taskbookDisplayMarkdown(markdown) {
+  return localizeFactLabelsInMarkdown(markdown)
+    .replace(/^#\s+创作任务书\s*/u, '')
+    .replace(/\n*##\s+修改方式[\s\S]*$/u, '')
+    .trim();
+}

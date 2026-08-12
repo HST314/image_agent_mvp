@@ -6,7 +6,7 @@ import { renderMarkdownInto } from './markdown.js';
 import { approvalValid } from './states.js';
 import { saveDraft, loadDraft, clearDraft } from './store.js';
 import { advance } from './api.js';
-import { localizeFactLabelsInMarkdown } from './copy.js';
+import { taskbookDisplayMarkdown } from './copy.js';
 
 const DRAFT_NAME = 'taskbook-markdown';
 
@@ -16,18 +16,21 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   const valid = approvalValid(snapshot);
   const approval = snapshot.task_approval;
 
-  const head = el('div', { class: 'section__head' });
+  const head = el('div', { class: 'taskbook__meta' });
   const headText = el('div');
-  headText.append(el('h3', { text: '创作任务书' }), el('p', { text: '由生产后端生成的可审计 Markdown；任何修改都会使既有确认失效。' }));
+  headText.append(
+    el('strong', { text: '请确认以下创作共识' }),
+    el('p', { text: '内容来自已确认信息与澄清结果；任何修改都会生成新版本，并使既有确认失效。' }),
+  );
   const status = valid
     ? el('span', { class: 'badge badge--success', text: `已确认 · ${approval?.actor || ''}` })
     : el('span', { class: 'badge badge--warning', text: approval ? '确认已失效' : '待确认' });
   head.append(headText, status);
 
-  const preview = el('div', { class: 'markdown-body' });
+  const preview = el('div', { class: 'markdown-body taskbook__document' });
   /* T11：预览中将后端以任务卡字段名生成的事实标签（如 audience）替换为中文；
    * 编辑区仍持有原始 Markdown，保存回写后端的数据不受影响（任务书整体重构属 T4）。 */
-  renderMarkdownInto(preview, localizeFactLabelsInMarkdown(markdown));
+  renderMarkdownInto(preview, taskbookDisplayMarkdown(markdown));
 
   /* 编辑区：草稿随输入自动保存，刷新后可恢复 */
   const editor = el('textarea', { class: 'input', id: 'taskbook-editor', 'aria-label': '编辑任务书 Markdown', style: 'display:none;min-height:220px' });
@@ -86,8 +89,12 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   });
 
   /* 确认区 */
-  const approveRow = el('div', { class: 'button-row', style: 'margin-top:12px' });
-  const approveBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '确认任务书并继续' });
+  const approveRow = el('div', { class: 'taskbook__approve' });
+  const approveCopy = el('div', { class: 'taskbook__approve-copy' }, [
+    el('strong', { text: '任务书内容无误？' }),
+    el('small', { text: '下一步会开始生成候选图，并可能产生模型调用费用。' }),
+  ]);
+  const approveBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '确认任务书，开始生成候选图' });
   approveBtn.disabled = valid || !actor;
   approveBtn.addEventListener('click', async () => {
     approveBtn.disabled = true;
@@ -105,8 +112,8 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
       approveBtn.disabled = false;
     }
   });
-  approveRow.append(approveBtn);
-  if (!valid && !actor) approveRow.append(el('small', { text: '请先在上方"当前决策"区填写操作人身份。' }));
+  approveRow.append(approveCopy, approveBtn);
+  if (!valid && !actor) approveCopy.append(el('small', { class: 'field-error', text: '请先在状态页「工程信息」填写操作人身份。' }));
 
   const row = el('div', { class: 'button-row', style: 'margin-top:12px' }, [editBtn, saveBtn, cancelBtn]);
   container.append(head, preview, editor, editError, draftBadge, invalidateHint, row);

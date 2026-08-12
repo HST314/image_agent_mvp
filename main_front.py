@@ -192,6 +192,13 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
 def _project_view(store: ProjectStore) -> dict[str, Any]:
     manifest = store.manifest()
     snapshot = store.resume() or {}
+    delivery_status = None
+    delivery_status_path = store.root / "delivery" / "finalized.json"
+    if delivery_status_path.is_file():
+        try:
+            delivery_status = json.loads(delivery_status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            delivery_status = None
     return {
         "project_id": store.project_id,
         "manifest": manifest,
@@ -202,6 +209,7 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "unknown_actions": _gateway_for_store(store).unknown_actions(),
         "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
         "active_job": JOBS.active_for_project(store.project_id),
+        "delivery_status": delivery_status,
     }
 
 
@@ -525,6 +533,51 @@ async def retry_delivery_note(project_id: str) -> dict[str, Any]:
             return {"delivery_envelope":envelope.model_dump(mode="json"),"delivery_files":files}
         return await asyncio.to_thread(execute)
     except Exception as exc: raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/delivery/finalize")
+async def finalize_project_delivery(project_id: str) -> dict[str, Any]:
+    """Idempotently save the final image and Markdown note to the project delivery folder."""
+    try:
+        def execute():
+            from datetime import datetime, timezone
+            from agent_core.contracts import DesignDeliveryEnvelopeV1
+            from agent_core.delivery import build_delivery, finalize_delivery
+
+            store = _store(project_id)
+            with store.lock():
+                snapshot = store.resume() or {}
+                asset = snapshot.get("final_asset")
+                frozen = snapshot.get("frozen_delivery")
+                if not snapshot.get("completed") or not asset or not frozen or frozen.get("asset_sha256") != asset.get("sha256"):
+                    raise ValueError("DELIVERY_NOT_FROZEN")
+                source, record = store.artifacts.resolve(str(asset.get("artifact_id", "")))
+                if record.get("sha256") != asset.get("sha256"):
+                    raise ValueError("最终图片与冻结交付记录不一致。")
+                raw_envelope = snapshot.get("delivery_envelope")
+                envelope = (DesignDeliveryEnvelopeV1.model_validate(raw_envelope) if raw_envelope else
+                            build_delivery(snapshot, store.project_id, asset,
+                                           f"project:{store.project_id}:asset:{asset['sha256']}"))
+                files = finalize_delivery(store.root, envelope, source)
+                marker_path = store.root / "delivery" / "finalized.json"
+                previous = None
+                if marker_path.is_file():
+                    try: previous = json.loads(marker_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError): previous = None
+                marker = {
+                    "finalized": True,
+                    "asset_sha256": asset["sha256"],
+                    "files": files,
+                    "finalized_at": (previous.get("finalized_at") if previous and previous.get("asset_sha256") == asset["sha256"]
+                                     else datetime.now(timezone.utc).isoformat()),
+                }
+                atomic_json(marker_path, marker)
+                if not previous or previous.get("asset_sha256") != asset["sha256"]:
+                    store.events.append("delivery_finalized", asset_sha256=asset["sha256"], files=files)
+                return marker
+        return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @app.post("/api/projects/{project_id}/retry")

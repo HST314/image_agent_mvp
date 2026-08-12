@@ -1,12 +1,15 @@
 """FastAPI 薄适配层的契约与安全测试。"""
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import main_front
+from agent_core.delivery import build_delivery
 
 
 @pytest.fixture()
@@ -81,3 +84,43 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
     assert data["snapshot"]["state"] == "intake_clarify"
     assert data["manifest"]["current_checkpoint"]["sequence"] == 1
     assert data["snapshot"].get("completed") is not True
+
+
+def test_finalize_delivery_persists_image_and_markdown_idempotently(client: TestClient, tmp_path: Path) -> None:
+    store = main_front.ProjectStore(main_front.PROJECTS_ROOT, "delivery-project")
+    store.create()
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (32, 24), "purple").save(image_bytes, "PNG")
+    asset = store.artifacts.save_bytes(image_bytes.getvalue(), metadata={"kind": "final"})
+    snapshot = {
+        "completed": True,
+        "task_card": {"task_id": "task-delivery", "deliverable_goal": "活动主视觉"},
+        "style_selections": [{"mechanism": "清晰的中心构图", "reason": "突出主题", "task_fit": "线上活动"}],
+        "final_asset": asset,
+        "frozen_delivery": {"asset_sha256": asset["sha256"]},
+    }
+    envelope = build_delivery(snapshot, "delivery-project", asset, f"project:delivery-project:asset:{asset['sha256']}")
+    snapshot["delivery_envelope"] = envelope.model_dump(mode="json")
+    store.checkpoint("final_approval", snapshot)
+
+    first = client.post("/api/projects/delivery-project/delivery/finalize")
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["finalized"] is True
+    assert body["asset_sha256"] == asset["sha256"]
+    assert set(body["files"]) == {"image", "markdown", "json"}
+    for relative in body["files"].values():
+        assert (store.root / relative).is_file()
+    assert (store.root / body["files"]["image"]).read_bytes() == image_bytes.getvalue()
+    assert "最终设计说明" in (store.root / body["files"]["markdown"]).read_text(encoding="utf-8")
+
+    second = client.post("/api/projects/delivery-project/delivery/finalize")
+    assert second.status_code == 200
+    assert second.json()["files"] == body["files"]
+    assert second.json()["finalized_at"] == body["finalized_at"]
+    events = [event for event in store.history() if event.get("type") == "delivery_finalized"]
+    assert len(events) == 1
+
+    view = client.get("/api/projects/delivery-project")
+    assert view.status_code == 200
+    assert view.json()["delivery_status"]["asset_sha256"] == asset["sha256"]

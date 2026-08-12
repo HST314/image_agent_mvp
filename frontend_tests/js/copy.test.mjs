@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   hasCJK, phaseLabel, capabilityLabel, terminationReasonLabel, fieldLabel,
   policyEntries, mechanismLabel, candidateLabel, jobStatusLabel,
-  errorText, validationText, localizeFactLabelsInMarkdown,
+  errorText, validationText, localizeFactLabelsInMarkdown, taskbookDisplayMarkdown,
 } from '../../frontend/static/js/copy.js';
 import { formatError } from '../../frontend/static/js/api.js';
 
@@ -209,4 +209,13 @@ test('任务书 markdown 预览负向：未收录英文字段标签兜底中文�
   assert.ok(out.includes('- 其他信息：x')); // 未收录英文标签 → 中文兜底
   assert.ok(out.includes('- 其他信息：一二线城市')); // 英文标签即使值是中文也兜底
   assert.ok(!/[A-Za-z_]+：/.test(out)); // 预览不出现英文字段名（§11）
+});
+
+test('任务书工作区展示稿移除重复标题与模板编辑说明，原始事实保留并中文化', () => {
+  const md = '# 创作任务书\n\n## 根据材料提取\n\n- audience：内部审核人员\n\n## 修改方式\n\n可直接编辑以上条目。\n';
+  const out = taskbookDisplayMarkdown(md);
+  assert.ok(out.startsWith('## 根据材料提取'));
+  assert.ok(out.includes('- 目标受众：内部审核人员'));
+  assert.ok(!out.includes('# 创作任务书'));
+  assert.ok(!out.includes('修改方式'));
 });

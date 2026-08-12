@@ -189,6 +189,8 @@ export const qualityDisposition = (id, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/quality-disposition`, { method: 'POST', body: JSON.stringify(payload) });
 export const retryDeliveryNote = (id) =>
   api(`/api/projects/${encodeURIComponent(id)}/delivery/retry`, { method: 'POST', body: '{}' });
+export const finalizeDelivery = (id) =>
+  api(`/api/projects/${encodeURIComponent(id)}/delivery/finalize`, { method: 'POST', body: '{}' });
 export const revisePolicy = (id, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/policy`, { method: 'POST', body: JSON.stringify(payload) });
 export const resolveUnknown = (id, key, payload) =>

@@ -85,19 +85,6 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
 
   renderStage(stagePanel, view, derived, { projectId, actor, refresh, jobRunner });
 
-  /* ===== 任务书 ===== */
-  if (snapshot.task_markdown) {
-    const panel = sectionPanel('任务书', '');
-    panel.querySelector('.section__head').remove();
-    renderTaskbook(panel, view, { projectId, actor, onChanged: refresh, jobRunner });
-    primary.append(panel);
-  }
-
-  /* ===== 结果 ===== */
-  if (snapshot.completed && snapshot.final_asset) {
-    primary.append(renderResult(view, { projectId, refresh }));
-  }
-
   /* ===== 付费调用待处置（契约 §3：工作台仅保留进度卡与阶段工作区；
    * 工程信息/最近活动/原始任务迁入状态页，运行策略迁入设置页） ===== */
   const unknowns = view.unknown_actions || [];
@@ -121,16 +108,19 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
 
 function stageTitle(derived) {
   return {
-    clarify: '需求澄清', taskbook: '确认任务书', gallery: '选择主图', calibration: '画面质检与人工放行',
+    clarify: '需求澄清', taskbook: '创作任务书', gallery: '选择主图', calibration: '画面自检与人工放行',
     disposition: '自动质检已达上限', annotate: '圈画微调', reinspection: '等待重新质检',
     resume_quality: '追加质检已确认', final: '最终确认', failed: '流程已暂停', terminated: '已终止且不交付',
-    completed: '交付完成', resume: '继续工作流', empty: '工程已保存',
+    completed: '最终交付', resume: '继续工作流', empty: '工程已保存',
   }[derived.stage] || '当前决策';
 }
 
 function stageSubtitle(derived) {
+  if (derived.stage === 'taskbook') return '请通读任务目标与约束；确认后开始生成候选图';
+  if (derived.stage === 'gallery') return '对比五个视觉方向，放大查看细节后选择一个作为主图';
   if (derived.stage === 'disposition') return '自动质检达到配置上限；最高分不会冒充通过，请选择分流方式';
   if (derived.stage === 'final') return '确认后冻结交付并生成说明；此后任何修改都将创建新修订';
+  if (derived.stage === 'completed') return '最终图片与设计说明已冻结；确认完成后保存到工程交付目录';
   return '工作流在需要你决策时暂停；每个动作都会进入审计事件';
 }
 
@@ -144,7 +134,7 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'taskbook') {
-    panel.append(stateBlock('empty', '请先确认任务书', '任务书在下方"任务书"区预览或编辑；确认后进入候选生成（付费步骤）。'));
+    renderTaskbook(panel, view, { projectId, actor, onChanged: refresh, jobRunner });
     return;
   }
   if (stage === 'gallery') {
@@ -153,20 +143,10 @@ function renderStage(panel, view, derived, ctx) {
       projectId, selectedId,
       onSelect(slot) {
         selectedId = slot.asset.id || `candidate-${slot.index + 1}`;
-        panel.querySelectorAll('.slot').forEach((node) => node.classList.remove('is-selected'));
         confirmButton.disabled = false;
         confirmButton.textContent = `确认方向 ${slot.index + 1} 为主图`;
-        const grid = panel.querySelector('.gallery-grid');
-        if (grid) {
-          // 仅更新选择态
-          [...grid.children].forEach((child, i) => {
-            const pressed = child.dataset.key === slot.key;
-            child.classList.toggle('is-selected', pressed);
-            child.setAttribute('aria-selected', String(pressed));
-          });
-        }
       },
-      onCompensate() { jobRunner.start({}); },
+      onCompensate() { jobRunner.start({}, { intent: 'candidate-compensation' }); },
     });
     confirmButton.addEventListener('click', () => {
       if (selectedId) jobRunner.start({ selected_id: selectedId }, { intent: 'select' });
@@ -222,9 +202,7 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'completed') {
-    const rehearsal = snapshot.offline_rehearsal_completed === true;
-    panel.append(stateBlock('empty', rehearsal ? '离线演练已完成最终验收' : '视觉资产已完成最终审批',
-      rehearsal ? '模拟资产仅用于流程验收，未冻结为真实交付。' : '最终资产已由生产工作流校验并冻结，见下方"结果"区。'));
+    renderDeliveryStage(panel, view, ctx);
     return;
   }
   // empty（T10：defer_run 创建后未启动/启动失败）与 resume（有检查点可继续）
@@ -243,22 +221,40 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
   const snapshot = view.snapshot || {};
   const inspection = snapshot.inspection || {};
   const asset = snapshot.asset || snapshot.current_asset || snapshot.master_asset;
-  const summary = el('div', { class: 'section__head' });
+  const layout = el('div', { class: 'inspection-layout' });
+  const visual = el('div', { class: 'inspection-visual' });
+  const details = el('div', { class: 'inspection-details' });
   const badge = inspection.passed
     ? el('span', { class: 'badge badge--success', text: '建议通过' })
     : el('span', { class: 'badge badge--warning', text: '建议修改' });
-  summary.append(el('div', {}, [el('h3', { text: '本轮质检结论' }), el('p', { text: inspection.rework_prompt_delta || '请审阅当前图像与质检结果。' })]), badge);
-  panel.append(summary);
+  const summary = el('div', { class: 'inspection-summary' }, [
+    el('div', {}, [
+      el('span', { class: 'inspection-round', text: `第 ${snapshot.round || 1} 轮自检` }),
+      el('h3', { text: '本轮自检结论' }),
+    ]),
+    badge,
+  ]);
+  details.append(summary, el('p', { class: 'inspection-recommendation', text: inspection.rework_prompt_delta || '请审阅当前图像与自检结果。' }));
   if (Array.isArray(inspection.deviations) && inspection.deviations.length) {
-    const ul = el('ul');
+    details.append(el('h4', { text: '发现的问题' }));
+    const ul = el('ul', { class: 'inspection-findings' });
     inspection.deviations.forEach((d) => ul.append(el('li', { text: d })));
-    panel.append(ul);
+    details.append(ul);
+  } else {
+    details.append(el('p', { class: 'inspection-empty', text: '本轮未发现需要单独列出的偏差。' }));
   }
   if (asset) {
     const url = api.assetUrl(projectId, asset);
-    if (url) panel.append(el('img', { src: url, alt: '当前待审图像', style: 'max-width:360px;width:100%;border-radius:12px', loading: 'lazy' }));
+    if (url) visual.append(el('img', { src: url, alt: '当前待审图像', loading: 'lazy', decoding: 'async' }));
   }
-  const row = el('div', { class: 'button-row', style: 'margin-top:14px' });
+  if (!visual.children.length) visual.append(stateBlock('empty', '当前图像不可预览', '可依据右侧自检结果继续处置。'));
+  layout.append(visual, details);
+  panel.append(layout);
+
+  const actionSection = el('div', { class: 'decision-section' }, [
+    el('div', {}, [el('h3', { text: '选择下一步' }), el('p', { text: '建议优先执行自检建议；所有决定都会写入审计记录。' })]),
+  ]);
+  const row = el('div', { class: 'decision-actions' });
   for (const action of MANUAL_ACTIONS) {
     const btn = el('button', {
       type: 'button',
@@ -267,9 +263,14 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
     });
     btn.addEventListener('click', () => {
       if (action.needsDelta) {
-        const delta = window.prompt('请输入修改建议（将指导下一轮返工）');
-        if (!delta) return;
-        jobRunner.start({ manual_action: action.id, edited_delta: delta }, { intent: 'manual' });
+        openTextActionDialog({
+          title: '修改自检建议后执行',
+          description: '写明需要调整的内容；提交后将据此生成下一版图像。',
+          label: '修改建议',
+          placeholder: inspection.rework_prompt_delta || '例如：保留构图，将标题层级拉开并降低背景干扰',
+          submitLabel: '提交并执行',
+          onSubmit: (delta) => jobRunner.start({ manual_action: action.id, edited_delta: delta }, { intent: 'manual' }),
+        });
         return;
       }
       if (action.danger && !window.confirm('确定终止本工程且不交付？该决定会进入审计事件。')) return;
@@ -277,38 +278,43 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
     });
     row.append(btn);
   }
-  panel.append(row);
+  actionSection.append(row);
+  panel.append(actionSection);
 }
 
 function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.best_asset || snapshot.asset;
   const inspection = snapshot.inspection || {};
-  panel.append(el('p', { class: 'hint', text: `终止原因：${terminationReasonLabel(snapshot.termination_reason)}；当前为第 ${snapshot.round || 1} 轮。` }));
+  const layout = el('div', { class: 'inspection-layout' });
+  const visual = el('div', { class: 'inspection-visual' });
+  const details = el('div', { class: 'inspection-details' });
+  details.append(
+    el('span', { class: 'badge badge--warning', text: terminationReasonLabel(snapshot.termination_reason) }),
+    el('h3', { text: `已完成第 ${snapshot.round || 1} 轮自检` }),
+    el('p', { class: 'inspection-recommendation', text: '自动自检已按策略停止，请明确选择继续投入、人工微调、接受当前图或放弃交付。' }),
+  );
   if (Array.isArray(inspection.deviations) && inspection.deviations.length) {
-    const ul = el('ul');
+    details.append(el('h4', { text: '仍需关注' }));
+    const ul = el('ul', { class: 'inspection-findings' });
     inspection.deviations.forEach((d) => ul.append(el('li', { text: d })));
-    panel.append(ul);
+    details.append(ul);
   }
   if (asset) {
     const url = api.assetUrl(projectId, asset);
-    if (url) panel.append(el('img', { src: url, alt: '本轮最高分图像', style: 'max-width:360px;width:100%;border-radius:12px', loading: 'lazy' }));
+    if (url) visual.append(el('img', { src: url, alt: '本轮最高分图像', loading: 'lazy', decoding: 'async' }));
   }
-  const row = el('div', { class: 'button-row', style: 'margin-top:14px' });
+  if (!visual.children.length) visual.append(stateBlock('empty', '当前图像不可预览', '仍可依据自检结论选择后续处置。'));
+  layout.append(visual, details);
+  panel.append(layout);
+  const row = el('div', { class: 'decision-actions decision-actions--limit' });
 
-  const addBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '追加 N 轮（需确认费用）' });
-  addBtn.addEventListener('click', async () => {
-    const raw = window.prompt('追加质检轮数（1-20）：', '2');
-    if (!raw) return;
-    const rounds = Number(raw);
-    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 20) { toast('轮数需为 1-20 的整数。', 'error'); return; }
-    if (!window.confirm(`追加 ${rounds} 轮将产生真实模型调用费用，确认继续？`)) return;
-    try {
-      await api.qualityDisposition(projectId, { action: 'add_rounds_with_cost_confirmation', additional_rounds: rounds, cost_confirmed: true });
-      toast('已确认追加轮次。');
-      refresh();
-    } catch (error) { toast(error.message, 'error'); }
-  });
+  const addBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '追加自检轮次' });
+  addBtn.addEventListener('click', () => openAdditionalRoundsDialog(async (rounds) => {
+    await api.qualityDisposition(projectId, { action: 'add_rounds_with_cost_confirmation', additional_rounds: rounds, cost_confirmed: true });
+    toast('已确认追加轮次。');
+    refresh();
+  }));
 
   const tuneBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '以本轮最高分进入人工微调' });
   tuneBtn.addEventListener('click', async () => {
@@ -335,7 +341,10 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
   });
 
   row.append(addBtn, tuneBtn, acceptBtn, abandonBtn);
-  panel.append(row);
+  panel.append(el('div', { class: 'decision-section' }, [
+    el('div', {}, [el('h3', { text: '选择后续处置' }), el('p', { text: '继续投入会产生新的模型调用；接受或放弃将结束自动自检。' })]),
+    row,
+  ]));
 }
 
 function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
@@ -355,17 +364,45 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
     busy.style.display = flag ? '' : 'none';
     panel.querySelectorAll('button, textarea, input').forEach((node) => { node.disabled = flag; });
   };
-  createAnnotator(panel, {
+  const tabList = el('div', { class: 'tune-tabs', role: 'tablist', 'aria-label': '人工修改方式' });
+  const drawTab = el('button', { type: 'button', class: 'tune-tab', role: 'tab', id: 'tune-tab-draw', 'aria-controls': 'tune-panel-draw', 'aria-selected': 'true', tabindex: '0', text: '圈画微调' });
+  const textTab = el('button', { type: 'button', class: 'tune-tab', role: 'tab', id: 'tune-tab-text', 'aria-controls': 'tune-panel-text', 'aria-selected': 'false', tabindex: '-1', text: '纯文字微调' });
+  const drawPanel = el('div', { class: 'tune-panel', role: 'tabpanel', id: 'tune-panel-draw', 'aria-labelledby': 'tune-tab-draw' });
+  const textPanel = el('div', { class: 'tune-panel', role: 'tabpanel', id: 'tune-panel-text', 'aria-labelledby': 'tune-tab-text', hidden: 'hidden' });
+  const tabs = [drawTab, textTab];
+  const panels = [drawPanel, textPanel];
+  const activateTab = (index, focus = false) => {
+    tabs.forEach((tab, i) => {
+      const active = i === index;
+      tab.setAttribute('aria-selected', String(active));
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+      if (active) panels[i].removeAttribute('hidden');
+      else panels[i].setAttribute('hidden', 'hidden');
+    });
+    if (focus) tabs[index].focus();
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activateTab(index));
+    tab.addEventListener('keydown', (event) => {
+      let next = null;
+      if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = tabs.length - 1;
+      if (next !== null) { event.preventDefault(); activateTab(next, true); }
+    });
+  });
+  tabList.append(...tabs);
+  panel.append(tabList, drawPanel, textPanel);
+
+  createAnnotator(drawPanel, {
     projectId,
     asset,
     history: view.history || [],
     onSubmitted: refresh,
     onBusy: setTuneBusy,
   });
-  const divider = el('hr', { style: 'border:none;border-top:1px solid var(--border);margin:18px 0' });
-  panel.append(divider);
-  panel.append(el('h3', { text: '或仅用文字微调' }));
-  const textArea = el('textarea', { class: 'input', 'aria-label': '文字微调说明', placeholder: '不圈画，直接描述整体修改方向' });
+  const textArea = el('textarea', { class: 'input', id: 'text-tune-prompt', 'aria-describedby': 'text-tune-help', placeholder: '例如：整体提高明度，标题向上移动，并保持主体比例不变' });
   const btn = el('button', { type: 'button', class: 'btn btn--secondary', text: '提交文字微调' , style: 'margin-top:10px' });
   btn.addEventListener('click', async () => {
     const prompt = textArea.value.trim();
@@ -374,16 +411,90 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
     const job = await jobRunner.start({ human_prompt: prompt }, { intent: 'tune' });
     if (!job) setTuneBusy(false);
   });
-  panel.append(textArea, btn);
+  textPanel.append(
+    el('div', { class: 'tune-text-intro' }, [el('h3', { text: '用文字描述整体修改方向' }), el('p', { text: '适合不需要精确圈选区域的构图、色彩与文案调整。' })]),
+    el('div', { class: 'field' }, [
+      el('label', { for: 'text-tune-prompt', text: '修改说明' }),
+      textArea,
+      el('small', { id: 'text-tune-help', text: '说明越具体，模型越容易保持无需改变的部分。' }),
+    ]),
+    btn,
+  );
 
-  const finalBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '确定终稿', style: 'margin-top:10px;margin-left:10px' });
+  const finalBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '确定当前图片为终稿' });
   finalBtn.addEventListener('click', async () => {
     if (!window.confirm('确定将当前图片作为终稿？确认后将冻结交付。')) return;
     setTuneBusy(true);
     const job = await jobRunner.start({ manual_action: 'accept_current', final_approved: true }, { intent: 'human-final' });
     if (!job) setTuneBusy(false);
   });
-  panel.append(finalBtn);
+  panel.append(el('div', { class: 'tune-final-bar' }, [
+    el('div', {}, [el('strong', { text: '当前图片已符合要求？' }), el('small', { text: '确定后将进入最终交付确认。' })]),
+    finalBtn,
+  ]));
+}
+
+function openTextActionDialog({ title, description, label, placeholder, submitLabel, onSubmit }) {
+  const dialog = el('dialog', { class: 'dialog', 'aria-labelledby': 'text-action-title' });
+  const input = el('textarea', { class: 'input', id: 'text-action-input', placeholder, 'aria-describedby': 'text-action-help' });
+  const error = el('div', { class: 'field-error', role: 'alert' });
+  dialog.append(
+    el('div', { class: 'dialog__head' }, [el('h2', { id: 'text-action-title', text: title })]),
+    el('div', { class: 'dialog__body' }, [
+      el('p', { id: 'text-action-help', text: description }),
+      el('div', { class: 'field' }, [el('label', { for: 'text-action-input', text: label }), input, error]),
+    ]),
+  );
+  const foot = el('div', { class: 'dialog__foot' });
+  const cancel = el('button', { type: 'button', class: 'btn btn--secondary', text: '取消' });
+  const submit = el('button', { type: 'button', class: 'btn btn--primary', text: submitLabel });
+  cancel.addEventListener('click', () => dialog.close());
+  submit.addEventListener('click', () => {
+    const value = input.value.trim();
+    if (!value) { error.textContent = `请填写${label}。`; input.focus(); return; }
+    dialog.close();
+    onSubmit(value);
+  });
+  foot.append(cancel, submit);
+  dialog.append(foot);
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  input.focus();
+}
+
+function openAdditionalRoundsDialog(onSubmit) {
+  const dialog = el('dialog', { class: 'dialog', 'aria-labelledby': 'rounds-dialog-title' });
+  const input = el('input', { class: 'input', id: 'additional-rounds', type: 'number', min: '1', max: '20', step: '1', value: '2' });
+  const confirm = el('input', { type: 'checkbox', id: 'rounds-cost-confirm' });
+  const error = el('div', { class: 'field-error', role: 'alert' });
+  dialog.append(
+    el('div', { class: 'dialog__head' }, [el('h2', { id: 'rounds-dialog-title', text: '追加自检轮次' })]),
+    el('div', { class: 'dialog__body' }, [
+      el('p', { text: '追加后会继续调用模型进行生成与自检，请先核对轮数和费用影响。' }),
+      el('div', { class: 'field' }, [el('label', { for: 'additional-rounds', text: '追加轮数（1–20）' }), input]),
+      el('label', { class: 'switch-row' }, [confirm, el('span', {}, [el('strong', { text: '我已知晓会产生真实模型调用费用' }), el('span', { text: '确认后立即进入追加轮次。' })])]),
+      error,
+    ]),
+  );
+  const foot = el('div', { class: 'dialog__foot' });
+  const cancel = el('button', { type: 'button', class: 'btn btn--secondary', text: '取消' });
+  const submit = el('button', { type: 'button', class: 'btn btn--primary', text: '确认追加' });
+  cancel.addEventListener('click', () => dialog.close());
+  submit.addEventListener('click', async () => {
+    const rounds = Number(input.value);
+    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 20) { error.textContent = '轮数需为 1–20 的整数。'; input.focus(); return; }
+    if (!confirm.checked) { error.textContent = '请先确认费用影响。'; confirm.focus(); return; }
+    submit.disabled = true;
+    try { await onSubmit(rounds); dialog.close(); }
+    catch (cause) { error.textContent = cause.message; submit.disabled = false; }
+  });
+  foot.append(cancel, submit);
+  dialog.append(foot);
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  input.focus();
 }
 
 function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
@@ -410,39 +521,71 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
   if (!actor) panel.append(el('small', { text: '请先在状态页「工程信息」填写操作人身份。' }));
 }
 
-function renderResult(view, { projectId, refresh }) {
+function renderDeliveryStage(panel, view, { projectId }) {
   const snapshot = view.snapshot || {};
-  const panel = sectionPanel('结果', '冻结交付与最终说明');
+  const rehearsal = snapshot.offline_rehearsal_completed === true;
   const asset = snapshot.final_asset;
-  const url = api.assetUrl(projectId, asset);
-  if (url) panel.append(el('img', { src: url, alt: '最终交付资产', style: 'max-width:480px;width:100%;border-radius:12px', loading: 'lazy' }));
-  const meta = el('dl', { class: 'kv', style: 'margin-top:12px' });
-  meta.append(
-    el('dt', { text: '资产 ID' }), el('dd', { text: asset?.artifact_id || '—' }),
-    el('dt', { text: '内容哈希' }), el('dd', { text: asset?.sha256 ? `${asset.sha256.slice(0, 16)}…` : '—' }),
-  );
-  panel.append(meta);
-  const envelope = snapshot.delivery_envelope;
-  if (envelope) {
-    const note = el('div', { class: 'markdown-body' });
-    renderMarkdownInto(note, envelope.design_note_markdown || '');
-    panel.append(el('h3', { text: '最终设计说明' }), note);
-    const row = el('div', { class: 'button-row', style: 'margin-top:10px' });
-    const copy = el('button', { type: 'button', class: 'btn btn--secondary', text: '复制交付 JSON' });
-    copy.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(JSON.stringify(envelope, null, 2)); toast('交付 JSON 已复制。'); }
-      catch { toast('复制失败，请检查浏览器剪贴板权限。', 'error'); }
-    });
-    const retry = el('button', { type: 'button', class: 'btn btn--secondary', text: '重新生成说明' });
-    retry.addEventListener('click', async () => {
-      retry.disabled = true;
-      try { await api.retryDeliveryNote(projectId); toast('说明已重新生成（冻结图片不变）。'); refresh(); }
-      catch (error) { toast(error.message, 'error'); retry.disabled = false; }
-    });
-    row.append(copy, retry);
-    panel.append(row);
+  if (rehearsal || !asset) {
+    panel.append(stateBlock('empty', '离线演练已完成最终验收', '模拟资产只用于流程验收，不会保存为正式交付文件。'));
+    return;
   }
-  return panel;
+  const url = api.assetUrl(projectId, asset);
+  const layout = el('div', { class: 'delivery-layout' });
+  const visual = el('figure', { class: 'delivery-visual' });
+  if (url) visual.append(el('img', { src: url, alt: '最终交付图片', decoding: 'async' }));
+  else visual.append(stateBlock('error', '最终图片暂不可预览', '请检查工程图片资源后重试。'));
+
+  const notePanel = el('div', { class: 'delivery-note' });
+  const envelope = snapshot.delivery_envelope;
+  const note = envelope?.design_note || {};
+  notePanel.append(el('h3', { text: '设计说明' }));
+  const sections = [
+    ['设计理念', note.concept],
+    ['选择理由', note.selection_reason],
+    ['任务适配', note.task_fit],
+  ].filter(([, value]) => value);
+  if (sections.length) {
+    for (const [title, value] of sections) {
+      notePanel.append(el('section', { class: 'delivery-note__section' }, [el('h4', { text: title }), el('p', { text: value })]));
+    }
+  } else {
+    const markdown = el('div', { class: 'markdown-body' });
+    renderMarkdownInto(markdown, envelope?.design_note_markdown || '最终图片已经过候选筛选、自检与人工确认。');
+    notePanel.append(markdown);
+  }
+  layout.append(visual, notePanel);
+  panel.append(layout);
+
+  const finalized = view.delivery_status?.finalized === true
+    && view.delivery_status?.asset_sha256 === asset.sha256;
+  const status = el('div', {
+    class: `delivery-complete__status ${finalized ? 'is-complete' : ''}`,
+    role: 'status',
+    text: finalized ? '最终图片与设计说明已保存到工程交付目录。' : '点击完成，将最终图片和设计说明保存到工程交付目录。',
+  });
+  const complete = el('button', {
+    type: 'button', class: 'btn btn--primary',
+    text: finalized ? '已完成并保存' : '完成并保存到本地',
+    disabled: finalized ? 'disabled' : null,
+  });
+  complete.addEventListener('click', async () => {
+    complete.disabled = true;
+    complete.textContent = '正在保存…';
+    try {
+      await api.finalizeDelivery(projectId);
+      complete.textContent = '已完成并保存';
+      status.textContent = '最终图片与设计说明已保存到工程交付目录。';
+      status.classList.add('is-complete');
+      toast('交付文件已保存。');
+    } catch (error) {
+      complete.disabled = false;
+      complete.textContent = '完成并保存到本地';
+      status.textContent = error.message;
+      status.classList.remove('is-complete');
+      toast(error.message, 'error');
+    }
+  });
+  panel.append(el('div', { class: 'delivery-complete' }, [status, complete]));
 }
 
 /* ---------- 侧栏 ---------- */
