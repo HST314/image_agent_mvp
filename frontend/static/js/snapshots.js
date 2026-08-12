@@ -33,6 +33,45 @@ export function automaticBranchName(state, date = new Date()) {
   return `${label}-${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+/** 创建接口的成功契约：返回的就是已经切换到新分支的完整工程视图。 */
+export function isCreatedBranchView(view, { projectId, branchName }) {
+  return view?.project_id === projectId
+    && view.manifest?.current_branch === branchName
+    && view.manifest?.current_checkpoint?.branch === branchName;
+}
+
+/**
+ * “创建即切换”的单请求事务。
+ *
+ * POST 可能已在服务端完成、但响应在客户端解析前丢失。此时只能 GET 当前工程
+ * 对账，绝不能自动补发第二次创建，否则会撞上同名分支并把真实成功误报为失败。
+ */
+export async function createSnapshotBranch(
+  { projectId, checkpoint, branchName },
+  { branchFrom = api.branchFrom, getProject = api.getProject } = {},
+) {
+  let createError;
+  try {
+    const created = await branchFrom(projectId, { checkpoint, name: branchName });
+    if (isCreatedBranchView(created, { projectId, branchName })) {
+      return { view: created, reconciled: false };
+    }
+    createError = new Error('创建接口未返回完整的新分支工程视图。');
+  } catch (error) {
+    createError = error;
+  }
+
+  try {
+    const current = await getProject(projectId);
+    if (isCreatedBranchView(current, { projectId, branchName })) {
+      return { view: current, reconciled: true };
+    }
+  } catch {
+    // 保留创建请求的原始错误；GET 仅用于确认结果，不覆盖首要故障信息。
+  }
+  throw createError;
+}
+
 function addAsset(container, projectId, asset, alt) {
   const url = assetUrl(projectId, asset);
   if (!url) return false;
@@ -185,14 +224,17 @@ export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
     branch.disabled = true;
     branch.textContent = '正在创建分支…';
     try {
-      const created = await api.branchFrom(projectId, { checkpoint: item.checkpoint_id, name: automaticBranchName(item.state) });
-      const checkpointId = created.manifest?.current_checkpoint?.checkpoint_id;
-      if (!checkpointId) throw new Error('新分支缺少可切换的检查点。');
-      await api.switchBranch(projectId, checkpointId);
-      const next = await api.getProject(projectId);
+      const branchName = automaticBranchName(item.state);
+      const result = await createSnapshotBranch({
+        projectId,
+        checkpoint: item.checkpoint_id,
+        branchName,
+      });
       dialog.close();
-      toast(`已从${label}阶段创建并切换到新分支。`);
-      onBranchCreated?.(next);
+      toast(result.reconciled
+        ? `已核对并切换到从${label}阶段创建的新分支。`
+        : `已从${label}阶段创建并切换到新分支。`);
+      onBranchCreated?.(result.view);
     } catch (error) {
       branch.disabled = false;
       branch.textContent = '从此处创建分支';
