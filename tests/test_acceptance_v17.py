@@ -111,8 +111,10 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
             group.find_element(By.CSS_SELECTOR, "label").click()
         click_button("提交答案并继续")
 
+        driver.find_element(By.CSS_SELECTOR, '.topnav__tab[data-view="status"]').click()
         actor = wait.until(lambda d: d.find_element(By.ID, "actor-input"))
         driver.execute_script("arguments[0].value='browser-reviewer'; arguments[0].dispatchEvent(new Event('change', {bubbles:true}))", actor)
+        driver.find_element(By.CSS_SELECTOR, '.topnav__tab[data-view="workspace"]').click()
         click_button("编辑任务书")
         editor = driver.find_element(By.ID, "taskbook-editor")
         driver.execute_script("arguments[0].value += '\\n- 浏览器验收修订：v17'", editor)
