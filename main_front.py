@@ -42,6 +42,7 @@ MODEL_CONFIG = Path(os.getenv("IMAGE_AGENT_MODEL_CONFIG", APP_ROOT / "configs" /
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
+BRANCH_NAME_PATTERN = r"^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff._-]{1,63}$"
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 # T10：defer_run 创建时持久化的入站任务卡文件名；jobs 引导路径据此启动首个推进。
 INTAKE_TASK_FILE = "intake_task.json"
@@ -108,7 +109,7 @@ class QualityDispositionRequest(StrictRequest):
 
 class BranchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
-    name: str | None = Field(default=None, min_length=2, max_length=64)
+    name: str | None = Field(default=None, min_length=2, max_length=64, pattern=BRANCH_NAME_PATTERN)
 
 class BranchSwitchRequest(StrictRequest):
     checkpoint_id: str = Field(pattern=r"^checkpoint_[0-9a-f]{24}$")
@@ -189,7 +190,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
     )
 
 
-def _project_view(store: ProjectStore) -> dict[str, Any]:
+def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = True) -> dict[str, Any]:
     manifest = store.manifest()
     snapshot = store.resume() or {}
     delivery_status = None
@@ -199,7 +200,7 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
             delivery_status = json.loads(delivery_status_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             delivery_status = None
-    return {
+    view = {
         "project_id": store.project_id,
         "manifest": manifest,
         "snapshot": snapshot,
@@ -211,6 +212,12 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "active_job": JOBS.active_for_project(store.project_id),
         "delivery_status": delivery_status,
     }
+    if include_progress_snapshots:
+        # T9：只返回当前分支谱系上的不可变检查点；前端据此展示已完成阶段的
+        # 只读快照，回看本身不修改 manifest/current_checkpoint。工程列表无需
+        # 这些大字段，避免为每张工程卡重复载入完整历史快照。
+        view["progress_snapshots"] = store.progress_snapshots()
+    return view
 
 
 def _job_operation(body: AdvanceRequest) -> str:
@@ -337,7 +344,7 @@ async def list_projects() -> dict[str, Any]:
         if not child.is_dir() or not PROJECT_ID.fullmatch(child.name) or not (child / "manifest.json").is_file():
             continue
         try:
-            view = _project_view(ProjectStore(PROJECTS_ROOT, child.name))
+            view = _project_view(ProjectStore(PROJECTS_ROOT, child.name), include_progress_snapshots=False)
             projects.append({
                 "project_id": child.name,
                 "state": view["snapshot"].get("state"),
@@ -599,8 +606,6 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
     try:
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            if body.name:
-                _safe_project_id(body.name)
             with store.lock():
                 store.branch_from(body.checkpoint, name=body.name)
             return _project_view(store)

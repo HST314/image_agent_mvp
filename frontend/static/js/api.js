@@ -197,3 +197,7 @@ export const resolveUnknown = (id, key, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/unknown-actions/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify(payload) });
 export const branchFrom = (id, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/branches`, { method: 'POST', body: JSON.stringify(payload) });
+export const switchBranch = (id, checkpointId) =>
+  api(`/api/projects/${encodeURIComponent(id)}/branches/switch`, {
+    method: 'POST', body: JSON.stringify({ checkpoint_id: checkpointId }),
+  });

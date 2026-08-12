@@ -54,6 +54,36 @@ def test_t28_branch_list_switch_and_reopen_are_checkpoint_id_only(tmp_path: Path
     assert blocked.status_code == 409 and "历史节点只读" in blocked.text
 
 
+def test_t9_progress_snapshots_follow_active_lineage_and_accept_auto_chinese_name(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store = ProjectStore(tmp_path, "snapshot_demo")
+    store.create(RuntimePolicy(offline_mode=True).snapshot())
+    intake = store.checkpoint("intake_clarify", {"state": "intake_clarify", "task_card": {"deliverable_goal": "海报"}})
+    taskbook = store.checkpoint("confirmation_build", {"state": "confirmation_build", "task_markdown": "# 创作任务书"})
+    store.checkpoint("initial_candidate_generation", {"state": "initial_candidate_generation", "candidates": []})
+    client = TestClient(main_front.app)
+
+    created = client.post(
+        f"/api/projects/{store.project_id}/branches",
+        json={"checkpoint": taskbook, "name": "任务书-0812-090705"},
+    )
+    assert created.status_code == 200
+    assert created.json()["manifest"]["current_branch"] == "任务书-0812-090705"
+    snapshots = created.json()["progress_snapshots"]
+    assert [item["state"] for item in snapshots] == [
+        "intake_clarify", "confirmation_build", "confirmation_build",
+    ]
+    assert snapshots[0]["checkpoint_id"] == intake
+    assert snapshots[-1]["branch"] == "任务书-0812-090705"
+    assert snapshots[-1]["snapshot"]["task_markdown"] == "# 创作任务书"
+
+    invalid = client.post(
+        f"/api/projects/{store.project_id}/branches",
+        json={"checkpoint": taskbook, "name": "../逃逸"},
+    )
+    assert invalid.status_code == 422
+
+
 def test_t29_t30_timeline_cursor_sse_and_trace_redaction(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
     store, _ = _project(tmp_path)

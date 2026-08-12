@@ -8,7 +8,7 @@ import { state, patch, getActor } from './store.js';
 import * as api from './api.js';
 import { viewOperations, createJobRunner, isTerminalJobStatus } from './jobrunner.js';
 import { renderMarkdownInto } from './markdown.js';
-import { deriveView, stepIndex, WORKFLOW_STATES, stateLabel } from './states.js';
+import { deriveView, stateLabel } from './states.js';
 import { createTimelineFollower } from './stepstatus.js';
 import { renderClarify } from './clarify.js';
 import { renderTaskbook } from './taskbook.js';
@@ -17,6 +17,7 @@ import { createAnnotator } from './annotate.js';
 import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { errorText, terminationReasonLabel } from './copy.js';
+import { renderProgressSteps } from './snapshots.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -58,13 +59,8 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
 
   /* ===== 实时进度 ===== */
   const progressSection = sectionPanel('创作进度', `当前分支 ${manifest.current_branch || 'main'} · 检查点 ${manifest.current_checkpoint?.sequence || 0}`);
-  const idx = stepIndex(snapshot);
   const stepper = el('div', { class: 'stepper', 'aria-label': '工作流进度' });
-  WORKFLOW_STATES.forEach((s, i) => {
-    const step = el('div', { class: `step ${i < idx ? 'is-done' : i === idx ? 'is-current' : ''}` });
-    step.append(el('div', { class: 'step__bar' }), el('span', { text: s.label }));
-    stepper.append(step);
-  });
+  renderProgressSteps(stepper, view, { onBranchCreated: renderProject });
   progressSection.append(stepper);
   const jobBox = el('div', { style: 'margin-top:14px' });
   progressSection.append(jobBox);

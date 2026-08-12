@@ -17,6 +17,8 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 FORMAT_VERSION = 1
+BRANCH_NAME = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff._-]{1,63}$")
+STATE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _now() -> str:
@@ -216,9 +218,9 @@ class CheckpointStore:
         return json.loads(self.index_path.read_text()) if self.index_path.exists() else {"format_version": FORMAT_VERSION, "items": {}}
 
     def prepare(self, branch: str, sequence: int, state: str, data: dict[str, Any]) -> dict[str, Any]:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", branch):
+        if not BRANCH_NAME.fullmatch(branch):
             raise ValueError("分支名称包含不安全字符。")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", state):
+        if not STATE_NAME.fullmatch(state):
             raise ValueError("状态名称包含不安全字符。")
         envelope = {"format_version": FORMAT_VERSION, "branch": branch, "sequence": sequence, "state": state, "data": data}
         envelope["checksum"] = content_hash(envelope)
@@ -443,6 +445,57 @@ class ProjectStore:
                 for name, details in branches.items()
             ],
         }
+
+    def progress_snapshots(self) -> list[dict[str, Any]]:
+        """Return immutable snapshots along the active branch lineage.
+
+        A branch stores only its fork checkpoint and subsequent work.  Walking
+        through ``parent``/``from_checkpoint`` preserves the earlier completed
+        stages in the progress card after a historical fork without exposing
+        unrelated branch contents.
+        """
+        self._recover_transaction()
+        manifest = self.manifest()
+        branch_defs = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
+        checkpoints = self.checkpoints.list()
+        by_branch: dict[str, list[dict[str, Any]]] = {}
+        for item in checkpoints:
+            by_branch.setdefault(item["branch"], []).append(item)
+
+        def lineage(branch: str, head_id: str | None, visiting: set[str]) -> list[dict[str, Any]]:
+            if branch in visiting or branch not in branch_defs:
+                raise CorruptProjectError("分支谱系损坏。")
+            visiting = {*visiting, branch}
+            details = branch_defs[branch]
+            result: list[dict[str, Any]] = []
+            parent = details.get("parent")
+            fork_id = details.get("from_checkpoint")
+            if parent and fork_id:
+                result.extend(lineage(parent, fork_id, visiting))
+
+            items = by_branch.get(branch, [])
+            if head_id:
+                target = next((item for item in items if item["checkpoint_id"] == head_id), None)
+                if target is None:
+                    raise CorruptProjectError("分支头检查点不存在。")
+                items = [item for item in items if item["sequence"] <= target["sequence"]]
+            result.extend(items)
+            return result
+
+        pointer = manifest.get("current_checkpoint") or {}
+        if not pointer:
+            return []
+        ordered = lineage(manifest["current_branch"], pointer.get("checkpoint_id"), set())
+        seen: set[str] = set()
+        response: list[dict[str, Any]] = []
+        for item in ordered:
+            checkpoint_id = item["checkpoint_id"]
+            if checkpoint_id in seen:
+                continue
+            seen.add(checkpoint_id)
+            envelope = self.checkpoints.load(checkpoint_id)
+            response.append({**item, "snapshot": envelope["data"]})
+        return response
 
     def switch_branch(self, checkpoint_id: str) -> dict[str, Any]:
         """Move the active read pointer to an indexed checkpoint without changing history."""
