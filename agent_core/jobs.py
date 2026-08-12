@@ -112,18 +112,25 @@ class JobRegistry:
             result = execute()
             with self._lock:
                 record = self.get(job_id)
-                if job_id in self._cancel:
-                    record.update(status="cancelled", finished_at=_now())
-                    self._event(record, "cancelled")
-                else:
-                    record.update(status="succeeded", finished_at=_now(), result=result)
-                    self._event(record, "succeeded")
+                # Once execute() has started it may already have committed durable
+                # workflow state or incurred an external charge.  A late cancel
+                # request therefore cannot truthfully turn a completed operation
+                # into "cancelled" or discard its result.  Cancellation remains
+                # effective at the pre-execution check above; after that point the
+                # actual execution outcome is authoritative.
+                cancellation_requested = job_id in self._cancel
+                record.update(status="succeeded", finished_at=_now(), result=result)
+                if cancellation_requested:
+                    record["cancellation_requested"] = True
+                self._event(record, "succeeded", cancellation_requested=cancellation_requested)
+                self._cancel.discard(job_id)
                 self._write(record)
                 if on_event: on_event(record)
         except InterruptedError:
             with self._lock:
                 record = self.get(job_id); record.update(status="cancelled", finished_at=_now())
                 self._event(record, "cancelled"); self._write(record)
+                self._cancel.discard(job_id)
                 if on_event: on_event(record)
         except Exception as exc:
             with self._lock:
@@ -137,6 +144,7 @@ class JobRegistry:
                     error["category"] = category
                 record = self.get(job_id); record.update(status="failed", finished_at=_now(), error=error)
                 self._event(record, "failed", error=record["error"]); self._write(record)
+                self._cancel.discard(job_id)
                 if on_event: on_event(record)
 
     def get(self, job_id: str) -> dict[str, Any]:

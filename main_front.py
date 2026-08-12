@@ -134,6 +134,23 @@ async def enforce_request_size(request: Request, call_next):
                 return JSONResponse(status_code=413, content={"detail": "请求内容超过 512 KiB 限制。"})
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Content-Length 无效。"})
+
+    # Content-Length is optional (notably for Transfer-Encoding: chunked) and
+    # must not be treated as the source of truth.  Consume the ASGI body with a
+    # hard bound, then replay the bounded bytes to the downstream parser.
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > MAX_REQUEST_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "请求内容超过 512 KiB 限制。"})
+        chunks.append(chunk)
+
+    body = b"".join(chunks)
+    # BaseHTTPMiddleware's cached request replays `_body` to the route.  Setting
+    # this after the bounded stream read avoids a second read from the now
+    # exhausted client receive channel.
+    request._body = body
     return await call_next(request)
 
 

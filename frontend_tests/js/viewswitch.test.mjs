@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOperationRegistry, createNavigator } from '../../frontend/static/js/jobrunner.js';
-import { createViewSwitcher } from '../../frontend/static/js/viewswitch.js';
+import { createAuxPageRefresher, createViewSwitcher } from '../../frontend/static/js/viewswitch.js';
 
 /* 可控应用假依赖：镜像 app.js 的接线（stopJobTracking 即 registry.leave；
  * renderProject 挂载即进入工作区视图）。 */
@@ -136,4 +136,61 @@ test('非法视图名直接忽略', () => {
   assert.equal(app.state.view, 'status');
   assert.equal(app.calls.leaves, 0);
   assert.deepEqual(app.calls.pages, []);
+});
+
+function fakeAuxPage(initialProject = 'p1', initialView = 'status') {
+  const registry = createOperationRegistry();
+  const state = { view: initialView, current: initialProject ? { project_id: initialProject } : null };
+  const calls = { gets: [], pages: [], notified: [], lists: 0 };
+  const refresher = createAuxPageRefresher({
+    getState: () => state,
+    getProject: (id, opts) => new Promise((resolve, reject) => {
+      calls.gets.push({ id, signal: opts.signal, resolve, reject });
+    }),
+    loadProjects: () => { calls.lists += 1; },
+    patch: (partial) => Object.assign(state, partial),
+    renderPage: (view) => calls.pages.push({ view, project: state.current?.project_id }),
+    notify: (message, kind) => calls.notified.push({ message, kind }),
+  }, registry);
+  return { registry, state, calls, refresher };
+}
+
+test('辅助页刷新：A 慢响应不得在切到 B 并返回同页签后覆盖 B', async () => {
+  const app = fakeAuxPage('A', 'status');
+  const refreshing = app.refresher.refresh();
+  assert.equal(app.calls.gets[0].id, 'A');
+
+  // 模拟真实侧栏导航：新操作世代接管，随后 B 工程进入状态页。
+  app.registry.begin();
+  app.state.current = { project_id: 'B' };
+  app.state.view = 'status';
+  assert.equal(app.calls.gets[0].signal.aborted, true);
+  app.calls.gets[0].resolve({ project_id: 'A', snapshot: { state: 'late' } });
+  await refreshing;
+
+  assert.equal(app.state.current.project_id, 'B');
+  assert.deepEqual(app.calls.pages, []);
+  assert.deepEqual(app.calls.notified, []);
+});
+
+test('辅助页刷新：连续刷新只接受最新世代，且拒绝响应工程 ID 不匹配', async () => {
+  const app = fakeAuxPage('A', 'settings');
+  const first = app.refresher.refresh();
+  const second = app.refresher.refresh();
+  assert.equal(app.calls.gets[0].signal.aborted, true);
+  assert.equal(app.calls.gets[1].signal.aborted, false);
+
+  app.calls.gets[0].resolve({ project_id: 'A', marker: 'old' });
+  await first;
+  app.calls.gets[1].resolve({ project_id: 'wrong', marker: 'bad' });
+  await second;
+  assert.deepEqual(app.state.current, { project_id: 'A' });
+  assert.deepEqual(app.calls.pages, []);
+
+  const third = app.refresher.refresh();
+  app.calls.gets[2].resolve({ project_id: 'A', marker: 'fresh' });
+  await third;
+  assert.equal(app.state.current.marker, 'fresh');
+  assert.deepEqual(app.calls.pages, [{ view: 'settings', project: 'A' }]);
+  assert.equal(app.calls.lists, 3);
 });

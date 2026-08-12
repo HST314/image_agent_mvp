@@ -6,6 +6,46 @@
 
 import { VIEWS } from './topnav.js';
 
+/* 状态/设置页刷新控制器：刷新 GET 与应用级操作世代绑定，同时锁定发起时的
+ * 页签和工程。仅检查页签不足以防止 A 工程慢响应在用户打开 B、再回到同一
+ * 页签后覆盖 B；三重守卫确保迟到响应只能更新原工程的原页面。 */
+export function createAuxPageRefresher(deps, registry) {
+  const {
+    getState, getProject, loadProjects = () => {}, patch,
+    renderPage, notify = () => {},
+  } = deps;
+
+  return {
+    async refresh() {
+      const op = registry.begin();
+      const viewAtCall = getState().view;
+      const projectAtCall = getState().current?.project_id || null;
+      // 工程目录独立刷新，不阻塞当前工程视图返回和渲染。
+      void loadProjects();
+      if (!projectAtCall) {
+        if (registry.isCurrent(op) && getState().view === viewAtCall && !getState().current) {
+          renderPage(viewAtCall);
+        }
+        return;
+      }
+      try {
+        const view = await getProject(projectAtCall, { signal: op.controller.signal });
+        const current = getState();
+        if (!registry.isCurrent(op)) return;
+        if (current.view !== viewAtCall || current.current?.project_id !== projectAtCall) return;
+        if (view?.project_id !== projectAtCall) return;
+        patch({ current: view });
+        renderPage(viewAtCall);
+      } catch (error) {
+        if (!registry.isCurrent(op)) return;
+        const current = getState();
+        if (current.view !== viewAtCall || current.current?.project_id !== projectAtCall) return;
+        notify(error.message, 'error');
+      }
+    },
+  };
+}
+
 export function createViewSwitcher(deps) {
   const {
     getState, patch, markActiveTab,

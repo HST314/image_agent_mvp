@@ -21,6 +21,7 @@ EXPECTED_JS = {
     "home.js", "project.js", "taskbook.js", "clarify.js", "gallery.js",
     "annotate.js", "history.js", "settings.js", "jobrunner.js",
     "copy.js", "topnav.js", "viewswitch.js", "stepstatus.js",
+    "createflow.js",
     # T2 状态页 / T3 设置页
     "statuspage.js", "eventlog.js", "policyform.js",
     # T9 进度卡只读快照与历史分支

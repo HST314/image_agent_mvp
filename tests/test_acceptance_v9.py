@@ -41,14 +41,18 @@ def test_t23_restart_marks_orphan_interrupted_without_execution(tmp_path: Path):
 
 
 def test_t23_cancel_is_terminal_and_does_not_publish_result(tmp_path: Path):
-    registry=JobRegistry(tmp_path,workers=1); gate=threading.Event()
-    job,_=registry.submit("p","cancel-key-1","advance",lambda:(gate.wait(2) or {"should":"not publish"}))
-    registry.cancel(job["job_id"]); gate.set()
+    registry=JobRegistry(tmp_path,workers=1); worker_gate=threading.Event(); cancelled_calls=[]
+    # Occupy the sole worker so cancellation is deterministically accepted
+    # before the target's execute callback starts.  Running cancellation has a
+    # separate fault-injection regression because it cannot roll back effects.
+    blocker,_=registry.submit("blocker","blocker-key-1","advance",lambda:worker_gate.wait(2))
+    job,_=registry.submit("p","cancel-key-1","advance",lambda:(cancelled_calls.append(1) or {"should":"not publish"}))
+    registry.cancel(job["job_id"]); worker_gate.set()
     for _ in range(200):
         item=registry.get(job["job_id"])
         if item["status"]=="cancelled": break
         threading.Event().wait(.01)
-    assert item["status"]=="cancelled" and "result" not in item
+    assert item["status"]=="cancelled" and "result" not in item and cancelled_calls==[]
 
 
 def test_t24_schema_repair_once_and_redacted_failure():

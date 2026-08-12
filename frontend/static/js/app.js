@@ -1,7 +1,7 @@
 /* 应用入口：顶部导航视图切换、可折叠工程目录、新建工程对话框与全局接线（T1）。
  * T2/T3：状态页（statuspage.js）与设置页（settings.js）真实页面接线。 */
 
-import { $, $$, el, toast } from './dom.js';
+import { $, $$, el, toast, sectionPanel } from './dom.js';
 import { state, patch } from './store.js';
 import * as api from './api.js';
 import { STATE_LABELS } from './states.js';
@@ -10,8 +10,10 @@ import { renderProject, stopJobTracking } from './project.js';
 import { renderStatusPage } from './statuspage.js';
 import { renderSettingsPage } from './settings.js';
 import { createNavigator, viewOperations } from './jobrunner.js';
+import { createImmediateProjectFlow } from './createflow.js';
+import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
-import { createViewSwitcher } from './viewswitch.js';
+import { createAuxPageRefresher, createViewSwitcher } from './viewswitch.js';
 
 const SAMPLE_TASK = {
   task_id: 'task_new',
@@ -96,7 +98,9 @@ function renderPage(view) {
     activePage = renderSettingsPage(content, state.current, {
       onSaved(projectView) {
         /* Q4-A：保存即生效并创建新分支——更新当前工程视图与顶栏分支标识，
-         * 然后重渲染设置页（表单当前值取自新分支的策略快照）。 */
+         * 然后重渲染设置页（表单当前值取自新分支的策略快照）。保存结果接管
+         * 当前视图世代，使更早发出的刷新 GET 即使迟到也不能覆盖新分支。 */
+        viewOperations.begin();
         patch({ current: projectView });
         setTopContext({ projectId: projectView.project_id, branch: projectView.manifest?.current_branch });
         if (state.view === 'settings') renderPage('settings');
@@ -105,22 +109,15 @@ function renderPage(view) {
   }
 }
 
-/* 状态/设置页的刷新：重新拉取工程列表与当前工程视图后重渲染当前页。
- * 拉取期间切页/导航时迟到响应直接丢弃（世代守卫与 H1 同思路）。 */
-async function refreshAuxPage() {
-  const viewAtCall = state.view;
-  loadProjects();
-  if (!state.current) { renderPage(viewAtCall); return; }
-  try {
-    const view = await api.getProject(state.current.project_id);
-    if (state.view !== viewAtCall) return;
-    patch({ current: view });
-    renderPage(viewAtCall);
-  } catch (error) {
-    if (state.view !== viewAtCall) return;
-    toast(error.message, 'error');
-  }
-}
+const auxPageRefresher = createAuxPageRefresher({
+  getState: () => state,
+  getProject: (id, opts) => api.getProject(id, opts),
+  loadProjects,
+  patch,
+  renderPage,
+  notify: toast,
+}, viewOperations);
+const refreshAuxPage = auxPageRefresher.refresh;
 
 function goHome() {
   leavePage();
@@ -170,9 +167,60 @@ function showCreate() {
   $('#offline').checked = state.offline;
   $('#project-error').textContent = '';
   $('#task-error').textContent = '';
+  $('#create-button').disabled = false;
   dialog.showModal();
   setTimeout(() => $('#project-id').focus(), 0);
 }
+
+function renderCreatePending(projectId) {
+  leavePage();
+  patch({ current: null, view: 'workspace' });
+  markActiveTab('workspace');
+  setTopContext({ projectId, branch: 'main' });
+  const content = $('#content');
+  content.textContent = '';
+  const section = sectionPanel('创作进度', `工程 ${projectId}`);
+  section.setAttribute('aria-busy', 'true');
+  const progress = el('div', { style: 'margin-top:14px' });
+  const progressHandle = renderJobProgress(progress, {
+    project_id: projectId,
+    operation: '创建工程',
+    status: 'submitting',
+  });
+  section.append(progress);
+  content.append(section);
+  renderNav();
+  collapseSidebar();
+  return { busyRegion: section, progressHandle };
+}
+
+const projectCreator = createImmediateProjectFlow({
+  createProject: (payload, opts) => api.createProject(payload, opts),
+  showPending(payload) {
+    $('#create-button').disabled = true;
+    $('#project-dialog').close();
+    return renderCreatePending(payload.project_id);
+  },
+  showCreated(view, pending) {
+    pending?.busyRegion?.removeAttribute('aria-busy');
+    $('#create-button').disabled = false;
+    renderProject(view, { autostartBootstrap: true });
+    renderNav();
+    collapseSidebar();
+    void loadProjects();
+    toast('工程已创建，正在启动创作流程。');
+  },
+  showError(error, pending) {
+    pending?.busyRegion?.removeAttribute('aria-busy');
+    pending?.progressHandle?.done({ status: 'failed', error: { message: error.message } });
+    $('#create-button').disabled = false;
+    $('#task-error').textContent = error.message;
+    const dialog = $('#project-dialog');
+    if (!dialog.open) dialog.showModal();
+    $('#project-id').focus();
+    toast(error.message, 'error');
+  },
+}, viewOperations);
 
 async function createProject(event) {
   event.preventDefault();
@@ -192,34 +240,9 @@ async function createProject(event) {
   }
   patch({ offline: $('#offline').checked });
   safeSet('studio-offline', String(state.offline));
-  const button = $('#create-button');
-  button.disabled = true;
-  /* T10（契约 §7/Q10-A）：defer_run 创建仅持久化工程与任务卡、立即返回；
-   * 点击后立即关弹窗跳工作台，首个推进由 renderProject 经 jobs 异步启动，
-   * 状态区实时显示真实后端状态（job 事件 + timeline），界面不再长时间停留。
-   * 创建 POST 绑定视图操作世代：等待期间用户经侧栏打开其他工程时，本次迟到
-   * 返回被丢弃，不覆盖用户正在浏览的视图（H1 语义）；工程已在侧栏可手动启动。 */
-  const op = viewOperations.begin();
-  try {
-    const view = await api.createProject(
-      { project_id: id, task_card: task, offline: state.offline, defer_run: true },
-      { signal: op.controller.signal },
-    );
-    $('#project-dialog').close();
-    await loadProjects();
-    if (!viewOperations.isCurrent(op)) return;
-    leavePage(); // 创建入口可能在状态/设置页触发：跳工作台前卸载页面订阅
-    renderProject(view, { autostartBootstrap: true });
-    renderNav();
-    collapseSidebar();
-    toast('工程已创建，正在启动创作流程。');
-  } catch (error) {
-    if (!viewOperations.isCurrent(op)) return; // 已导航离开：静默，不打扰新视图
-    $('#task-error').textContent = error.message;
-    toast(error.message, 'error');
-  } finally {
-    button.disabled = false;
-  }
+  /* T10（契约 §7/Q10-A）：等待创建接口前已经关闭弹窗并切至工作台等待态；
+   * 创建成功后再用权威工程视图接管并异步启动首个 job。 */
+  await projectCreator.start({ project_id: id, task_card: task, offline: state.offline, defer_run: true });
 }
 
 /* ---- 全局接线 ---- */

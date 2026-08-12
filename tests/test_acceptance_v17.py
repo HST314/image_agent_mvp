@@ -100,6 +100,7 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
         if not checkbox.is_selected():
             checkbox.click()
         click_button("创建并启动")
+        wait.until(lambda d: not d.find_element(By.ID, "project-dialog").get_attribute("open"))
 
         wait.until(lambda d: d.find_elements(By.ID, "answer-form"))
         for group in driver.find_elements(By.CSS_SELECTOR, "#answer-form .option-cards"):
@@ -112,7 +113,7 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
         editor = driver.find_element(By.ID, "taskbook-editor")
         driver.execute_script("arguments[0].value += '\\n- 浏览器验收修订：v17'", editor)
         click_button("保存修改")
-        click_button("确认任务书并继续")
+        click_button("确认任务书，开始生成候选图")
 
         click_button("选为主图")
         confirm = wait.until(lambda d: next((b for b in d.find_elements(By.TAG_NAME, "button") if b.text.startswith("确认方向") and b.is_enabled()), None))
