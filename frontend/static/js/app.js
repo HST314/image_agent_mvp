@@ -1,11 +1,14 @@
-/* 应用入口：顶部导航视图切换、可折叠工程目录、新建工程对话框与全局接线（T1）。 */
+/* 应用入口：顶部导航视图切换、可折叠工程目录、新建工程对话框与全局接线（T1）。
+ * T2/T3：状态页（statuspage.js）与设置页（settings.js）真实页面接线。 */
 
-import { $, $$, el, toast, escapeHtml, stateBlock } from './dom.js';
+import { $, $$, el, toast } from './dom.js';
 import { state, patch } from './store.js';
 import * as api from './api.js';
 import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
 import { renderProject, stopJobTracking } from './project.js';
+import { renderStatusPage } from './statuspage.js';
+import { renderSettingsPage } from './settings.js';
 import { createNavigator, viewOperations } from './jobrunner.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { createViewSwitcher } from './viewswitch.js';
@@ -67,22 +70,62 @@ function renderNav() {
   }
 }
 
-/* ---- 顶部导航视图切换（T1：工作区默认；状态/设置页由 T2/T3 填充） ---- */
+/* ---- 顶部导航视图切换（T1 框架；T2 状态页 / T3 设置页真实渲染） ---- */
 
-const PLACEHOLDERS = {
-  status: ['状态页（建设中）', 'T2 任务将在此集中呈现：Agent 运行状态、工程信息、最近活动、原始任务，以及实时滚动刷新、当前动作高亮、可暂停的事件日志。'],
-  settings: ['设置页（建设中）', 'T3 任务将把运行策略迁移到此页：全部字段中文化表单，分「常用 / 高级」两组；保存即生效并自动创建新分支。'],
-};
+/* 当前挂载的非工作区页面（状态/设置），含实时订阅；切页/导航/回首页时 dispose。 */
+let activePage = null;
+function leavePage() {
+  activePage?.dispose?.();
+  activePage = null;
+}
 
-function renderPlaceholder(view) {
+/* 渲染状态页/设置页（契约 §4/§5）：基于当前工程视图（工作区最近加载的
+ * state.current）；未打开工程时由页面自身渲染空态。 */
+function renderPage(view) {
+  leavePage();
   const content = $('#content');
   content.textContent = '';
-  const [title, detail] = PLACEHOLDERS[view];
-  content.append(stateBlock('empty', title, detail));
+  if (view === 'status') {
+    const current = state.current;
+    activePage = renderStatusPage(content, current, {
+      openStream: current
+        ? (after, { signal } = {}) => api.streamTimelineEvents(current.project_id, { after, signal })
+        : null,
+    });
+  } else if (view === 'settings') {
+    activePage = renderSettingsPage(content, state.current, {
+      onSaved(projectView) {
+        /* Q4-A：保存即生效并创建新分支——更新当前工程视图与顶栏分支标识，
+         * 然后重渲染设置页（表单当前值取自新分支的策略快照）。 */
+        patch({ current: projectView });
+        setTopContext({ projectId: projectView.project_id, branch: projectView.manifest?.current_branch });
+        if (state.view === 'settings') renderPage('settings');
+      },
+    });
+  }
+}
+
+/* 状态/设置页的刷新：重新拉取工程列表与当前工程视图后重渲染当前页。
+ * 拉取期间切页/导航时迟到响应直接丢弃（世代守卫与 H1 同思路）。 */
+async function refreshAuxPage() {
+  const viewAtCall = state.view;
+  loadProjects();
+  if (!state.current) { renderPage(viewAtCall); return; }
+  try {
+    const view = await api.getProject(state.current.project_id);
+    if (state.view !== viewAtCall) return;
+    patch({ current: view });
+    renderPage(viewAtCall);
+  } catch (error) {
+    if (state.view !== viewAtCall) return;
+    toast(error.message, 'error');
+  }
 }
 
 function goHome() {
+  leavePage();
   stopJobTracking();
+
   patch({ current: null, view: 'workspace' });
   markActiveTab('workspace');
   setTopContext({});
@@ -92,23 +135,27 @@ function goHome() {
 
 /* 侧栏/首页/刷新共用的真实导航入口（逻辑在 jobrunner.js createNavigator）：
  * 导航意图发生即中止当前操作（含 in-flight POST 与跟踪循环），GET 绑定导航
- * 世代并在返回前复核——慢 GET/连续点击的迟到响应不会覆盖新视图（H1）。 */
+ * 世代并在返回前复核——慢 GET/连续点击的迟到响应不会覆盖新视图（H1）。
+ * T2/T3：导航意图同时卸载状态/设置页的实时订阅（leavePage）。 */
 const navigation = createNavigator({
   getProject: (id, opts) => api.getProject(id, opts),
   renderProject,
   afterOpen: () => { renderNav(); collapseSidebar(); },
   notify: toast,
 });
-export const openProject = navigation.openProject;
+export const openProject = (id) => {
+  leavePage();
+  return navigation.openProject(id);
+};
 
 /* 视图切换决策（逻辑在 viewswitch.js，可 Node 侧回归）：真实依赖在此接线。
- * 重点击当前占位页签会中止在途工程导航（H1），迟到 GET 不得切回工作区。 */
+ * 重点击当前状态/设置页签会中止在途工程导航（H1），迟到 GET 不得切回工作区。 */
 const viewSwitcher = createViewSwitcher({
   getState: () => state,
   patch,
   markActiveTab,
   stopJobTracking,
-  renderPlaceholder,
+  renderPage,
   openProject,
   goHome,
 });
@@ -161,6 +208,7 @@ async function createProject(event) {
     $('#project-dialog').close();
     await loadProjects();
     if (!viewOperations.isCurrent(op)) return;
+    leavePage(); // 创建入口可能在状态/设置页触发：跳工作台前卸载页面订阅
     renderProject(view, { autostartBootstrap: true });
     renderNav();
     collapseSidebar();
@@ -193,7 +241,7 @@ function collapseSidebar() {
 function bindChrome() {
   $('#new-button').addEventListener('click', showCreate);
   $('#refresh-button').addEventListener('click', () => {
-    if (state.view !== 'workspace') { loadProjects(); return; }
+    if (state.view !== 'workspace') { refreshAuxPage(); return; }
     if (state.current) openProject(state.current.project_id);
     else loadProjects().then(goHome);
   });

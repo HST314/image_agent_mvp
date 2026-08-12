@@ -14,6 +14,11 @@ export function subscribe(fn) { listeners.add(fn); return () => listeners.delete
 export function emit() { for (const fn of listeners) fn(state); }
 export function patch(partial) { Object.assign(state, partial); emit(); }
 
+/* ---- 操作人身份（确认/审批/策略修订共用；localStorage 持久化） ---- */
+
+export function getActor() { try { return localStorage.getItem('studio-actor') || ''; } catch { return ''; } }
+export function setActor(value) { try { localStorage.setItem('studio-actor', value); } catch { /* ignore */ } }
+
 /* ---- 草稿（可注入 storage 便于 Node 测试） ---- */
 
 const memoryStorage = new Map();

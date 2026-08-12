@@ -67,3 +67,15 @@ export function formatDate(value) {
     return new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
   } catch { return String(value); }
 }
+
+/** 统一的内容卡片（标题 + 副标题），各页面共用。 */
+export function sectionPanel(title, subtitle = '') {
+  const panel = el('section', { class: 'panel section ia-section' });
+  const head = el('div', { class: 'section__head' });
+  const text = el('div');
+  text.append(el('h2', { text: title }));
+  if (subtitle) text.append(el('p', { text: subtitle }));
+  head.append(text);
+  panel.append(head);
+  return panel;
+}

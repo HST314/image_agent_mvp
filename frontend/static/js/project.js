@@ -1,8 +1,10 @@
-/* 工作台视图（T32 信息架构）：原始任务 / 当前决策 / 实时进度 / 结果 / 历史。
+/* 工作台视图（契约 §3）：创作进度卡 + 当前阶段工作区。
+ * T2/T3 起，工程信息/最近活动/原始任务迁入状态页（statuspage.js），运行策略
+ * 迁入设置页（settings.js），工作台不再展示这四张卡片。
  * 长任务一律经后台 job + SSE 序号续传，页面在长任务期间保持可操作（T35）。 */
 
-import { $, el, toast, stateBlock, icons, formatDate } from './dom.js';
-import { state, patch } from './store.js';
+import { $, el, toast, stateBlock, icons, sectionPanel } from './dom.js';
+import { state, patch, getActor } from './store.js';
 import * as api from './api.js';
 import { viewOperations, createJobRunner, isTerminalJobStatus } from './jobrunner.js';
 import { renderMarkdownInto } from './markdown.js';
@@ -12,10 +14,9 @@ import { renderClarify } from './clarify.js';
 import { renderTaskbook } from './taskbook.js';
 import { renderGalleryStage } from './gallery.js';
 import { createAnnotator } from './annotate.js';
-import { renderTimeline, renderJobProgress } from './history.js';
-import { renderSettings } from './settings.js';
+import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
-import { errorText, phaseLabel, capabilityLabel, terminationReasonLabel, fieldLabel } from './copy.js';
+import { errorText, terminationReasonLabel } from './copy.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -84,21 +85,6 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
 
   renderStage(stagePanel, view, derived, { projectId, actor, refresh, jobRunner });
 
-  /* ===== 原始任务 ===== */
-  const taskCard = snapshot.task_card;
-  if (taskCard) {
-    const panel = sectionPanel('原始任务', '上游输入原样留存；澄清答案与任务书修订均有审计');
-    const list = el('dl', { class: 'kv' });
-    list.append(
-      el('dt', { text: '交付目标' }), el('dd', { text: taskCard.deliverable_goal || '—' }),
-      el('dt', { text: '使用场景' }), el('dd', { text: taskCard.usage_context || '—' }),
-      el('dt', { text: '已知事实' }), el('dd', { text: summarizeFacts(taskCard.known_facts) }),
-      el('dt', { text: '未知项' }), el('dd', { text: summarizeFacts(taskCard.unknowns) }),
-    );
-    panel.append(list);
-    primary.append(panel);
-  }
-
   /* ===== 任务书 ===== */
   if (snapshot.task_markdown) {
     const panel = sectionPanel('任务书', '');
@@ -112,24 +98,11 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
     primary.append(renderResult(view, { projectId, refresh }));
   }
 
-  /* ===== 工程信息（含操作人） ===== */
-  rail.append(renderInfo(view, derived, () => renderProject(state.current)));
-
-  /* ===== 付费调用待处置 ===== */
+  /* ===== 付费调用待处置（契约 §3：工作台仅保留进度卡与阶段工作区；
+   * 工程信息/最近活动/原始任务迁入状态页，运行策略迁入设置页） ===== */
   const unknowns = view.unknown_actions || [];
   if (unknowns.length) rail.append(renderUnknowns(unknowns, { projectId, refresh }));
-
-  /* ===== 历史 ===== */
-  const historyPanel = sectionPanel('最近活动', '真实事件审计记录');
-  renderTimeline(historyPanel, view.history || []);
-  rail.append(historyPanel);
-
-  /* ===== 设置 ===== */
-  if (view.runtime_policy) {
-    const holder = el('div');
-    renderSettings(holder, view, { projectId, onChanged: refresh });
-    rail.append(holder.firstChild);
-  }
+  if (!rail.children.length) workspace.classList.add('workspace--solo');
 
   /* 恢复进行中的 job 展示（刷新后） */
   const activeJob = view.active_job || (state.job && state.job.project_id === projectId && !isTerminalJobStatus(state.job.status) ? state.job : null);
@@ -434,7 +407,7 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
     if (!job) approve.disabled = false;
   });
   panel.append(approve);
-  if (!actor) panel.append(el('small', { text: '请先在右侧"工程信息"填写操作人身份。' }));
+  if (!actor) panel.append(el('small', { text: '请先在状态页「工程信息」填写操作人身份。' }));
 }
 
 function renderResult(view, { projectId, refresh }) {
@@ -474,32 +447,6 @@ function renderResult(view, { projectId, refresh }) {
 
 /* ---------- 侧栏 ---------- */
 
-function renderInfo(view, derived, onActorChanged) {
-  const snapshot = view.snapshot || {};
-  const manifest = view.manifest || {};
-  const panel = sectionPanel('工程信息', '');
-  panel.querySelector('.section__head p')?.remove();
-  const list = el('dl', { class: 'kv' });
-  list.append(
-    el('dt', { text: '当前状态' }), el('dd', { text: stateLabel(snapshot.state) }),
-    el('dt', { text: '当前阶段' }), el('dd', { text: phaseLabel(snapshot.phase) }),
-    el('dt', { text: '当前分支' }), el('dd', { text: manifest.current_branch || 'main' }),
-    el('dt', { text: '更新时间' }), el('dd', { text: formatDate(manifest.updated_at) }),
-    el('dt', { text: '可用动作' }), el('dd', { text: (view.capabilities || []).map(capabilityLabel).join('、') || '无' }),
-  );
-  panel.append(list);
-  const actorField = el('div', { class: 'field', style: 'margin-top:12px' });
-  const actorInput = el('input', { class: 'input', id: 'actor-input', placeholder: '确认/审批时使用的身份', value: getActor() });
-  actorInput.addEventListener('change', () => {
-    setActor(actorInput.value.trim());
-    toast('操作人身份已保存。');
-    onActorChanged?.();
-  });
-  actorField.append(el('label', { for: 'actor-input', text: '操作人身份' }), actorInput);
-  panel.append(actorField);
-  return panel;
-}
-
 function renderUnknowns(items, { projectId, refresh }) {
   const panel = sectionPanel('付费调用待处置', '结果未知时不会自动重试');
   const tpl = document.getElementById('tpl-unknown-action');
@@ -510,7 +457,7 @@ function renderUnknowns(items, { projectId, refresh }) {
       btn.dataset.key = item.idempotency_key;
       btn.addEventListener('click', async () => {
         const actor = getActor();
-        if (!actor) { toast('请先在"工程信息"填写操作人身份。', 'error'); return; }
+        if (!actor) { toast('请先在状态页「工程信息」填写操作人身份。', 'error'); return; }
         btn.disabled = true;
         try {
           await api.resolveUnknown(projectId, item.idempotency_key, { action: btn.dataset.unknown, actor });
@@ -573,37 +520,6 @@ function makeJobRunner(box, projectId, refresh, actionRoot) {
 }
 
 /* ---------- 小工具 ---------- */
-
-function sectionPanel(title, subtitle) {
-  const panel = el('section', { class: 'panel section ia-section' });
-  const head = el('div', { class: 'section__head' });
-  const text = el('div');
-  text.append(el('h2', { text: title }));
-  if (subtitle) text.append(el('p', { text: subtitle }));
-  head.append(text);
-  panel.append(head);
-  return panel;
-}
-
-/* 任务卡事实展示：键名一律中文化（T11 §11），嵌套对象/数组的值拍平为可读文本。 */
-function formatFactValue(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  if (Array.isArray(value)) return value.map(formatFactValue).join('、');
-  if (typeof value === 'object') {
-    return Object.entries(value).map(([k, v]) => `${fieldLabel(k)} ${formatFactValue(v)}`).join('，');
-  }
-  return String(value);
-}
-
-function summarizeFacts(facts) {
-  if (!facts || typeof facts !== 'object') return '—';
-  const entries = Object.entries(facts);
-  if (!entries.length) return '—';
-  return entries.map(([k, v]) => `${fieldLabel(k)}：${formatFactValue(v)}`).join('；');
-}
-
-function getActor() { try { return localStorage.getItem('studio-actor') || ''; } catch { return ''; } }
-function setActor(value) { try { localStorage.setItem('studio-actor', value); } catch { /* ignore */ } }
 
 async function openProject(id, op) {
   // 视图拉取即一次操作：无调用方世代时登记新世代（意图发生即中止 in-flight

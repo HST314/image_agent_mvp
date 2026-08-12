@@ -116,6 +116,25 @@ const FIELD_LABELS = {
   additional_rounds: '追加轮次',
   cost_confirmed: '费用确认',
   action: '动作',
+  /* 运行策略字段（T3 设置页 422 校验路径 loc 中文化，契约 §5/§8/§11） */
+  max_auto_questions: '自动提问上限',
+  clarification_total_budget: '澄清问题总预算',
+  termination: '终止方式',
+  fixed_rounds: '固定自检轮次',
+  max_rounds: '最大自检轮次',
+  stop_early_on_pass: '通过后提前停止',
+  release: '放行方式',
+  candidate_concurrency: '候选图并发数',
+  default_output_size: '默认出图尺寸',
+  watermark: '水印',
+  offline_mode: '离线模式',
+  model_timeout_seconds: '模型超时时间',
+  image_api_base_url: '图像接口地址',
+  response_format: '图片返回格式',
+  max_render_retries: '渲染重试次数',
+  allow_skill_degradation: '允许技能降级',
+  style_library_root: '风格库路径',
+  stream_model_output: '流式输出',
 };
 
 /**
@@ -158,6 +177,48 @@ const POLICY_ENUM_LABELS = {
   response_format: { url: 'URL 链接', b64_json: 'Base64 数据' },
 };
 
+/* T3 设置页表单说明小字（契约 §8 中文化映射基线）：名称不够清楚时附解释。 */
+const POLICY_KEY_HELP = {
+  max_auto_questions: 'Agent 自动向你追问澄清问题的最多次数',
+  clarification_total_budget: '整个澄清阶段允许的问题总量',
+  'self_check.termination': '固定轮次：固定执行指定轮数；按质量判定：达标即停',
+  'self_check.fixed_rounds': '终止方式为「固定轮次」时生效',
+  'self_check.max_rounds': '自检最多进行的轮数',
+  'self_check.stop_early_on_pass': '自检达标即提前结束',
+  'self_check.release': '自检通过后自动放行，或需人工确认后放行',
+  candidate_concurrency: '同时生成的候选图数量（1–5）',
+  default_output_size: '如 1K / 2K / 4K，或具体像素（如 2560x1440）',
+  watermark: '生成图是否带水印',
+  offline_mode: '不调用真实模型接口，用于演示/调试',
+  model_timeout_seconds: '单次模型调用的最长等待时间',
+  image_api_base_url: '出图服务的接口地址',
+  response_format: '图片以 URL 链接或 Base64 数据返回',
+  max_render_retries: '出图失败后的自动重试次数（当前固定为 0）',
+  allow_skill_degradation: '技能不可用时是否降级处理',
+  style_library_root: '本地风格库所在目录',
+  stream_model_output: '当前固定关闭',
+};
+
+/** 策略字段路径 → 中文名；未收录的英文键兜底为「其他策略项」，不原样上屏（§11）。 */
+export function policyKeyLabel(path) {
+  const text = String(path ?? '');
+  if (!text) return '其他策略项';
+  return POLICY_KEY_LABELS[text] || (hasCJK(text) ? text : '其他策略项');
+}
+
+/** 策略字段路径 → 解释性小字（无则空串）。 */
+export function policyKeyHelp(path) {
+  return POLICY_KEY_HELP[String(path ?? '')] || '';
+}
+
+/** 策略枚举值 → 中文选项名；未收录的英文枚举值兜底，不原样上屏（§11）。 */
+export function policyOptionLabel(path, value) {
+  const text = String(value ?? '');
+  const label = POLICY_ENUM_LABELS[String(path ?? '')]?.[text];
+  if (label) return label;
+  return hasCJK(text) ? text : '未设置';
+}
+
 function policyValueText(key, value) {
   if (typeof value === 'boolean') return value ? '开启' : '关闭';
   const enums = POLICY_ENUM_LABELS[key];
@@ -172,16 +233,15 @@ function policyValueText(key, value) {
  * 未收录的英文键不原样展示（更深层的嵌套值同理不直接 JSON 上屏）。
  */
 export function policyEntries(policy) {
-  const labelOf = (path) => POLICY_KEY_LABELS[path] || (hasCJK(path) ? path : '其他策略项');
   const entries = [];
   for (const [key, value] of Object.entries(policy || {})) {
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
       for (const [sub, subValue] of Object.entries(value)) {
         const path = `${key}.${sub}`;
-        entries.push({ key: path, label: labelOf(path), valueText: policyValueText(path, subValue) });
+        entries.push({ key: path, label: policyKeyLabel(path), valueText: policyValueText(path, subValue) });
       }
     } else {
-      entries.push({ key, label: labelOf(key), valueText: policyValueText(key, value) });
+      entries.push({ key, label: policyKeyLabel(key), valueText: policyValueText(key, value) });
     }
   }
   return entries;

@@ -90,6 +90,28 @@ export const createProject = (payload, { signal } = {}) =>
 export const getTimeline = (id, { after = 0, limit = 100, signal } = {}) =>
   api(`/api/projects/${encodeURIComponent(id)}/timeline?after=${after}&limit=${limit}`, { signal });
 
+/* T2：事件日志的 SSE 快照流（契约 §4/§12）：GET /timeline/events 把当前游标后的
+ * 事件以 SSE 一次性推送并关闭；调用方（eventlog.js）按已推进游标重连续传。 */
+export async function* streamTimelineEvents(id, { after = 0, limit = 200, signal } = {}) {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(id)}/timeline/events?after=${after}&limit=${limit}`,
+    { signal, headers: { Accept: 'text/event-stream' } },
+  );
+  if (!res.ok || !res.body) throw new Error('SSE_UNAVAILABLE');
+  const text = await res.text();
+  for (const block of text.split('\n\n')) {
+    const dataLine = block.split('\n').find((line) => line.startsWith('data: '));
+    if (!dataLine) continue;
+    let event;
+    try { event = JSON.parse(dataLine.slice(6)); } catch { continue; }
+    yield event;
+  }
+}
+
+/* T3：设置页表单数据源（契约 §5——字段清单/类型/约束取自后端，前端不硬编码）。 */
+export const getSettingsSchema = (id, { signal } = {}) =>
+  api(`/api/projects/${encodeURIComponent(id)}/settings/schema`, { signal });
+
 /* ---- 推进（同步，仅用于不触发付费模型调用的动作） ---- */
 export const advance = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/advance`, { method: 'POST', body: JSON.stringify(payload) });
 export const retryProject = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify(payload) });
