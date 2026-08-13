@@ -5,6 +5,7 @@ import {
   completedStageSnapshots,
   createSnapshotBranch,
   isCreatedBranchView,
+  skillInvocationView,
 } from '../../frontend/static/js/snapshots.js';
 
 const checkpoint = (state, sequence, branch = 'main') => ({
@@ -103,4 +104,41 @@ test('T9 创建返回异常视图：重新拉取可恢复；对账不匹配则�
   assert.equal(isCreatedBranchView(projectView('main'), {
     projectId: 'demo', branchName: '任务书-0812-090705',
   }), false);
+});
+
+test('技能调用快照分别归一广告品类约束与五张风格参考', () => {
+  const snapshot = {
+    skill_invocations: {
+      category_library: {
+        category_name: '饮料海报', description: '用于新品传播',
+        production_constraints: ['保留安全边距'], visual_rules: ['主体清晰'],
+        forbidden_elements: ['虚构认证'], review_checks: ['检查品牌信息'],
+      },
+      style_library: {
+        selections: Array.from({ length: 5 }, (_, index) => ({
+          style_id: `STYLE-${index + 1}`, style_name: `风格 ${index + 1}`,
+          reference_asset: { uri: `artifact://artifact_${String(index).padStart(24, '0')}` },
+          artistic_interpretation: `艺术理解 ${index + 1}`,
+        })),
+      },
+    },
+  };
+  const model = skillInvocationView(snapshot);
+  assert.equal(model.category.name, '饮料海报');
+  assert.deepEqual(model.category.productionConstraints, ['保留安全边距']);
+  assert.equal(model.styles.length, 5);
+  assert.equal(model.styles[0].interpretation, '艺术理解 1');
+  assert.equal(model.hasPersistedStyleDetails, true);
+});
+
+test('旧快照只回退为风格文字，不把五张候选主图当作风格参考图', () => {
+  const model = skillInvocationView({
+    candidates: [{ style_id: 'STYLE-1', style_name: '旧风格名', uri: 'artifact://artifact_candidate' }],
+    style_selections: [{ style_id: 'STYLE-1', reason: '适配任务' }],
+  });
+  assert.equal(model.category.available, false);
+  assert.equal(model.styles[0].styleName, '旧风格名');
+  assert.equal(model.styles[0].interpretation, '适配任务');
+  assert.equal(model.styles[0].reference_asset, undefined);
+  assert.equal(model.hasPersistedStyleDetails, false);
 });

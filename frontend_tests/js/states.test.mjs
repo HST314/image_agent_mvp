@@ -16,6 +16,7 @@ test('七个生产状态与后端 WorkflowRunner.ORDER 一致', () => {
     'intake_clarify', 'confirmation_build', 'initial_candidate_generation',
     'master_candidate_selection', 'self_check_iteration', 'human_prompt_iteration', 'final_approval',
   ]);
+  assert.equal(stateLabel('initial_candidate_generation'), '技能调用');
 });
 
 test('服务端每个能力都有且仅有一个前端动作', () => {

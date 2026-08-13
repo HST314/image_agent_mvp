@@ -47,6 +47,16 @@ def test_generic_offline_task_uses_approved_fallback_skill(tmp_path: Path) -> No
     assert {item["provenance"]["category_id"] for item in result["candidates"]} == {
         "generic_visual_delivery"
     }
+    invocation = result["skill_invocations"]
+    assert invocation["category_library"]["source"] == "广告品类库"
+    assert invocation["category_library"]["category_id"] == "generic_visual_delivery"
+    assert len(invocation["style_library"]["selections"]) == 5
+    for selection in invocation["style_library"]["selections"]:
+        assert selection["reference_asset"]["uri"].startswith("artifact://artifact_")
+        assert selection["artistic_interpretation"]
+        assert set(selection["analysis"]) == {
+            "composition", "material", "lighting", "narrative", "graphic_language", "color",
+        }
 
 
 def test_five_way_offline_generation_keeps_prompt_log_valid(tmp_path: Path) -> None:

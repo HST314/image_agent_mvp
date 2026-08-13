@@ -9,7 +9,7 @@ import { STATE_LABELS } from './states.js';
 const LIVE_STEP_TEXT = {
   intake_clarify: '正在理解任务书，生成澄清问题…',
   confirmation_build: '正在生成任务书…',
-  initial_candidate_generation: '正在生成候选图…',
+  initial_candidate_generation: '正在调用品类与艺术风格技能并生成候选图…',
   master_candidate_selection: '正在整理候选结果…',
   self_check_iteration: '正在质检画面…',
   human_prompt_iteration: '正在按修改意见调整画面…',

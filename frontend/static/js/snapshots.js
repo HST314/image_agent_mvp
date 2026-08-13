@@ -127,6 +127,101 @@ function renderCandidates(container, projectId, snapshot) {
   return true;
 }
 
+const asTextList = (value) => Array.isArray(value)
+  ? value.map((item) => readableValue(item)).filter(Boolean)
+  : [];
+
+/**
+ * 将新旧检查点归一为“广告品类库 + 艺术风格库”两张卡片的数据。
+ * 旧检查点没有保存参考图和品类详情时只展示明确的缺失提示，不再回退为候选主图。
+ */
+export function skillInvocationView(snapshot = {}) {
+  const invocation = snapshot.skill_invocations || {};
+  const category = invocation.category_library || {};
+  const persistedStyles = invocation.style_library?.selections;
+  const legacyStyles = Array.isArray(snapshot.style_selections) ? snapshot.style_selections : [];
+  const candidateNames = new Map((snapshot.candidates || []).map((item) => [item.style_id, item.style_name]));
+  const styles = (Array.isArray(persistedStyles) ? persistedStyles : legacyStyles).slice(0, 5).map((style, index) => ({
+    ...style,
+    styleName: style.style_name || candidateNames.get(style.style_id) || `风格方向 ${index + 1}`,
+    interpretation: readableValue(style.artistic_interpretation)
+      || readableValue(style.reason)
+      || readableValue(style.mechanism),
+  }));
+  return {
+    category: {
+      name: readableValue(category.category_name),
+      description: readableValue(category.description),
+      productionConstraints: asTextList(category.production_constraints),
+      visualRules: asTextList(category.visual_rules),
+      forbiddenElements: asTextList(category.forbidden_elements),
+      reviewChecks: asTextList(category.review_checks),
+      available: Object.keys(category).length > 0,
+    },
+    styles,
+    hasPersistedStyleDetails: Array.isArray(persistedStyles),
+  };
+}
+
+function appendRuleGroup(container, title, items) {
+  if (!items.length) return false;
+  const list = el('ul', { class: 'skill-call-card__list' });
+  items.forEach((item) => list.append(el('li', { text: item })));
+  container.append(el('section', { class: 'skill-call-card__group' }, [el('h4', { text: title }), list]));
+  return true;
+}
+
+function renderSkillInvocations(container, projectId, snapshot) {
+  const model = skillInvocationView(snapshot);
+  const layout = el('div', { class: 'skill-call-grid' });
+
+  const categoryCard = el('section', { class: 'skill-call-card', 'aria-labelledby': 'category-skill-title' });
+  categoryCard.append(el('div', { class: 'skill-call-card__head' }, [
+    el('span', { class: 'skill-call-card__index', text: '01', 'aria-hidden': 'true' }),
+    el('div', {}, [
+      el('h3', { id: 'category-skill-title', text: '广告品类库' }),
+      el('p', { text: model.category.name ? `已匹配：${model.category.name}` : '本次调用获得的品类设计约束' }),
+    ]),
+  ]));
+  if (model.category.description) categoryCard.append(el('p', { class: 'skill-call-card__summary', text: model.category.description }));
+  let hasCategoryContent = Boolean(model.category.description);
+  hasCategoryContent = appendRuleGroup(categoryCard, '制作约束', model.category.productionConstraints) || hasCategoryContent;
+  hasCategoryContent = appendRuleGroup(categoryCard, '视觉规则', model.category.visualRules) || hasCategoryContent;
+  hasCategoryContent = appendRuleGroup(categoryCard, '禁用元素', model.category.forbiddenElements) || hasCategoryContent;
+  hasCategoryContent = appendRuleGroup(categoryCard, '验收检查', model.category.reviewChecks) || hasCategoryContent;
+  if (!hasCategoryContent) categoryCard.append(el('p', { class: 'skill-call-card__empty', text: '该旧快照未保存广告品类库调用详情；新生成的检查点会完整记录。' }));
+
+  const styleCard = el('section', { class: 'skill-call-card skill-call-card--styles', 'aria-labelledby': 'style-skill-title' });
+  styleCard.append(el('div', { class: 'skill-call-card__head' }, [
+    el('span', { class: 'skill-call-card__index', text: '02', 'aria-hidden': 'true' }),
+    el('div', {}, [
+      el('h3', { id: 'style-skill-title', text: '艺术风格库' }),
+      el('p', { text: `已选择 ${model.styles.length}/5 张风格参考图，并提取可迁移的视觉机制` }),
+    ]),
+  ]));
+  if (model.styles.length) {
+    const gallery = el('div', { class: 'skill-reference-grid', role: 'list', 'aria-label': '五张已选择的艺术风格参考图' });
+    model.styles.forEach((style, index) => {
+      const figure = el('figure', { class: 'skill-reference', role: 'listitem' });
+      const visual = el('div', { class: 'skill-reference__visual' });
+      if (!addAsset(visual, projectId, style.reference_asset, `风格参考 ${index + 1}：${style.styleName}`)) {
+        visual.append(el('span', { text: model.hasPersistedStyleDetails ? '参考图暂不可用' : '旧快照未保存参考图' }));
+      }
+      figure.append(visual, el('figcaption', {}, [
+        el('strong', { text: `${index + 1}. ${style.styleName}` }),
+        el('p', { text: style.interpretation || '该旧快照未保存模型生成的艺术理解。' }),
+      ]));
+      gallery.append(figure);
+    });
+    styleCard.append(gallery);
+  } else {
+    styleCard.append(el('p', { class: 'skill-call-card__empty', text: '该快照没有可展示的艺术风格库调用结果。' }));
+  }
+  layout.append(categoryCard, styleCard);
+  container.append(layout);
+  return true;
+}
+
 function renderInspection(container, projectId, snapshot) {
   const inspection = snapshot.inspection;
   const asset = snapshot.best_asset || snapshot.current_asset || snapshot.asset || snapshot.master_asset;
@@ -174,9 +269,8 @@ function renderSnapshotContent(container, projectId, item) {
     container.append(document);
     rendered = true;
   }
-  if (['initial_candidate_generation', 'master_candidate_selection'].includes(item.state)) {
-    rendered = renderCandidates(container, projectId, snapshot) || rendered;
-  }
+  if (item.state === 'initial_candidate_generation') rendered = renderSkillInvocations(container, projectId, snapshot) || rendered;
+  if (item.state === 'master_candidate_selection') rendered = renderCandidates(container, projectId, snapshot) || rendered;
   if (item.state === 'self_check_iteration') rendered = renderInspection(container, projectId, snapshot) || rendered;
   if (item.state === 'human_prompt_iteration') {
     rendered = renderInspection(container, projectId, snapshot) || rendered;

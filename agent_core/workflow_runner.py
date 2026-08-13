@@ -283,6 +283,59 @@ class WorkflowRunner:
             usage_context=specification_value(spec, "usage_context", task_card.usage_context),
             task_revision_hash=data["task_revision"]["revision_hash"], config_hash=self.policy.sha256())
 
+        # 保存本次技能调用的可读结果。风格原图仅作为工程内只读展示资产持久化，
+        # 不进入生图 payload；最终渲染边界仍由 assert_reference_isolated 兜底。
+        style_invocations = []
+        for selected in selected_styles:
+            reference_path = style_root / selected.style.image
+            reference_asset = self.store.artifacts.save_bytes(
+                reference_path.read_bytes(),
+                suffix=reference_path.suffix,
+                metadata={"kind": "style_reference", "style_id": selected.style.style_id},
+            )
+            extraction = selected.extraction
+            style_invocations.append({
+                "style_id": selected.style.style_id,
+                "style_name": selected.style.title,
+                "description": selected.style.describe,
+                "reference_asset": reference_asset,
+                "reason": selected.reason,
+                "task_fit": selected.task_fit,
+                "mechanism": selected.mechanism,
+                "risk": selected.risk,
+                "artistic_interpretation": (
+                    f"画面以{extraction.composition}组织视觉重心，结合{extraction.material}与"
+                    f"{extraction.lighting}形成质感；叙事倾向{extraction.narrative}，"
+                    f"图形语言为{extraction.graphic_language}，色彩特征为{extraction.color}。"
+                    f"{extraction.prompt_supplement}"
+                ),
+                "analysis": {
+                    "composition": extraction.composition,
+                    "material": extraction.material,
+                    "lighting": extraction.lighting,
+                    "narrative": extraction.narrative,
+                    "graphic_language": extraction.graphic_language,
+                    "color": extraction.color,
+                },
+            })
+        skill_invocations = {
+            "category_library": {
+                "source": "广告品类库",
+                "category_id": category_skill.category_id,
+                "category_name": category_skill.display_name or "通用视觉交付",
+                "version": category_skill.version,
+                "description": category_skill.prompt_injection.category_description,
+                "production_constraints": category_skill.prompt_injection.production_constraints,
+                "visual_rules": category_skill.prompt_injection.visual_rules,
+                "forbidden_elements": category_skill.prompt_injection.forbidden_elements,
+                "review_checks": category_skill.review_checks,
+            },
+            "style_library": {
+                "source": "艺术风格库",
+                "selections": style_invocations,
+            },
+        }
+
         # 3. 终端输出这 5 张文本卡片给用户
         self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
         for i, selected in enumerate(selected_styles, 1):
@@ -313,7 +366,8 @@ class WorkflowRunner:
             if not first.get("retryable"):
                 raise ValueError(f"候选图生成请求被拒绝且不可重试：{first['error']} 请修正配置或凭证后重新生成。")
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项生成失败；成功项已保存，可确认后重试。")
-        return {"candidates": batch["succeeded"], "style_selections": [
+        return {"candidates": batch["succeeded"], "skill_invocations": skill_invocations,
+                "style_selections": [
             {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
              "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}
             for item in selected_styles]}

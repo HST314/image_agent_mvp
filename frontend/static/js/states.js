@@ -13,7 +13,7 @@
 export const WORKFLOW_STATES = [
   { id: 'intake_clarify', label: '需求澄清' },
   { id: 'confirmation_build', label: '任务书' },
-  { id: 'initial_candidate_generation', label: '候选生成' },
+  { id: 'initial_candidate_generation', label: '技能调用' },
   { id: 'master_candidate_selection', label: '主图选择' },
   { id: 'self_check_iteration', label: '画面质检' },
   { id: 'human_prompt_iteration', label: '人工修改' },
