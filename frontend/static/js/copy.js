@@ -409,6 +409,7 @@ export function localizeFactLabelsInMarkdown(markdown) {
 export function taskbookDisplayMarkdown(markdown) {
   return localizeFactLabelsInMarkdown(markdown)
     .replace(/^#\s+创作任务书\s*/u, '')
+    .replace(/^>\s*本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。\s*/mu, '')
     .replace(/\n*##\s+修改方式[\s\S]*$/u, '')
     .trim();
 }

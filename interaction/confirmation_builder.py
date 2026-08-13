@@ -320,10 +320,7 @@ def specification_to_markdown(spec: TaskSpecification) -> str:
         return spec.source_markdown
 
     used: set[str] = set()
-    sections = [
-        "# 创作任务书",
-        "> 本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。",
-    ]
+    sections = ["# 创作任务书"]
 
     def add_section(heading: str, labels: set[str], *, statuses: set[str] | None = None) -> None:
         items = [

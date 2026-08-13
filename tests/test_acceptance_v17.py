@@ -49,6 +49,7 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
     uvicorn = pytest.importorskip("uvicorn")
     from selenium.webdriver import Firefox
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.firefox.options import Options
     from selenium.common.exceptions import StaleElementReferenceException
     from selenium.webdriver.support.ui import WebDriverWait
@@ -119,8 +120,36 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
         actor = wait.until(lambda d: d.find_element(By.ID, "actor-input"))
         driver.execute_script("arguments[0].value='browser-reviewer'; arguments[0].dispatchEvent(new Event('change', {bubbles:true}))", actor)
         driver.find_element(By.CSS_SELECTOR, '.topnav__tab[data-view="workspace"]').click()
-        click_button("编辑任务书")
+
+        # 任务书正文铺满阶段卡片；编辑与确认操作在桌面端保持同一行。
+        edit_button = button("编辑任务书")
+        approve_button = button("确认任务书，开始生成候选图")
+        preview = driver.find_element(By.CSS_SELECTOR, ".taskbook__document")
+        stage = preview.find_element(By.XPATH, "ancestor::section[contains(@class, 'stage')]")
+        assert preview.rect["width"] >= stage.rect["width"] - 72
+        assert abs(edit_button.rect["y"] - approve_button.rect["y"]) < 20
+
+        # 展开侧栏后汉堡按钮左对齐；折叠态仍居中于窄栏。
+        sidebar = driver.find_element(By.ID, "sidebar")
+        sidebar_toggle = driver.find_element(By.ID, "sidebar-toggle")
+        driver.execute_script("arguments[0].click()", sidebar_toggle)
+        wait.until(lambda d: "sidebar-expanded" in d.find_element(By.ID, "app").get_attribute("class"))
+        assert sidebar_toggle.rect["x"] - sidebar.rect["x"] < 24
+        driver.execute_script("arguments[0].click()", sidebar_toggle)
+
+        driver.execute_script("arguments[0].click()", edit_button)
         editor = driver.find_element(By.ID, "taskbook-editor")
+        assert driver.execute_script("return getComputedStyle(arguments[0]).resize", editor) == "vertical"
+        click_button("全屏编辑")
+        editor_shell = driver.find_element(By.CSS_SELECTOR, ".taskbook__editor-shell")
+        wait.until(lambda _d: "is-fullscreen" in editor_shell.get_attribute("class"))
+        viewport_width = driver.execute_script("return window.innerWidth")
+        viewport_height = driver.execute_script("return window.innerHeight")
+        assert editor_shell.rect["x"] == 0 and editor_shell.rect["y"] == 0
+        assert editor_shell.rect["width"] == viewport_width
+        assert editor_shell.rect["height"] == viewport_height
+        editor.send_keys(Keys.ESCAPE)
+        wait.until(lambda _d: "is-fullscreen" not in editor_shell.get_attribute("class"))
         driver.execute_script("arguments[0].value += '\\n- 浏览器验收修订：v17'", editor)
         click_button("保存修改")
         click_button("确认任务书，开始生成候选图")

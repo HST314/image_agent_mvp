@@ -53,6 +53,7 @@ def test_generated_taskbook_contains_original_goal_and_full_human_context() -> N
     assert "内容边界：不得出现未经确认的价格" in markdown
     assert "需求来源：为新品发布制作一张完整视觉海报" in markdown
     assert "暂定处理（请核对）" in markdown
+    assert "本任务书汇总原始需求" not in markdown
 
 
 def test_saved_markdown_is_exact_source_of_truth_and_updates_structured_goal() -> None:
@@ -101,7 +102,13 @@ def test_taskbook_frontend_uses_full_document_canvas_and_save_feedback() -> None
     js = (ROOT / "frontend/static/js/taskbook.js").read_text(encoding="utf-8")
 
     taskbook_rule = css.split(".taskbook__document{", 1)[1].split("}", 1)[0]
-    assert "max-width:none" in taskbook_rule
+    assert "width:100%" in taskbook_rule
+    assert "max-width:100%" in taskbook_rule
     assert "min-height:clamp(440px,58vh,760px)" in taskbook_rule
-    assert "taskbook__editor" in css
+    assert ".taskbook__document>*{width:100%;max-width:none}" in css
+    assert "resize:vertical" in css
+    assert ".taskbook__editor-shell.is-fullscreen" in css
+    assert "taskbook__actions" in css
+    assert "全屏编辑" in js
+    assert "aria-pressed" in js
     assert "正在保存…" in js

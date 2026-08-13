@@ -15,17 +15,9 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   const markdown = snapshot.task_markdown || '';
   const valid = approvalValid(snapshot);
   const approval = snapshot.task_approval;
-
-  const head = el('div', { class: 'taskbook__meta' });
-  const headText = el('div');
-  headText.append(
-    el('strong', { text: '请确认以下创作共识' }),
-    el('p', { text: '内容来自已确认信息与澄清结果；任何修改都会生成新版本，并使既有确认失效。' }),
-  );
   const status = valid
     ? el('span', { class: 'badge badge--success', text: `已确认 · ${approval?.actor || ''}` })
     : el('span', { class: 'badge badge--warning', text: approval ? '确认已失效' : '待确认' });
-  head.append(headText, status);
 
   const preview = el('article', {
     class: 'markdown-body taskbook__document',
@@ -41,7 +33,6 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
     class: 'input taskbook__editor',
     id: 'taskbook-editor',
     'aria-label': '编辑任务书 Markdown',
-    style: 'display:none',
   });
   editor.value = markdown;
   const draft = loadDraft(projectId, DRAFT_NAME);
@@ -54,14 +45,45 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   const editBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '编辑任务书' });
   const saveBtn = el('button', { type: 'button', class: 'btn btn--primary', text: '保存修改', style: 'display:none' });
   const cancelBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '取消', style: 'display:none' });
+  const fullscreenBtn = el('button', {
+    type: 'button',
+    class: 'btn btn--secondary taskbook__fullscreen',
+    'aria-pressed': 'false',
+    'aria-label': '进入全屏编辑',
+  });
+  const fullscreenIcon = el('span', { 'aria-hidden': 'true' });
+  fullscreenIcon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>';
+  const fullscreenLabel = el('span', { text: '全屏编辑' });
+  fullscreenBtn.append(fullscreenIcon, fullscreenLabel);
   const invalidateHint = el('p', { class: 'hint', style: 'display:none', text: '内容已修改：保存后需重新人工确认才能进入付费步骤。' });
 
+  const editorToolbar = el('div', { class: 'taskbook__editor-toolbar' }, [
+    el('strong', { text: '编辑任务书' }),
+    fullscreenBtn,
+  ]);
+  const editorActions = el('div', { class: 'button-row taskbook__editor-actions' }, [saveBtn, cancelBtn]);
+  const editorFeedback = el('div', { class: 'taskbook__editor-feedback' }, [draftBadge, invalidateHint, editError]);
+  const editorShell = el('div', {
+    class: 'taskbook__editor-shell',
+    role: 'region',
+    'aria-label': '任务书编辑器',
+    style: 'display:none',
+  }, [editorToolbar, editor, editorFeedback, editorActions]);
+
   let editing = false;
+  let actionBar = null;
+  const setFullscreen = (flag) => {
+    editorShell.classList.toggle('is-fullscreen', flag);
+    fullscreenBtn.setAttribute('aria-pressed', String(flag));
+    fullscreenBtn.setAttribute('aria-label', flag ? '退出全屏编辑' : '进入全屏编辑');
+    fullscreenLabel.textContent = flag ? '退出全屏' : '全屏编辑';
+    if (flag) editor.focus();
+  };
   const setEditing = (flag) => {
     editing = flag;
     preview.style.display = flag ? 'none' : '';
-    editor.style.display = flag ? '' : 'none';
-    editBtn.style.display = flag ? 'none' : '';
+    editorShell.style.display = flag ? '' : 'none';
+    if (actionBar) actionBar.style.display = flag ? 'none' : '';
     saveBtn.style.display = flag ? '' : 'none';
     cancelBtn.style.display = flag ? '' : 'none';
     invalidateHint.style.display = 'none';
@@ -69,6 +91,7 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
       if (draft && draft.value !== markdown) draftBadge.style.display = '';
       editor.focus();
     } else {
+      setFullscreen(false);
       draftBadge.style.display = 'none';
     }
   };
@@ -80,6 +103,13 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   });
 
   editBtn.addEventListener('click', () => setEditing(true));
+  fullscreenBtn.addEventListener('click', () => setFullscreen(!editorShell.classList.contains('is-fullscreen')));
+  editorShell.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && editorShell.classList.contains('is-fullscreen')) {
+      event.preventDefault();
+      setFullscreen(false);
+    }
+  });
   cancelBtn.addEventListener('click', () => { editor.value = markdown; clearDraft(projectId, DRAFT_NAME); setEditing(false); });
   saveBtn.addEventListener('click', async () => {
     editError.textContent = '';
@@ -89,6 +119,7 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
     try {
       const updated = await advance(projectId, { edited_markdown: editor.value });
       clearDraft(projectId, DRAFT_NAME);
+      setFullscreen(false);
       toast('任务书已保存为新修订，需重新确认。');
       onChanged?.(updated);
     } catch (error) {
@@ -100,7 +131,6 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
   });
 
   /* 确认区 */
-  const approveRow = el('div', { class: 'taskbook__approve' });
   const approveCopy = el('div', { class: 'taskbook__approve-copy' }, [
     el('strong', { text: '任务书内容无误？' }),
     el('small', { text: '下一步会开始生成候选图，并可能产生模型调用费用。' }),
@@ -123,11 +153,12 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
       approveBtn.disabled = false;
     }
   });
-  approveRow.append(approveCopy, approveBtn);
   if (!valid && !actor) approveCopy.append(el('small', { class: 'field-error', text: '请先在状态页「工程信息」填写操作人身份。' }));
 
-  const row = el('div', { class: 'button-row', style: 'margin-top:12px' }, [editBtn, saveBtn, cancelBtn]);
-  container.append(head, preview, editor, editError, draftBadge, invalidateHint, row);
-  if (snapshot.state === 'confirmation_build') container.append(approveRow);
+  const editControls = el('div', { class: 'button-row taskbook__edit-controls' }, [editBtn, status]);
+  actionBar = el('div', { class: 'taskbook__actions' }, [editControls]);
+  if (snapshot.state === 'confirmation_build') actionBar.append(approveCopy, approveBtn);
+
+  container.append(preview, editorShell, actionBar);
   return { setEditing };
 }

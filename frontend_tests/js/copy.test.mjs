@@ -212,10 +212,11 @@ test('任务书 markdown 预览负向：未收录英文字段标签兜底中文�
 });
 
 test('任务书工作区展示稿移除重复标题与模板编辑说明，原始事实保留并中文化', () => {
-  const md = '# 创作任务书\n\n## 根据材料提取\n\n- audience：内部审核人员\n\n## 修改方式\n\n可直接编辑以上条目。\n';
+  const md = '# 创作任务书\n\n> 本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。\n\n## 根据材料提取\n\n- audience：内部审核人员\n\n## 修改方式\n\n可直接编辑以上条目。\n';
   const out = taskbookDisplayMarkdown(md);
   assert.ok(out.startsWith('## 根据材料提取'));
   assert.ok(out.includes('- 目标受众：内部审核人员'));
   assert.ok(!out.includes('# 创作任务书'));
+  assert.ok(!out.includes('本任务书汇总原始需求'));
   assert.ok(!out.includes('修改方式'));
 });
