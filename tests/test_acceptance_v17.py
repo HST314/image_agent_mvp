@@ -150,8 +150,18 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
         assert editor_shell.rect["height"] == viewport_height
         editor.send_keys(Keys.ESCAPE)
         wait.until(lambda _d: "is-fullscreen" not in editor_shell.get_attribute("class"))
-        driver.execute_script("arguments[0].value += '\\n- 浏览器验收修订：v17'", editor)
+        persisted_marker = "浏览器持久化验收-01cd0d91"
+        # 默认模板的「修改方式」位于文末；在它后面追加正文，覆盖保存后预览
+        # 曾错误地从该标题截断到文末的真实回归路径。
+        driver.execute_script("arguments[0].value += '\\n\\n' + arguments[1]", editor, persisted_marker)
         click_button("保存修改")
+
+        wait.until(lambda d: persisted_marker in d.find_element(By.CSS_SELECTOR, ".taskbook__document").text)
+        saved_view = TestClient(main_front.app).get("/api/projects/v17-browser").json()
+        assert persisted_marker in saved_view["snapshot"]["task_markdown"]
+
+        click_button("刷新")
+        wait.until(lambda d: persisted_marker in d.find_element(By.CSS_SELECTOR, ".taskbook__document").text)
         click_button("确认任务书，开始生成候选图")
 
         click_button("选为主图")

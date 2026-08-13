@@ -410,6 +410,9 @@ export function taskbookDisplayMarkdown(markdown) {
   return localizeFactLabelsInMarkdown(markdown)
     .replace(/^#\s+创作任务书\s*/u, '')
     .replace(/^>\s*本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。\s*/mu, '')
-    .replace(/\n*##\s+修改方式[\s\S]*$/u, '')
+    // 只移除系统生成过的两种完整说明块。不能从「修改方式」标题截到文末：
+    // 用户可能在模板说明后继续追加任意 Markdown，预览必须与保存内容一致。
+    .replace(/(^|\n)##[ \t]+修改方式[ \t]*\r?\n(?:[ \t]*\r?\n)*可直接编辑以上条目；保存后会生成新的结构化版本。[ \t]*(?=\r?\n|$)/gu, '$1')
+    .replace(/(^|\n)##[ \t]+修改方式[ \t]*\r?\n(?:[ \t]*\r?\n)*可直接编辑任意段落，或用自然语言说明需要变更的内容。[ \t]*(?=\r?\n|$)/gu, '$1')
     .trim();
 }

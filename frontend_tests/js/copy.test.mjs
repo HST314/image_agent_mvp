@@ -212,11 +212,43 @@ test('任务书 markdown 预览负向：未收录英文字段标签兜底中文�
 });
 
 test('任务书工作区展示稿移除重复标题与模板编辑说明，原始事实保留并中文化', () => {
-  const md = '# 创作任务书\n\n> 本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。\n\n## 根据材料提取\n\n- audience：内部审核人员\n\n## 修改方式\n\n可直接编辑以上条目。\n';
+  const md = '# 创作任务书\n\n> 本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。\n\n## 根据材料提取\n\n- audience：内部审核人员\n\n## 修改方式\n\n可直接编辑以上条目；保存后会生成新的结构化版本。\n';
   const out = taskbookDisplayMarkdown(md);
   assert.ok(out.startsWith('## 根据材料提取'));
   assert.ok(out.includes('- 目标受众：内部审核人员'));
   assert.ok(!out.includes('# 创作任务书'));
   assert.ok(!out.includes('本任务书汇总原始需求'));
   assert.ok(!out.includes('修改方式'));
+});
+
+test('任务书展示稿仅移除已知模板说明块，保留其后的全部用户正文', () => {
+  const md = [
+    '# 创作任务书',
+    '',
+    '## 已确认信息',
+    '',
+    '- audience：内部审核人员',
+    '',
+    '## 修改方式',
+    '',
+    '可直接编辑以上条目；保存后会生成新的结构化版本。',
+    '',
+    '浏览器持久化验收-01cd0d91',
+    '',
+    '## 用户追加章节',
+    '',
+    '这里的任意正文、标题与列表都必须保留。',
+  ].join('\n');
+
+  const out = taskbookDisplayMarkdown(md);
+
+  assert.ok(!out.includes('可直接编辑以上条目；保存后会生成新的结构化版本。'));
+  assert.ok(out.includes('浏览器持久化验收-01cd0d91'));
+  assert.ok(out.includes('## 用户追加章节'));
+  assert.ok(out.includes('这里的任意正文、标题与列表都必须保留。'));
+});
+
+test('任务书展示稿不删除用户自定义的修改方式章节', () => {
+  const md = '## 修改方式\n\n这是用户自己的正文，不是系统模板说明。';
+  assert.equal(taskbookDisplayMarkdown(md), md);
 });
