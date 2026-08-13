@@ -25,12 +25,19 @@ class SelfCheckPolicyConfig(BaseModel):
         return self
 
 
+class SkillInvocationPolicyConfig(BaseModel):
+    """Independent release gate between library retrieval and paid rendering."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    release: Literal["auto", "manual"] = "auto"
+
+
 class RuntimePolicy(BaseModel):
     """Every declared field is consumed by a named production concern."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     max_auto_questions: int = Field(3, ge=0, le=10)
     stream_model_output: Literal[False] = False  # true is rejected until the streaming job phase is installed
     clarification_total_budget: int = Field(10, ge=0, le=100)
+    skill_invocation: SkillInvocationPolicyConfig = Field(default_factory=SkillInvocationPolicyConfig)
     self_check: SelfCheckPolicyConfig = Field(default_factory=SelfCheckPolicyConfig)
     max_render_retries: Literal[0] = 0
     candidate_concurrency: int = Field(5, ge=1, le=5)
@@ -47,6 +54,7 @@ class RuntimePolicy(BaseModel):
         "max_auto_questions": "interaction.question_generator",
         "stream_model_output": "model_router.clients",
         "clarification_total_budget": "agent_core.workflow_runner",
+        "skill_invocation": "agent_core.workflow_runner(skill approval gate)",
         "self_check": "calibrator.calibration_loop",
         "max_render_retries": "agent_core.batch(no automatic paid retry)",
         "candidate_concurrency": "agent_core.batch",

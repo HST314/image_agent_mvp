@@ -8,7 +8,8 @@ import {
 // 后端 v1.7.3 事实表：main_front._capabilities 的全部可能输出。
 const BACKEND_CAPABILITIES = [
   'retry', 'answer_clarification', 'select_master', 'review_calibration',
-  'resume_quality_inspection', 'submit_human_tune', 'resume', 'branch', 'inspect',
+  'approve_skill_invocations', 'retry_skill_invocations', 'resume_quality_inspection',
+  'submit_human_tune', 'resume', 'branch', 'inspect',
 ];
 
 test('七个生产状态与后端 WorkflowRunner.ORDER 一致', () => {
@@ -42,6 +43,15 @@ test('confirmation_build + waiting_human_approval → taskbook 舞台', () => {
 test('waiting_master_selection → gallery 舞台', () => {
   const v = view({ state: 'master_candidate_selection', phase: 'waiting_master_selection' });
   assert.equal(deriveView(v).stage, 'gallery');
+});
+
+test('waiting_skill_approval → 独立技能调用人工门禁舞台', () => {
+  const v = view(
+    { state: 'initial_candidate_generation', phase: 'waiting_skill_approval' },
+    {},
+    ['approve_skill_invocations', 'retry_skill_invocations'],
+  );
+  assert.equal(deriveView(v).stage, 'skill_approval');
 });
 
 test('self_check 等待 + available_actions → disposition（上限分流）', () => {

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from agent_core.batch import CandidateBatchGenerator
 from agent_core.models import ImageTaskCard, ModelRole, TaskSpecification, VisualCheckResult
@@ -49,6 +49,7 @@ class RunnerOptions:
     clarification_answers: dict[str, Any] | None = None
     task_approved: bool = False
     actor: str | None = None
+    skill_action: Literal["approve", "retry"] | None = None
 
 
 class WorkflowRunner:
@@ -92,7 +93,8 @@ class WorkflowRunner:
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
         phase = snapshot.get("phase")
-        if phase in {"waiting_human_approval", "waiting_clarification", "waiting_master_selection"}:
+        if phase in {"waiting_human_approval", "waiting_clarification", "waiting_master_selection",
+                     "waiting_skill_approval", "skill_approved_pending_render"}:
             return str(snapshot.get("state"))
         if phase in {"additional_rounds_approved", "waiting_reinspection"}:
             return "self_check_iteration"
@@ -122,7 +124,10 @@ class WorkflowRunner:
                 result = handler(data, options.__dict__)
                 data = {**data, **result, "state": target}
                 if "domain_state" in data:
-                    self._advance_domain(data, self.DOMAIN_TARGET[target])
+                    domain_target = self.DOMAIN_TARGET[target]
+                    if target == "initial_candidate_generation" and result.get("phase") == "waiting_skill_approval":
+                        domain_target = DomainState.SKILL_APPROVAL
+                    self._advance_domain(data, domain_target)
                 # Waiting is a successful recoverable boundary, not a failed state.
                 self.store.checkpoint(target, data)
             except Exception as exc:
@@ -203,16 +208,39 @@ class WorkflowRunner:
                 "task_approval": ({"revision_hash": revision_hash, "actor": options["actor"]} if approved else None),
                 "waiting": not approved, "phase": "task_approved" if approved else "waiting_human_approval"}
 
-    def _candidates(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+    def _prepare_skill_invocations(self, data: dict[str, Any], *, retry_actor: str | None = None) -> dict[str, Any]:
+        """Call both libraries and persist one immutable, render-ready result version."""
         spec = TaskSpecification.model_validate(data["task_specification"])
         task_card = ImageTaskCard.model_validate(data["task_card"])
-        
+        previous = data.get("skill_invocation_current") or {}
+        previous_invocations = previous.get("skill_invocations") or data.get("skill_invocations") or {}
+        previous_category_id = previous_invocations.get("category_library", {}).get("category_id")
+        previous_style_ids = [
+            str(item.get("style_id"))
+            for item in previous_invocations.get("style_library", {}).get("selections", [])
+            if item.get("style_id")
+        ]
+        avoidance_context = None
+        if retry_actor:
+            avoidance_context = {
+                "instruction": "上一版技能调用结果已被人工否决；重新检索时必须避开上一版品类结果和五张风格卡。",
+                "previous_version_id": previous.get("version_id"),
+                "excluded_category_ids": [previous_category_id] if previous_category_id else [],
+                "excluded_style_ids": previous_style_ids,
+                "actor": retry_actor,
+            }
+
         # 1. 匹配广告品类 Skill
         from skills.category_library_adapter import CategoryLibraryAdapter
         lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
         def load_category():
             try:
-                match = CategoryLibraryAdapter(lib_path).load_for_task(task_card)
+                excluded_categories = set(avoidance_context["excluded_category_ids"]) if avoidance_context else set()
+                match = CategoryLibraryAdapter(lib_path).load_for_task(
+                    task_card,
+                    exclude_category_ids=excluded_categories,
+                    allow_unmatched=bool(excluded_categories),
+                )
             except (FileNotFoundError, UnicodeError, json.JSONDecodeError) as exc:
                 from uuid import uuid4
                 raise ResourceError("RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_CORRUPT", str(lib_path), f"trace_{uuid4().hex}") from exc
@@ -254,7 +282,15 @@ class WorkflowRunner:
             except Exception:
                 return extractor.extract(record)
         task_markdown = specification_to_markdown(spec)
-        selected_styles = select_five(records, extraction_for, task_markdown)
+        retrieval_text = task_markdown
+        if avoidance_context:
+            retrieval_text += "\n\n重试检索上下文：" + avoidance_context["instruction"]
+        selected_styles = select_five(
+            records,
+            extraction_for,
+            retrieval_text,
+            exclude_style_ids=avoidance_context["excluded_style_ids"] if avoidance_context else (),
+        )
         confirmed_facts = [
             ConfirmedFact(field=fact.label, value=fact.value, source_ref=fact.provenance)
             for fact in spec.facts if fact.status in {"confirmed", "extracted"}
@@ -334,6 +370,7 @@ class WorkflowRunner:
                 "source": "艺术风格库",
                 "selections": style_invocations,
             },
+            "avoidance_context": avoidance_context,
         }
 
         # 3. 终端输出这 5 张文本卡片给用户
@@ -344,20 +381,77 @@ class WorkflowRunner:
             self.output(f"  • 推荐理由：{selected.reason}")
             self.output(f"  • 主要风险：{selected.risk}")
         self.output("\n=================================================================")
-        self.output("保持主体内容、品牌色彩与空间条件一致，正在按上述 5 种风格分别生图，请稍候...\n")
+        self.output("保持主体内容、品牌色彩与空间条件一致；技能调用结果已准备完成。\n")
 
-        # 4. 生图逻辑：固定内容与品牌色，只注入各自风格
+        style_selections = [
+            {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
+             "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}
+            for item in selected_styles
+        ]
+        render_plans = [
+            {"slot": plan.slot, "style_id": plan.style_id, "extraction_key": plan.extraction_key,
+             "prompt_version_id": plan.prompt_version_id, "prompt_text": plan.prompt_text,
+             "provenance": plan.provenance}
+            for plan in plans
+        ]
+        history = [dict(item) for item in data.get("skill_invocation_history", [])]
+        if retry_actor and history:
+            history[-1] = {**history[-1], "decision": "rejected", "decided_by": retry_actor}
+        version_number = len(history) + 1
+        version = {
+            "version_id": f"skill-invocation-v{version_number}",
+            "version": version_number,
+            "decision": "auto_approved" if self.policy.skill_invocation.release == "auto" else "pending",
+            "skill_invocations": skill_invocations,
+            "style_selections": style_selections,
+            "render_plans": render_plans,
+            "avoidance_context": avoidance_context,
+        }
+        history.append(version)
+        self.store.events.append(
+            "skill_invocation_completed",
+            version_id=version["version_id"],
+            release=self.policy.skill_invocation.release,
+            previous_version_id=(avoidance_context or {}).get("previous_version_id"),
+            excluded_category_ids=(avoidance_context or {}).get("excluded_category_ids", []),
+            excluded_style_ids=(avoidance_context or {}).get("excluded_style_ids", []),
+        )
+        return {
+            "skill_invocations": skill_invocations,
+            "style_selections": style_selections,
+            "render_plans": render_plans,
+            "skill_invocation_current": version,
+            "skill_invocation_history": history,
+        }
+
+    def _render_candidates(self, data: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
+        """Cross the paid five-render boundary only after the skill gate is released."""
+        spec = TaskSpecification.model_validate(data["task_specification"])
+        plans = list(prepared.get("render_plans") or [])
+        if len(plans) != 5 or len({plan.get("style_id") for plan in plans}) != 5:
+            raise ValueError("技能调用结果必须包含五个不同且可生成的风格方案。")
+        revision_hash = data.get("task_revision", {}).get("revision_hash")
+        for plan in plans:
+            provenance = plan.get("provenance") or {}
+            if provenance.get("task_revision_hash") != revision_hash or provenance.get("config_hash") != self.policy.sha256():
+                raise ValueError("技能调用结果已过期，请重新调用两库后再生成。")
+
+        # 生图逻辑：固定内容与品牌色，只注入已通过门禁的五个文本方案。
         from render_clients.payload_mapper import validate_render_size
         image_binding = self.gateway.router.binding_for_state("initial_candidate_generation")
         validate_render_size(image_binding.model, self.policy.default_output_size)
+        style_names = {
+            item.get("style_id"): item.get("style_name")
+            for item in prepared.get("skill_invocations", {}).get("style_library", {}).get("selections", [])
+        }
 
         def render(index: int) -> dict[str, Any]:
             plan = plans[index]
-            result = self._image_call("initial_candidate_generation", plan.prompt_text, [], index=index)
+            result = self._image_call("initial_candidate_generation", plan["prompt_text"], [], index=index)
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}",
-                    "style_name": selected_styles[index].style.title, "style_id": plan.style_id,
-                    "extraction_key": plan.extraction_key, "prompt_version_id": plan.prompt_version_id,
-                    "provenance": plan.provenance}
+                    "style_name": style_names.get(plan["style_id"]) or f"风格方向 {index + 1}",
+                    "style_id": plan["style_id"], "extraction_key": plan["extraction_key"],
+                    "prompt_version_id": plan["prompt_version_id"], "provenance": plan["provenance"]}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=1,
                                         max_workers=self.policy.candidate_concurrency).generate(spec.content_hash)
@@ -366,11 +460,80 @@ class WorkflowRunner:
             if not first.get("retryable"):
                 raise ValueError(f"候选图生成请求被拒绝且不可重试：{first['error']} 请修正配置或凭证后重新生成。")
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项生成失败；成功项已保存，可确认后重试。")
-        return {"candidates": batch["succeeded"], "skill_invocations": skill_invocations,
-                "style_selections": [
-            {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
-             "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}
-            for item in selected_styles]}
+        return {**prepared, "candidates": batch["succeeded"], "waiting": False,
+                "phase": "candidate_generation_completed"}
+
+    def _candidates(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        phase = data.get("phase")
+        action = options.get("skill_action")
+        actor = options.get("actor")
+        if phase == "skill_approved_pending_render":
+            prepared = {
+                "skill_invocations": data.get("skill_invocations") or {},
+                "style_selections": data.get("style_selections") or [],
+                "render_plans": data.get("render_plans") or [],
+                "skill_invocation_current": data.get("skill_invocation_current") or {},
+                "skill_invocation_history": [dict(item) for item in data.get("skill_invocation_history", [])],
+                "skill_invocation_approval": data.get("skill_invocation_approval") or {},
+            }
+            return self._render_candidates(data, prepared)
+        if action and phase != "waiting_skill_approval":
+            raise ValueError("当前不在技能调用人工确认阶段。")
+
+        if phase == "waiting_skill_approval":
+            if self.policy.skill_invocation.release == "manual" and not action:
+                return {"waiting": True, "phase": "waiting_skill_approval"}
+            if action not in {None, "approve", "retry"}:
+                raise ValueError("技能调用处置动作无效。")
+            if action in {"approve", "retry"} and not actor:
+                raise ValueError("技能调用处置需要操作者身份。")
+            if action == "retry":
+                prepared = self._prepare_skill_invocations(data, retry_actor=actor)
+                self.store.events.append(
+                    "skill_invocation_retried",
+                    actor=actor,
+                    previous_version_id=data.get("skill_invocation_current", {}).get("version_id"),
+                    version_id=prepared["skill_invocation_current"]["version_id"],
+                )
+                return {**prepared, "waiting": True, "phase": "waiting_skill_approval",
+                        "skill_invocation_approval": None}
+
+            prepared = {
+                "skill_invocations": data.get("skill_invocations") or {},
+                "style_selections": data.get("style_selections") or [],
+                "render_plans": data.get("render_plans") or [],
+                "skill_invocation_current": data.get("skill_invocation_current") or {},
+                "skill_invocation_history": [dict(item) for item in data.get("skill_invocation_history", [])],
+            }
+            decision_actor = actor or "system:auto"
+            if prepared["skill_invocation_history"]:
+                prepared["skill_invocation_history"][-1] = {
+                    **prepared["skill_invocation_history"][-1], "decision": "approved", "decided_by": decision_actor,
+                }
+            prepared["skill_invocation_current"] = {
+                **prepared["skill_invocation_current"], "decision": "approved", "decided_by": decision_actor,
+            }
+            prepared["skill_invocation_approval"] = {
+                "version_id": prepared["skill_invocation_current"].get("version_id"), "actor": decision_actor,
+            }
+            self.store.events.append(
+                "skill_invocation_approved",
+                actor=decision_actor,
+                version_id=prepared["skill_invocation_current"].get("version_id"),
+            )
+            approved_boundary = {**data, **prepared, "waiting": False,
+                                 "phase": "skill_approved_pending_render"}
+            self.store.checkpoint("initial_candidate_generation", approved_boundary)
+            return self._render_candidates(approved_boundary, prepared)
+
+        prepared = self._prepare_skill_invocations(data)
+        if self.policy.skill_invocation.release == "manual":
+            return {**prepared, "waiting": True, "phase": "waiting_skill_approval",
+                    "skill_invocation_approval": None}
+        prepared["skill_invocation_approval"] = {
+            "version_id": prepared["skill_invocation_current"].get("version_id"), "actor": "system:auto",
+        }
+        return self._render_candidates(data, prepared)
 
     def _extract_style(self, image_path: str, prompt: str) -> Any:
         if self.offline_mode:

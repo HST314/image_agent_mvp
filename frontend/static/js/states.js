@@ -26,6 +26,8 @@ export const STATE_LABELS = Object.fromEntries(WORKFLOW_STATES.map((s) => [s.id,
 export const CAPABILITY_ACTIONS = {
   retry: { id: 'retry', label: '从上一成功点重试', kind: 'job' },
   answer_clarification: { id: 'answer_clarification', label: '提交答案并继续', kind: 'sync' },
+  approve_skill_invocations: { id: 'approve_skill_invocations', label: '确认技能调用并继续', kind: 'job' },
+  retry_skill_invocations: { id: 'retry_skill_invocations', label: '换一版技能调用结果', kind: 'job' },
   select_master: { id: 'select_master', label: '确认当前主图', kind: 'job' },
   review_calibration: { id: 'review_calibration', label: '人工处置', kind: 'ui' },
   resume_quality_inspection: { id: 'resume_quality_inspection', label: '开始重新质检', kind: 'job' },
@@ -55,7 +57,7 @@ export function approvalValid(snapshot) {
 /**
  * 推导当前舞台。
  * 返回 { stage, reason?, actions, waiting }；stage 取值：
- * empty | clarify | taskbook | gallery | calibration | disposition | annotate |
+ * empty | clarify | taskbook | skill_approval | gallery | calibration | disposition | annotate |
  * reinspection | resume_quality | final | failed | terminated | completed | resume
  */
 export function deriveView(view) {
@@ -82,6 +84,9 @@ export function deriveView(view) {
   if (phase === 'waiting_clarification') return { stage: 'clarify', actions: capabilities, waiting: true };
   if (stateId === 'confirmation_build' && phase === 'waiting_human_approval') {
     return { stage: 'taskbook', actions: capabilities, waiting: true };
+  }
+  if (stateId === 'initial_candidate_generation' && phase === 'waiting_skill_approval') {
+    return { stage: 'skill_approval', actions: capabilities, waiting: true };
   }
   if (phase === 'waiting_master_selection') return { stage: 'gallery', actions: capabilities, waiting: true };
   if (stateId === 'self_check_iteration' && phase === 'waiting_human_approval') {
@@ -135,6 +140,9 @@ export const EVENT_LABELS = {
   resource_degraded: '资源已按策略降级',
   model_call_unknown: '付费调用结果未知',
   runtime_policy_revised: '运行策略已修订',
+  skill_invocation_completed: '两库调用已完成',
+  skill_invocation_retried: '已重新调用两库',
+  skill_invocation_approved: '技能调用已人工放行',
 };
 
 export function eventLabel(event) {

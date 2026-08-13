@@ -171,7 +171,7 @@ function appendRuleGroup(container, title, items) {
   return true;
 }
 
-function renderSkillInvocations(container, projectId, snapshot) {
+export function renderSkillInvocations(container, projectId, snapshot) {
   const model = skillInvocationView(snapshot);
   const layout = el('div', { class: 'skill-call-grid' });
 

@@ -34,21 +34,28 @@ class CategoryLibraryAdapter:
         self.payload = json.loads(self.library_path.read_text(encoding="utf-8"))
         self.records = list(self._iter_records(self.payload))
 
-    def load_for_task(self, task_card: ImageTaskCard) -> CategoryLibraryMatch | None:
+    def load_for_task(self, task_card: ImageTaskCard, *, exclude_category_ids: set[str] | None = None,
+                      allow_unmatched: bool = False) -> CategoryLibraryMatch | None:
         """Return the best matching category skill for the task, if any."""
 
-        if not self.records:
+        excluded = exclude_category_ids or set()
+        candidates = [record for record in self.records if self._record_category_id(record) not in excluded]
+        if not candidates:
             return None
         query_text = self._task_text(task_card)
-        best_record = max(self.records, key=lambda record: self._score_record(record, query_text))
+        best_record = max(candidates, key=lambda record: self._score_record(record, query_text))
         score = self._score_record(best_record, query_text)
-        if score <= 0:
+        if score <= 0 and not allow_unmatched:
             return None
         return CategoryLibraryMatch(
             skill=self._to_skill(best_record),
             score=score,
             source_record=best_record,
         )
+
+    @staticmethod
+    def _record_category_id(record: dict[str, Any]) -> str:
+        return f"library_{record.get('id', 'unknown')}"
 
     @staticmethod
     def _iter_records(payload: dict[str, Any]) -> list[dict[str, Any]]:

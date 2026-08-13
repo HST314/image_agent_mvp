@@ -174,11 +174,13 @@ python3 main.py resume campaign-001 \
 
 阻塞项未解决时不会进入付费生图阶段。机器状态保存在 Checkpoint 中，并不依赖从用户可见标题反向猜测全部契约。
 
-### 4. 自检终止与放行策略
+### 4. 技能调用与自检放行策略
 
 `configs/runtime.yaml` 中的默认配置：
 
 ```yaml
+skill_invocation:
+  release: auto
 self_check:
   termination: fix
   fixed_rounds: 2
@@ -186,6 +188,11 @@ self_check:
   stop_early_on_pass: false
   release: manual
 ```
+
+`skill_invocation.release` 是两库调用后的独立门禁，不复用 `self_check.release`：
+
+- `auto`：广告品类库与艺术风格库调用完成后，后台直接生成五张主图。
+- `manual`：保存 `waiting_skill_approval` 检查点并停留在技能调用页；人工确认后才跨入五图生成。Retry 会携带上一版品类与五张风格卡作为排除上下文，新旧版本均保存在 `skill_invocation_history` 和审计事件中。
 
 两个维度相互独立：
 
@@ -269,7 +276,7 @@ state + checkpoint_hash + prompt_hash + model_hash + reference_hash
 |---|---|---|
 | `intake_clarify` | `confirmation_build` | 必要澄清完成且预算状态已保存 |
 | `confirmation_build` | `initial_candidate_generation` | 任务书已确认，阻塞项已解决 |
-| `initial_candidate_generation` | `master_candidate_selection` | 五个差异化候选资产已完整持久化 |
+| `initial_candidate_generation` | 自身或 `master_candidate_selection` | 手动模式先在 `waiting_skill_approval` 等待两库结果放行；放行后五个差异化候选资产已完整持久化 |
 | `master_candidate_selection` | `self_check_iteration` | 已直选一张当前主图 |
 | `self_check_iteration` | 自身或 `human_prompt_iteration` | 逐轮质检/返工；完成事实与最新检查 hash 一致 |
 | `human_prompt_iteration` | 自身、`self_check_iteration` 或 `final_approval` | 新图会使旧质检失效并返回复检；无修改时才进入最终门禁 |

@@ -21,6 +21,8 @@ export const hasCJK = (text) => CJK_RE.test(String(text ?? ''));
 const PHASE_LABELS = {
   waiting_clarification: '等待澄清回答',
   waiting_human_approval: '等待人工确认',
+  waiting_skill_approval: '等待技能调用人工确认',
+  skill_approved_pending_render: '技能调用已放行，等待生成主图',
   waiting_master_selection: '等待选择主图',
   waiting_human_tune: '等待人工微调',
   waiting_reinspection: '等待重新质检',
@@ -116,6 +118,7 @@ const FIELD_LABELS = {
   additional_rounds: '追加轮次',
   cost_confirmed: '费用确认',
   action: '动作',
+  skill_action: '技能调用处置',
   /* 运行策略字段（T3 设置页 422 校验路径 loc 中文化，契约 §5/§8/§11） */
   max_auto_questions: '自动提问上限',
   clarification_total_budget: '澄清问题总预算',
@@ -158,6 +161,7 @@ const POLICY_KEY_LABELS = {
   'self_check.max_rounds': '最大自检轮次',
   'self_check.stop_early_on_pass': '通过后提前停止',
   'self_check.release': '放行方式',
+  'skill_invocation.release': '技能调用放行方式',
   candidate_concurrency: '候选图并发数',
   default_output_size: '默认出图尺寸',
   watermark: '水印',
@@ -174,6 +178,7 @@ const POLICY_KEY_LABELS = {
 const POLICY_ENUM_LABELS = {
   'self_check.termination': { fix: '固定轮次', solo: '按质量判定' },
   'self_check.release': { auto: '自动放行', manual: '人工确认放行' },
+  'skill_invocation.release': { auto: '后台自动继续', manual: '人工确认后继续' },
   response_format: { url: 'URL 链接', b64_json: 'Base64 数据' },
 };
 
@@ -186,6 +191,7 @@ const POLICY_KEY_HELP = {
   'self_check.max_rounds': '自检最多进行的轮数',
   'self_check.stop_early_on_pass': '自检达标即提前结束',
   'self_check.release': '自检通过后自动放行，或需人工确认后放行',
+  'skill_invocation.release': '只控制两库调用后的独立门禁，不影响后续画面自检模式',
   candidate_concurrency: '同时生成的候选图数量（1–5）',
   default_output_size: '如 1K / 2K / 4K，或具体像素（如 2560x1440）',
   watermark: '生成图是否带水印',

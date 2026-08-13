@@ -93,6 +93,7 @@ class AdvanceRequest(StrictRequest):
     human_prompt: str | None = Field(default=None, max_length=8_000)
     final_approved: bool = False
     task_approved: bool = False
+    skill_action: Literal["approve", "retry"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=128)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
@@ -204,6 +205,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         clarification_answers=body.clarification_answers,
         task_approved=body.task_approved,
         actor=body.actor,
+        skill_action=body.skill_action,
     )
 
 
@@ -238,6 +240,10 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
 
 
 def _job_operation(body: AdvanceRequest) -> str:
+    if body.skill_action == "retry":
+        return "重新调用两库"
+    if body.skill_action == "approve":
+        return "确认技能调用并生成五张主图"
     if body.manual_action in {"execute", "edit_and_execute"}:
         return "执行质检建议"
     if body.human_prompt:
@@ -264,6 +270,8 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
     phase = snapshot.get("phase")
     if phase == "waiting_clarification":
         return ["answer_clarification"]
+    if phase == "waiting_skill_approval":
+        return ["approve_skill_invocations", "retry_skill_invocations"]
     if phase == "waiting_master_selection":
         return ["select_master"]
     if phase == "waiting_human_approval":

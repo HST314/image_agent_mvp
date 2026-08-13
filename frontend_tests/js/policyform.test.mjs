@@ -12,6 +12,7 @@ function fakeSchema(overrides = {}) {
       max_auto_questions: { type: 'integer', minimum: 0, maximum: 10, default: 3 },
       stream_model_output: { const: false, type: 'boolean', default: false },
       clarification_total_budget: { type: 'integer', minimum: 0, maximum: 100, default: 10 },
+      skill_invocation: { $ref: '#/$defs/SkillInvocationPolicyConfig' },
       self_check: { $ref: '#/$defs/SelfCheckPolicyConfig' },
       max_render_retries: { const: 0, type: 'integer', default: 0 },
       candidate_concurrency: { type: 'integer', minimum: 1, maximum: 5, default: 5 },
@@ -26,6 +27,10 @@ function fakeSchema(overrides = {}) {
       ...overrides,
     },
     $defs: {
+      SkillInvocationPolicyConfig: {
+        type: 'object',
+        properties: { release: { enum: ['auto', 'manual'], type: 'string', default: 'auto' } },
+      },
       SelfCheckPolicyConfig: {
         type: 'object',
         properties: {
@@ -39,6 +44,7 @@ function fakeSchema(overrides = {}) {
     },
     current: {
       max_auto_questions: 5,
+      skill_invocation: { release: 'manual' },
       self_check: { termination: 'fix', fixed_rounds: 3, max_rounds: 6, stop_early_on_pass: true, release: 'manual' },
       watermark: true,
     },
@@ -64,10 +70,11 @@ test('拍平：无 $ref 时原样返回；空 properties 安全', () => {
 
 test('模型：全字段、常用/高级两组且顺序符合契约 §8 基线', () => {
   const model = buildPolicyFormModel(fakeSchema());
-  assert.equal(model.all.length, 18, '14 个顶层字段中 self_check 展开为 5 个子字段，共 18 个表单字段');
+  assert.equal(model.all.length, 19, '15 个顶层字段中两个策略对象展开后，共 19 个表单字段');
   assert.deepEqual(
     model.common.map((f) => f.path),
-    ['max_auto_questions', 'clarification_total_budget', 'self_check.termination', 'self_check.fixed_rounds',
+    ['max_auto_questions', 'clarification_total_budget', 'skill_invocation.release',
+      'self_check.termination', 'self_check.fixed_rounds',
       'self_check.max_rounds', 'self_check.stop_early_on_pass', 'self_check.release',
       'candidate_concurrency', 'default_output_size', 'watermark', 'offline_mode'],
   );
@@ -98,6 +105,7 @@ test('模型：控件类型与约束——enum/boolean/number/fixed/text', () =>
   const model = buildPolicyFormModel(fakeSchema());
   const byPath = Object.fromEntries(model.all.map((f) => [f.path, f]));
   assert.equal(byPath['self_check.release'].kind, 'enum');
+  assert.equal(byPath['skill_invocation.release'].kind, 'enum');
   assert.equal(byPath.watermark.kind, 'boolean');
   assert.equal(byPath.candidate_concurrency.kind, 'number');
   assert.equal(byPath.candidate_concurrency.min, 1);
@@ -128,6 +136,7 @@ test('负载：点路径还原嵌套、类型收敛、fixed 恒为常量', () =>
   const values = {
     max_auto_questions: '4',
     clarification_total_budget: '12',
+    'skill_invocation.release': 'manual',
     'self_check.termination': 'fix',
     'self_check.fixed_rounds': '2',
     'self_check.max_rounds': '8',
@@ -149,6 +158,7 @@ test('负载：点路径还原嵌套、类型收敛、fixed 恒为常量', () =>
   assert.deepEqual(policy.self_check, {
     termination: 'fix', fixed_rounds: 2, max_rounds: 8, stop_early_on_pass: true, release: 'auto',
   }, '点路径还原为嵌套对象');
+  assert.deepEqual(policy.skill_invocation, { release: 'manual' });
   assert.equal(policy.stream_model_output, false, 'fixed 不读表单，恒为 const');
   assert.equal(policy.max_render_retries, 0);
   assert.equal(policy.watermark, false);

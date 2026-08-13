@@ -14,6 +14,8 @@ import { formatError } from '../../frontend/static/js/api.js';
 test('phase 全量映射为中文，未知 phase 不泄露英文', () => {
   assert.equal(phaseLabel('waiting_clarification'), '等待澄清回答');
   assert.equal(phaseLabel('waiting_human_approval'), '等待人工确认');
+  assert.equal(phaseLabel('waiting_skill_approval'), '等待技能调用人工确认');
+  assert.equal(phaseLabel('skill_approved_pending_render'), '技能调用已放行，等待生成主图');
   assert.equal(phaseLabel('terminated_without_delivery'), '已终止且不交付');
   assert.equal(phaseLabel('offline_rehearsal_completed'), '离线演练已完成');
   assert.equal(phaseLabel('some_future_phase'), '阶段未知');
@@ -24,6 +26,7 @@ test('phase 全量映射为中文，未知 phase 不泄露英文', () => {
 test('capability 映射为动作中文名，未知能力不泄露英文 id', () => {
   assert.equal(capabilityLabel('select_master'), '确认当前主图');
   assert.equal(capabilityLabel('submit_human_tune'), '提交微调');
+  assert.equal(capabilityLabel('retry_skill_invocations'), '换一版技能调用结果');
   assert.equal(capabilityLabel('future_capability'), '其他动作');
 });
 

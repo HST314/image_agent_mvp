@@ -18,6 +18,7 @@ class DomainState(str, Enum):
     TASK_APPROVAL = "task_approval"
     CATEGORY_ANALYSIS = "category_analysis"
     STYLE_SELECTION = "style_selection"
+    SKILL_APPROVAL = "skill_approval"
     FIVE_RENDER = "five_render"
     MASTER_SELECTION = "master_selection"
     QUALITY_REWORK = "quality_rework"
@@ -32,7 +33,8 @@ class DomainState(str, Enum):
 FLOW = tuple(DomainState)
 PAID_STATES = frozenset({DomainState.STYLE_SELECTION, DomainState.FIVE_RENDER, DomainState.QUALITY_REWORK,
                          DomainState.HUMAN_EDIT, DomainState.REINSPECTION, DomainState.DESCRIPTION})
-WAITING_STATES = frozenset({DomainState.TASK_APPROVAL, DomainState.MASTER_SELECTION, DomainState.HUMAN_ACTION,
+WAITING_STATES = frozenset({DomainState.TASK_APPROVAL, DomainState.SKILL_APPROVAL,
+                            DomainState.MASTER_SELECTION, DomainState.HUMAN_ACTION,
                             DomainState.FINAL_APPROVAL})
 
 

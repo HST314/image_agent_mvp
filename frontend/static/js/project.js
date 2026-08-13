@@ -17,7 +17,7 @@ import { createAnnotator } from './annotate.js';
 import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { errorText, terminationReasonLabel } from './copy.js';
-import { renderProgressSteps } from './snapshots.js';
+import { renderProgressSteps, renderSkillInvocations } from './snapshots.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -104,7 +104,8 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
 
 function stageTitle(derived) {
   return {
-    clarify: '需求澄清', taskbook: '创作任务书', gallery: '选择主图', calibration: '画面自检与人工放行',
+    clarify: '需求澄清', taskbook: '创作任务书', skill_approval: '技能调用人工把关',
+    gallery: '选择主图', calibration: '画面自检与人工放行',
     disposition: '自动质检已达上限', annotate: '圈画微调', reinspection: '等待重新质检',
     resume_quality: '追加质检已确认', final: '最终确认', failed: '流程已暂停', terminated: '已终止且不交付',
     completed: '最终交付', resume: '继续工作流', empty: '工程已保存',
@@ -113,6 +114,7 @@ function stageTitle(derived) {
 
 function stageSubtitle(derived) {
   if (derived.stage === 'taskbook') return '请通读任务目标与约束；确认后开始生成候选图';
+  if (derived.stage === 'skill_approval') return '确认两库结果后才会生成五张主图；不合适可换一版';
   if (derived.stage === 'gallery') return '对比五个视觉方向，放大查看细节后选择一个作为主图';
   if (derived.stage === 'disposition') return '自动质检达到配置上限；最高分不会冒充通过，请选择分流方式';
   if (derived.stage === 'final') return '确认后冻结交付并生成说明；此后任何修改都将创建新修订';
@@ -131,6 +133,10 @@ function renderStage(panel, view, derived, ctx) {
   }
   if (stage === 'taskbook') {
     renderTaskbook(panel, view, { projectId, actor, onChanged: refresh, jobRunner });
+    return;
+  }
+  if (stage === 'skill_approval') {
+    renderSkillApproval(panel, view, ctx);
     return;
   }
   if (stage === 'gallery') {
@@ -211,6 +217,59 @@ function renderStage(panel, view, derived, ctx) {
   const btn = el('button', { type: 'button', class: 'btn btn--primary', text: '继续工作流' });
   btn.addEventListener('click', () => jobRunner.start({}));
   panel.append(stateBlock('empty', stateLabel(snapshot.state) || '工程已保存', '从当前检查点继续推进。若外部模型或密钥不可用，系统会保存真实错误供恢复。', btn));
+}
+
+function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
+  const snapshot = view.snapshot || {};
+  const current = snapshot.skill_invocation_current || {};
+  const history = Array.isArray(snapshot.skill_invocation_history) ? snapshot.skill_invocation_history : [];
+  panel.append(el('div', { class: 'skill-gate__head' }, [
+    el('div', {}, [
+      el('span', { class: 'badge badge--warning', text: '等待人工放行' }),
+      el('h3', { text: `技能调用版本 ${current.version || history.length || 1}` }),
+      el('p', { text: `已保留 ${history.length} 个版本供审计；当前结果确认前不会发起五图生成。` }),
+    ]),
+  ]));
+  renderSkillInvocations(panel, projectId, snapshot);
+  if (history.length) {
+    const audit = el('details', { class: 'skill-gate__history' });
+    audit.append(el('summary', { text: `查看 ${history.length} 个技能调用审计版本` }));
+    const versions = el('div', { class: 'skill-gate__versions' });
+    const decisionLabel = { pending: '等待确认', rejected: '已否决', approved: '已批准', auto_approved: '自动放行' };
+    history.forEach((version) => {
+      const item = el('details', { class: 'skill-gate__version' });
+      item.append(el('summary', {
+        text: `版本 ${version.version || '—'} · ${decisionLabel[version.decision] || '已记录'}`,
+      }));
+      const body = el('div', { class: 'skill-gate__version-body' });
+      renderSkillInvocations(body, projectId, version);
+      item.append(body);
+      versions.append(item);
+    });
+    audit.append(versions);
+    panel.append(audit);
+  }
+
+  const approve = el('button', { type: 'button', class: 'btn btn--primary', text: '确认结果并生成 5 张主图' });
+  const retry = el('button', { type: 'button', class: 'btn btn--secondary', text: 'Retry · 换一版结果' });
+  approve.addEventListener('click', () => jobRunner.start(
+    { skill_action: 'approve', actor },
+    { intent: 'skill-approve', operation: '确认技能调用并生成五张主图' },
+  ));
+  retry.addEventListener('click', () => {
+    if (!window.confirm('确定否决当前两库结果并重新调用？上一版会保留在历史记录中，新结果仍需人工确认。')) return;
+    jobRunner.start(
+      { skill_action: 'retry', actor },
+      { intent: 'skill-retry', operation: '重新调用两库' },
+    );
+  });
+  panel.append(el('div', { class: 'skill-gate__actions' }, [
+    el('div', {}, [
+      el('strong', { text: '人工门禁' }),
+      el('p', { text: 'Retry 会携带上一版的品类与五张风格卡作为排除上下文。' }),
+    ]),
+    el('div', { class: 'button-row' }, [retry, approve]),
+  ]));
 }
 
 function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {

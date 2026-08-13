@@ -168,14 +168,18 @@ class StyleExtractor:
         raise AssertionError("unreachable")
 
 
-def select_five(records: Iterable[StyleRecord], extraction_for: Callable[[StyleRecord], StyleExtraction], task_text: str) -> list[SelectedStyle]:
+def select_five(records: Iterable[StyleRecord], extraction_for: Callable[[StyleRecord], StyleExtraction],
+                task_text: str, *, exclude_style_ids: Iterable[str] = ()) -> list[SelectedStyle]:
     """Deterministically retrieve five unique styles with distinct lead mechanisms."""
+    excluded = {str(style_id) for style_id in exclude_style_ids}
     words = {w.lower() for w in re.findall(r"[\w\u4e00-\u9fff]+", task_text)}
     dimensions = ("composition", "material", "lighting", "narrative", "graphic_language")
     scored = sorted(records, key=lambda r: (-len(words & {x.lower() for x in [*r.tags, *r.task_fit]}), r.style_id))
     selected: list[SelectedStyle] = []
     used_values: set[str] = set()
     for record in scored:
+        if record.style_id in excluded:
+            continue
         extraction = extraction_for(record)
         dimension = dimensions[len(selected)] if len(selected) < 5 else dimensions[-1]
         value = str(getattr(extraction, dimension)).strip().lower()
