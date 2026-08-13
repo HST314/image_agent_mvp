@@ -1,10 +1,16 @@
 """Independent skill-invocation approval gate and auditable regeneration."""
 from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
+import main_front
+from agent_core.batch import CandidateBatchError
 from agent_core.models import ImageTaskCard
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from configs.runtime_policy import RuntimePolicy, SkillInvocationPolicyConfig
 from interaction.confirmation_builder import specification_from_task
+from model_router.executor import ModelCallError
 from storage.project_store import ProjectStore
 
 
@@ -95,3 +101,113 @@ def test_auto_skill_gate_keeps_continuous_five_render_flow(tmp_path: Path, monke
     assert result["domain_state"] == "five_render"
     assert len(result["candidates"]) == 5
     assert result["skill_invocation_approval"]["actor"] == "system:auto"
+
+
+def test_branch_retry_uses_only_candidates_from_the_approved_skill_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A v2 branch must not hit v1 candidate cache entries for the same task."""
+    monkeypatch.chdir(tmp_path)
+    policy = RuntimePolicy(
+        offline_mode=True,
+        skill_invocation=SkillInvocationPolicyConfig(release="manual"),
+    )
+    store = ProjectStore(tmp_path / "projects", "skill-version-branch")
+    store.create(policy.snapshot())
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+
+    waiting_v1 = runner.run(_approved_snapshot(), RunnerOptions(), only_state="initial_candidate_generation")
+    v1_gate_checkpoint = store.manifest()["current_checkpoint"]["checkpoint_id"]
+    rendered_v1 = runner.run(
+        waiting_v1,
+        RunnerOptions(skill_action="approve", actor="reviewer-v1"),
+        only_state="initial_candidate_generation",
+    )
+
+    store.branch_from(v1_gate_checkpoint, name="skill-v2-branch")
+    branched_v1 = store.resume()
+    assert branched_v1 is not None
+    waiting_v2 = runner.run(
+        branched_v1,
+        RunnerOptions(skill_action="retry", actor="reviewer-v2"),
+        only_state="initial_candidate_generation",
+    )
+    rendered_v2 = runner.run(
+        waiting_v2,
+        RunnerOptions(skill_action="approve", actor="reviewer-v2"),
+        only_state="initial_candidate_generation",
+    )
+
+    v1_styles = {item["style_id"] for item in rendered_v1["candidates"]}
+    v2_plan_styles = {item["style_id"] for item in waiting_v2["render_plans"]}
+    v2_candidate_styles = {item["style_id"] for item in rendered_v2["candidates"]}
+    assert v1_styles.isdisjoint(v2_plan_styles)
+    assert v2_candidate_styles == v2_plan_styles
+    assert {item["prompt_version_id"] for item in rendered_v2["candidates"]} == {
+        item["prompt_version_id"] for item in waiting_v2["render_plans"]
+    }
+    scopes = [event.get("cache_scope") for event in store.history()
+              if event.get("type") == "candidate_succeeded"]
+    assert {scope["skill_version_id"] for scope in scopes if scope} == {
+        "skill-invocation-v1", "skill-invocation-v2",
+    }
+
+
+def test_retryable_five_render_failure_recovers_via_api_without_reinvoking_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approved skill provenance survives a transient render failure and /retry."""
+    monkeypatch.chdir(tmp_path)
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", projects)
+    policy = RuntimePolicy(
+        offline_mode=True,
+        skill_invocation=SkillInvocationPolicyConfig(release="manual"),
+    )
+    store = ProjectStore(projects, "skill-render-recovery")
+    store.create(policy.snapshot())
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    waiting = runner.run(_approved_snapshot(), RunnerOptions(), only_state="initial_candidate_generation")
+
+    original_image_call = runner._image_call
+
+    def fail_one(state: str, prompt: str, references: list[str], index: int = 0):
+        if index == 2:
+            raise ModelCallError(
+                "provider timed out after submission", True, "timeout_unknown", "req-timeout", "trace-timeout",
+            )
+        return original_image_call(state, prompt, references, index=index)
+
+    monkeypatch.setattr(runner, "_image_call", fail_one)
+    with pytest.raises(CandidateBatchError):
+        runner.run(
+            waiting,
+            RunnerOptions(skill_action="approve", actor="recovery-reviewer"),
+            only_state="initial_candidate_generation",
+        )
+
+    approved_boundary = store.resume()
+    assert approved_boundary is not None
+    assert approved_boundary["phase"] == "skill_approved_pending_render"
+    assert approved_boundary["skill_invocation_approval"] == {
+        "version_id": "skill-invocation-v1", "actor": "recovery-reviewer",
+    }
+    failure = store.manifest()["failed_step"]["error"]
+    assert failure["category"] == "timeout_unknown"
+    assert failure["retryable"] is True
+    assert failure["recovery_actions"] == ["retry_after_confirmation", "abandon"]
+    failed_view = main_front._project_view(store)
+    assert "retry" in failed_view["capabilities"]
+
+    response = TestClient(main_front.app, raise_server_exceptions=False).post(
+        "/api/projects/skill-render-recovery/retry", json={},
+    )
+    assert response.status_code == 200, response.text
+    recovered = response.json()
+    assert recovered["manifest"]["failed_step"] is None
+    assert recovered["snapshot"]["phase"] == "candidate_generation_completed"
+    assert recovered["snapshot"]["skill_invocation_approval"] == {
+        "version_id": "skill-invocation-v1", "actor": "recovery-reviewer",
+    }
+    assert len(recovered["snapshot"]["skill_invocation_history"]) == 1
+    assert len(recovered["snapshot"]["candidates"]) == 5

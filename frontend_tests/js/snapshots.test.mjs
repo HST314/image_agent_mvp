@@ -5,6 +5,7 @@ import {
   completedStageSnapshots,
   createSnapshotBranch,
   isCreatedBranchView,
+  skillInvocationDomIds,
   skillInvocationView,
 } from '../../frontend/static/js/snapshots.js';
 
@@ -141,4 +142,16 @@ test('旧快照只回退为风格文字，不把五张候选主图当作风格�
   assert.equal(model.styles[0].interpretation, '适配任务');
   assert.equal(model.styles[0].reference_asset, undefined);
   assert.equal(model.hasPersistedStyleDetails, false);
+});
+
+test('当前技能结果与历史版本生成唯一 DOM id，aria-labelledby 可一一对应', () => {
+  const current = skillInvocationDomIds({ skill_invocation_current: { version_id: 'skill-invocation-v2' } });
+  const duplicateInHistory = skillInvocationDomIds({ version_id: 'skill-invocation-v2' });
+  const oldVersion = skillInvocationDomIds({ version_id: 'skill invocation/v1' });
+  assert.equal(new Set([
+    current.category, current.style,
+    duplicateInHistory.category, duplicateInHistory.style,
+    oldVersion.category, oldVersion.style,
+  ]).size, 6);
+  assert.match(oldVersion.category, /^category-skill-title-skill-invocation-v1-\d+$/);
 });

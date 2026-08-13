@@ -98,17 +98,26 @@ def freeze_delivery(snapshot: dict[str, Any], *, asset: dict[str, Any], quality_
 
 ERROR_ACTIONS = {
     "timeout_unknown": ("retry_after_confirmation", "abandon"),
+    "transport_unknown": ("retry_after_confirmation", "abandon"),
+    "provider_unavailable_unknown": ("retry_after_confirmation", "abandon"),
+    "provider_error_unknown": ("retry_after_confirmation", "abandon"),
+    "rate_limited_unknown": ("retry_after_confirmation", "abandon"),
     "rate_limited": ("retry", "abandon"),
     "authentication": (),
     "content_moderation": ("revise_task", "abandon"),
     "structured_output": ("retry", "abandon"),
     "invalid_input": (),
+    "validation_or_refusal": (),
+    "request_rejected": (),
     "waiting_human": ("continue", "abandon"),
 }
 
 
 def classify_error(exc: Exception) -> str:
     """Map production failures to the recovery contract (deny retry by default)."""
+    original = getattr(exc, "category", None)
+    if isinstance(original, str) and original in ERROR_ACTIONS:
+        return original
     message = str(exc).upper()
     name = type(exc).__name__.lower()
     if "AUTH" in message or "PERMISSION" in message:

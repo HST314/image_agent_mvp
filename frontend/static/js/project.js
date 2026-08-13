@@ -8,7 +8,7 @@ import { state, patch, getActor } from './store.js';
 import * as api from './api.js';
 import { viewOperations, createJobRunner, isTerminalJobStatus } from './jobrunner.js';
 import { renderMarkdownInto } from './markdown.js';
-import { deriveView, stateLabel } from './states.js';
+import { deriveView, skillApprovalActorState, stateLabel } from './states.js';
 import { createTimelineFollower } from './stepstatus.js';
 import { renderClarify } from './clarify.js';
 import { renderTaskbook } from './taskbook.js';
@@ -250,16 +250,20 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
     panel.append(audit);
   }
 
-  const approve = el('button', { type: 'button', class: 'btn btn--primary', text: '确认结果并生成 5 张主图' });
-  const retry = el('button', { type: 'button', class: 'btn btn--secondary', text: 'Retry · 换一版结果' });
+  const actorState = skillApprovalActorState(actor);
+  const actorHelpId = 'skill-gate-actor-help';
+  const approve = el('button', { type: 'button', class: 'btn btn--primary', text: '确认结果并生成 5 张主图', 'aria-describedby': actorHelpId });
+  const retry = el('button', { type: 'button', class: 'btn btn--secondary', text: 'Retry · 换一版结果', 'aria-describedby': actorHelpId });
+  approve.disabled = !actorState.ready;
+  retry.disabled = !actorState.ready;
   approve.addEventListener('click', () => jobRunner.start(
-    { skill_action: 'approve', actor },
+    { skill_action: 'approve', actor: actorState.actor },
     { intent: 'skill-approve', operation: '确认技能调用并生成五张主图' },
   ));
   retry.addEventListener('click', () => {
     if (!window.confirm('确定否决当前两库结果并重新调用？上一版会保留在历史记录中，新结果仍需人工确认。')) return;
     jobRunner.start(
-      { skill_action: 'retry', actor },
+      { skill_action: 'retry', actor: actorState.actor },
       { intent: 'skill-retry', operation: '重新调用两库' },
     );
   });
@@ -267,6 +271,12 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
     el('div', {}, [
       el('strong', { text: '人工门禁' }),
       el('p', { text: 'Retry 会携带上一版的品类与五张风格卡作为排除上下文。' }),
+      el('p', {
+        id: actorHelpId,
+        class: actorState.ready ? 'skill-gate__actor' : 'field-error',
+        role: actorState.ready ? 'status' : 'alert',
+        text: actorState.message,
+      }),
     ]),
     el('div', { class: 'button-row' }, [retry, approve]),
   ]));

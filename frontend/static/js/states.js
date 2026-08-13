@@ -109,6 +109,18 @@ export function deriveView(view) {
   return { stage: 'empty', actions: [], waiting: false };
 }
 
+/** Human-gated skill actions share the same actor requirement as final approval. */
+export function skillApprovalActorState(value) {
+  const actor = String(value || '').trim();
+  return {
+    actor,
+    ready: Boolean(actor),
+    message: actor
+      ? `本次确认或换版将记录操作人：${actor}`
+      : '请先在状态页「工程信息」填写操作人身份，才能确认或换版。',
+  };
+}
+
 /** 事件类型 → 时间线可读标签（未知类型有统一兜底，不伪造语义）。 */
 export const EVENT_LABELS = {
   project_created: '创建工程',

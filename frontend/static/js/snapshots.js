@@ -171,15 +171,29 @@ function appendRuleGroup(container, title, items) {
   return true;
 }
 
+let skillInvocationRenderSequence = 0;
+
+/** Produce collision-free accessible-name targets for current + audit versions. */
+export function skillInvocationDomIds(snapshot = {}) {
+  const rawVersion = snapshot?.skill_invocation_current?.version_id || snapshot?.version_id || 'legacy';
+  const version = String(rawVersion).replace(/[^A-Za-z0-9_-]/g, '-') || 'legacy';
+  const instance = ++skillInvocationRenderSequence;
+  return {
+    category: `category-skill-title-${version}-${instance}`,
+    style: `style-skill-title-${version}-${instance}`,
+  };
+}
+
 export function renderSkillInvocations(container, projectId, snapshot) {
   const model = skillInvocationView(snapshot);
+  const titleIds = skillInvocationDomIds(snapshot);
   const layout = el('div', { class: 'skill-call-grid' });
 
-  const categoryCard = el('section', { class: 'skill-call-card', 'aria-labelledby': 'category-skill-title' });
+  const categoryCard = el('section', { class: 'skill-call-card', 'aria-labelledby': titleIds.category });
   categoryCard.append(el('div', { class: 'skill-call-card__head' }, [
     el('span', { class: 'skill-call-card__index', text: '01', 'aria-hidden': 'true' }),
     el('div', {}, [
-      el('h3', { id: 'category-skill-title', text: '广告品类库' }),
+      el('h3', { id: titleIds.category, text: '广告品类库' }),
       el('p', { text: model.category.name ? `已匹配：${model.category.name}` : '本次调用获得的品类设计约束' }),
     ]),
   ]));
@@ -191,11 +205,11 @@ export function renderSkillInvocations(container, projectId, snapshot) {
   hasCategoryContent = appendRuleGroup(categoryCard, '验收检查', model.category.reviewChecks) || hasCategoryContent;
   if (!hasCategoryContent) categoryCard.append(el('p', { class: 'skill-call-card__empty', text: '该旧快照未保存广告品类库调用详情；新生成的检查点会完整记录。' }));
 
-  const styleCard = el('section', { class: 'skill-call-card skill-call-card--styles', 'aria-labelledby': 'style-skill-title' });
+  const styleCard = el('section', { class: 'skill-call-card skill-call-card--styles', 'aria-labelledby': titleIds.style });
   styleCard.append(el('div', { class: 'skill-call-card__head' }, [
     el('span', { class: 'skill-call-card__index', text: '02', 'aria-hidden': 'true' }),
     el('div', {}, [
-      el('h3', { id: 'style-skill-title', text: '艺术风格库' }),
+      el('h3', { id: titleIds.style, text: '艺术风格库' }),
       el('p', { text: `已选择 ${model.styles.length}/5 张风格参考图，并提取可迁移的视觉机制` }),
     ]),
   ]));

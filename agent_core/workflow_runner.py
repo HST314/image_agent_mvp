@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from agent_core.batch import CandidateBatchGenerator
+from agent_core.batch import CandidateBatchError, CandidateBatchGenerator
 from agent_core.models import ImageTaskCard, ModelRole, TaskSpecification, VisualCheckResult
 from agent_core.state_machine import RecoverableWorkflow
 from agent_core.workflow import SelfCheckPolicy, validate_transition
@@ -133,8 +133,9 @@ class WorkflowRunner:
             except Exception as exc:
                 category = classify_error(exc)
                 actions = recovery_actions(category)
+                can_retry = any(action in {"retry", "retry_after_confirmation"} for action in actions)
                 self.store.fail_step(target, {"code": type(exc).__name__, "message": str(exc),
-                                               "category": category, "retryable": "retry" in actions,
+                                               "category": category, "retryable": can_retry,
                                                "recovery_actions": list(actions)})
                 raise
             if only_state or data.get("waiting") or target == "final_approval": return data
@@ -453,13 +454,22 @@ class WorkflowRunner:
                     "style_id": plan["style_id"], "extraction_key": plan["extraction_key"],
                     "prompt_version_id": plan["prompt_version_id"], "provenance": plan["provenance"]}
 
+        version_id = prepared.get("skill_invocation_current", {}).get("version_id")
+        render_plan_hash = content_hash(plans)
+        cache_scope = {"skill_version_id": version_id, "render_plan_hash": render_plan_hash}
+        expected_assets = [
+            {"style_id": plan["style_id"], "prompt_version_id": plan["prompt_version_id"],
+             "provenance": plan["provenance"]}
+            for plan in plans
+        ]
         batch = CandidateBatchGenerator(self.store, render, attempts=1,
-                                        max_workers=self.policy.candidate_concurrency).generate(spec.content_hash)
+                                        max_workers=self.policy.candidate_concurrency).generate(
+                                            spec.content_hash,
+                                            cache_scope=cache_scope,
+                                            expected_assets=expected_assets,
+                                        )
         if batch["failed"]:
-            first = batch["failed"][0]
-            if not first.get("retryable"):
-                raise ValueError(f"候选图生成请求被拒绝且不可重试：{first['error']} 请修正配置或凭证后重新生成。")
-            raise RuntimeError(f"候选图有 {len(batch['failed'])} 项生成失败；成功项已保存，可确认后重试。")
+            raise CandidateBatchError(batch["failed"])
         return {**prepared, "candidates": batch["succeeded"], "waiting": False,
                 "phase": "candidate_generation_completed"}
 

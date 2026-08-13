@@ -103,6 +103,29 @@ def test_11_batch_partial_success_retry_and_idempotency(tmp_path: Path):
     first=CandidateBatchGenerator(store,render,attempts=2).generate("h"); assert len(first["succeeded"])==4 and len(first["failed"])==1
     second=CandidateBatchGenerator(store,render,attempts=1).generate("h"); assert len(second["succeeded"])==4 and all(calls[i]==1 for i in (0,1,3,4))
 
+def test_11b_batch_cache_validates_style_prompt_and_provenance(tmp_path: Path):
+    store=ProjectStore(tmp_path,"cache-provenance"); store.create(); calls={}
+    scope={"skill_version_id":"skill-invocation-v2","render_plan_hash":"plan-v2"}
+    expected=[{"style_id":f"style-{i}","prompt_version_id":f"prompt-{i}",
+               "provenance":{"task_revision_hash":"rev","style_id":f"style-{i}"}}
+              for i in range(5)]
+    def render(i):
+        calls[i]=calls.get(i,0)+1
+        return {"uri":str(i),"sha256":str(i),"candidate_index":i,**expected[i]}
+    first=CandidateBatchGenerator(store,render,attempts=1).generate(
+        "task",cache_scope=scope,expected_assets=expected)
+    event=next(e for e in store.history() if e.get("type")=="candidate_succeeded" and e.get("index")==2)
+    store.events.append("candidate_succeeded",index=2,attempt=99,idempotency_key=event["idempotency_key"],
+                        cache_scope=scope,asset={"uri":"stale","sha256":"stale","candidate_index":2,
+                                                 "style_id":"old-style","prompt_version_id":"old-prompt",
+                                                 "provenance":{"task_revision_hash":"old"}})
+    second=CandidateBatchGenerator(store,render,attempts=1).generate(
+        "task",cache_scope=scope,expected_assets=expected)
+    assert len(first["succeeded"])==len(second["succeeded"])==5
+    assert next(item for item in second["succeeded"] if item["candidate_index"]==2)["style_id"]=="style-2"
+    assert calls=={0:1,1:1,2:1,3:1,4:1}
+    assert any(e.get("type")=="candidate_cache_rejected" and e.get("index")==2 for e in store.history())
+
 def test_12_executor_timeout_classification_backoff_ids():
     delays=[]; executor=ModelExecutor(max_attempts=2,timeout=.01,base_delay=.001,sleeper=delays.append,randomizer=lambda a,b:0)
     with pytest.raises(ModelCallError) as info: executor.run(lambda:(_ for _ in ()).throw(TimeoutError("sdk timeout")))

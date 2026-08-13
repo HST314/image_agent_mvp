@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  WORKFLOW_STATES, CAPABILITY_ACTIONS, deriveView, approvalValid, eventLabel, stateLabel,
+  WORKFLOW_STATES, CAPABILITY_ACTIONS, deriveView, approvalValid, eventLabel,
+  skillApprovalActorState, stateLabel,
 } from '../../frontend/static/js/states.js';
 
 // 后端 v1.7.3 事实表：main_front._capabilities 的全部可能输出。
@@ -113,6 +114,17 @@ test('approvalValid：actor + revision 哈希双条件', () => {
   assert.equal(approvalValid({ task_approval: { actor: 'u', revision_hash: 'abc' }, task_revision: { revision_hash: 'def' } }), false);
   assert.equal(approvalValid({ task_approval: { revision_hash: 'abc' }, task_revision: rev }), false);
   assert.equal(approvalValid({ task_revision: rev }), false);
+});
+
+test('技能调用人工门禁：缺少操作人时同步禁用并提供近场提示', () => {
+  assert.deepEqual(skillApprovalActorState('  '), {
+    actor: '', ready: false,
+    message: '请先在状态页「工程信息」填写操作人身份，才能确认或换版。',
+  });
+  assert.deepEqual(skillApprovalActorState(' reviewer '), {
+    actor: 'reviewer', ready: true,
+    message: '本次确认或换版将记录操作人：reviewer',
+  });
 });
 
 test('事件标签有兜底且不泄露未知类型细节', () => {
