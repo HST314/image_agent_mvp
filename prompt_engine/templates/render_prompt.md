@@ -9,6 +9,9 @@
 使用场景：
 {{usage_context}}
 
+已批准任务书全文：
+{{taskbook_markdown}}
+
 已确认事实：
 {{confirmed_facts}}
 

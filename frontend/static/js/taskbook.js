@@ -27,13 +27,22 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
     : el('span', { class: 'badge badge--warning', text: approval ? '确认已失效' : '待确认' });
   head.append(headText, status);
 
-  const preview = el('div', { class: 'markdown-body taskbook__document' });
+  const preview = el('article', {
+    class: 'markdown-body taskbook__document',
+    role: 'document',
+    'aria-label': '创作任务书正文',
+  });
   /* T11：预览中将后端以任务卡字段名生成的事实标签（如 audience）替换为中文；
    * 编辑区仍持有原始 Markdown，保存回写后端的数据不受影响（任务书整体重构属 T4）。 */
   renderMarkdownInto(preview, taskbookDisplayMarkdown(markdown));
 
   /* 编辑区：草稿随输入自动保存，刷新后可恢复 */
-  const editor = el('textarea', { class: 'input', id: 'taskbook-editor', 'aria-label': '编辑任务书 Markdown', style: 'display:none;min-height:220px' });
+  const editor = el('textarea', {
+    class: 'input taskbook__editor',
+    id: 'taskbook-editor',
+    'aria-label': '编辑任务书 Markdown',
+    style: 'display:none',
+  });
   editor.value = markdown;
   const draft = loadDraft(projectId, DRAFT_NAME);
   const draftBadge = el('span', { class: 'badge badge--info draft-badge', text: '草稿已恢复', style: 'display:none' });
@@ -76,6 +85,7 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
     editError.textContent = '';
     if (editor.value.trim() === '') { editError.textContent = '任务书不能为空。'; return; }
     saveBtn.disabled = true;
+    saveBtn.textContent = '正在保存…';
     try {
       const updated = await advance(projectId, { edited_markdown: editor.value });
       clearDraft(projectId, DRAFT_NAME);
@@ -85,6 +95,7 @@ export function renderTaskbook(container, view, { projectId, actor, onChanged, j
       editError.textContent = error.message;
     } finally {
       saveBtn.disabled = false;
+      saveBtn.textContent = '保存修改';
     }
   });
 

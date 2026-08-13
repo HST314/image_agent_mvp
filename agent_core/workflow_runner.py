@@ -13,7 +13,12 @@ from agent_core.workflow import SelfCheckPolicy, validate_transition
 from agent_core.unified_workflow import (DomainState, classify_error, freeze_delivery,
                                          recovery_actions, revise_task, TaskRevision)
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
-from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
+from interaction.confirmation_builder import (
+    specification_from_task,
+    specification_to_markdown,
+    specification_value,
+    update_specification_from_markdown,
+)
 from interaction.question_generator import generate_question_card
 from model_router.clients import build_text_client, build_vlm_client
 from model_router.gateway import RuntimeModelGateway
@@ -176,7 +181,7 @@ class WorkflowRunner:
 
     def _confirmation(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"]) if data.get("task_specification") else specification_from_task(ImageTaskCard.model_validate(data["task_card"]))
-        if options.get("edited_markdown"):
+        if options.get("edited_markdown") is not None:
             spec = update_specification_from_markdown(spec, options["edited_markdown"])
         markdown = specification_to_markdown(spec)
         history = list(data.get("task_revision_history", []))
@@ -226,7 +231,7 @@ class WorkflowRunner:
             emit=lambda detail: self.store.events.append("resource_degraded", **detail))
 
         # 2. 唯一风格入口：图片只在 VLM 提取边界出现，渲染侧只收到文字。
-        from agent_core.models import SignStatus, TaskConfirmationDoc
+        from agent_core.models import ConfirmedFact, RiskLevel, SignStatus, TaskConfirmationDoc, UnknownHandling
         from agent_core.style_pipeline import StyleRenderPlanner
         from skills.style_library import StyleExtractor, StyleLibrary, select_five
 
@@ -248,13 +253,34 @@ class WorkflowRunner:
                 return library.extraction(record)
             except Exception:
                 return extractor.extract(record)
-        selected_styles = select_five(records, extraction_for, specification_to_markdown(spec))
-        doc = TaskConfirmationDoc(task_id=task_card.task_id, summary=specification_to_markdown(spec),
-                                  confirmed_facts=[], default_handling_for_unknowns=[],
-                                  markdown_body=specification_to_markdown(spec), sign_status=SignStatus.APPROVED,
+        task_markdown = specification_to_markdown(spec)
+        selected_styles = select_five(records, extraction_for, task_markdown)
+        confirmed_facts = [
+            ConfirmedFact(field=fact.label, value=fact.value, source_ref=fact.provenance)
+            for fact in spec.facts if fact.status in {"confirmed", "extracted"}
+        ]
+        unknown_handling = [
+            UnknownHandling(
+                field=fact.label,
+                handling=fact.value,
+                risk_level=RiskLevel.BLOCKING if fact.status == "blocking" else RiskLevel.MEDIUM,
+            )
+            for fact in spec.facts if fact.status in {"tentative", "blocking"}
+        ]
+        forbidden_items = [
+            item.strip()
+            for fact in spec.facts if fact.label == "forbidden_items"
+            for item in fact.value.replace("，", "；").split("；") if item.strip()
+        ]
+        doc = TaskConfirmationDoc(task_id=task_card.task_id, summary="已批准任务书全文见下方。",
+                                  confirmed_facts=confirmed_facts,
+                                  default_handling_for_unknowns=unknown_handling,
+                                  forbidden_items=forbidden_items,
+                                  markdown_body=task_markdown, sign_status=SignStatus.APPROVED,
                                   signed_by=data["task_approval"]["actor"])
         plans = StyleRenderPlanner().plan(confirmation=doc, category=category_skill, styles=selected_styles,
-            deliverable_goal=task_card.deliverable_goal, usage_context=task_card.usage_context,
+            deliverable_goal=specification_value(spec, "deliverable_goal", task_card.deliverable_goal),
+            usage_context=specification_value(spec, "usage_context", task_card.usage_context),
             task_revision_hash=data["task_revision"]["revision_hash"], config_hash=self.policy.sha256())
 
         # 3. 终端输出这 5 张文本卡片给用户

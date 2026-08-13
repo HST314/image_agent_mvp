@@ -226,38 +226,189 @@ def update_confirmation_doc_from_markdown(doc: TaskConfirmationDoc, markdown: st
 
 
 def specification_from_task(task: ImageTaskCard) -> TaskSpecification:
-    facts = [SpecificationFact(label=field, value=str(value), provenance=_source_ref_id(task), status="extracted") for field, value in task.known_facts.items()]
-    facts.extend(SpecificationFact(label=field, value=str(value), provenance="系统安全默认", status="tentative") for field, value in task.unknowns.items())
+    """Create a complete, human-reviewable specification from every user input."""
+
+    source_ref = _source_ref_id(task)
+    facts = [
+        SpecificationFact(label="deliverable_goal", value=task.deliverable_goal,
+                          provenance=source_ref, status="confirmed"),
+        SpecificationFact(label="usage_context", value=task.usage_context,
+                          provenance=source_ref, status="confirmed"),
+    ]
+    facts.extend(
+        SpecificationFact(label=field, value=_human_value(value),
+                          provenance=source_ref, status="extracted")
+        for field, value in task.known_facts.items()
+        if value not in (None, "", [], {})
+    )
+    for field, value in task.unknowns.items():
+        blocking = bool(isinstance(value, dict) and value.get("blocking") and not value.get("has_safe_default"))
+        facts.append(SpecificationFact(
+            label=field,
+            value=_human_value(value),
+            provenance="需求澄清",
+            status="blocking" if blocking else "tentative",
+        ))
+
+    excerpts = [ref.excerpt.strip() for ref in task.source_refs if ref.excerpt and ref.excerpt.strip()]
+    if excerpts:
+        facts.append(SpecificationFact(label="需求来源", value="；".join(dict.fromkeys(excerpts)),
+                                       provenance=source_ref, status="extracted"))
+    for index, asset in enumerate(task.asset_inputs, 1):
+        verified = "已核验" if asset.verified else "待核验"
+        facts.append(SpecificationFact(
+            label=f"输入素材 {index}",
+            value=f"{asset.asset_type}；使用规则：{asset.usage_rule}；{verified}",
+            provenance=asset.asset_id,
+            status="extracted" if asset.verified else "tentative",
+        ))
     return TaskSpecification(task_id=task.task_id, facts=facts).finalized()
 
 
+_FIELD_LABELS = {
+    "deliverable_goal": "交付目标",
+    "usage_context": "使用场景",
+    "audience": "目标受众",
+    "tone": "语气与风格",
+    "output_spec": "输出规格",
+    "asset_rules": "素材使用规则",
+    "content_boundaries": "内容边界",
+    "forbidden_items": "禁止元素",
+    "brand": "品牌",
+    "style": "视觉风格",
+    "colors": "色彩要求",
+    "color_palette": "色彩规范",
+    "size": "尺寸规格",
+    "format": "文件格式",
+    "channel": "投放渠道",
+    "campaign": "活动主题",
+    "topic": "主题",
+    "subject": "画面主体",
+    "style_refs": "风格参考",
+    "reference_images": "参考图片",
+}
+_DISPLAY_TO_FIELD = {value: key for key, value in _FIELD_LABELS.items()}
+
+
+def _human_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, list):
+        return "；".join(_human_value(item) for item in value) or "未提供"
+    if isinstance(value, dict):
+        preferred = value.get("value") or value.get("answer") or value.get("evidence")
+        if preferred not in (None, ""):
+            return _human_value(preferred)
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _display_label(label: str) -> str:
+    return _FIELD_LABELS.get(label, label)
+
+
+def specification_value(spec: TaskSpecification, label: str, fallback: str = "") -> str:
+    """Read a canonical fact while accepting its localized display label."""
+
+    display = _display_label(label)
+    fact = next((item for item in spec.facts if item.label in {label, display}), None)
+    return fact.value if fact and fact.value else fallback
+
+
 def specification_to_markdown(spec: TaskSpecification) -> str:
-    groups = {"confirmed": "已确认", "extracted": "根据材料提取", "tentative": "暂定处理", "blocking": "仍需你决定"}
-    sections = ["# 创作任务书"]
-    for status, heading in groups.items():
-        items = [fact for fact in spec.facts if fact.status == status]
-        if items:
-            sections.extend([f"## {heading}", *[f"- {fact.label}：{fact.value}" for fact in items]])
-    if not any(f.status == "blocking" for f in spec.facts): sections.extend(["## 仍需你决定", "- 当前没有阻塞项"])
+    if spec.source_markdown:
+        return spec.source_markdown
+
+    used: set[str] = set()
+    sections = [
+        "# 创作任务书",
+        "> 本任务书汇总原始需求、澄清结果与交付约束。请在确认前逐项核对；保存后的文本将作为后续创作依据。",
+    ]
+
+    def add_section(heading: str, labels: set[str], *, statuses: set[str] | None = None) -> None:
+        items = [
+            fact for fact in spec.facts
+            if fact.label not in used and fact.label in labels and (statuses is None or fact.status in statuses)
+        ]
+        if not items:
+            return
+        sections.extend([f"## {heading}", *[f"- {_display_label(fact.label)}：{fact.value}" for fact in items]])
+        used.update(fact.label for fact in items)
+
+    settled = {"confirmed", "extracted"}
+    add_section("任务目标与使用场景", {"deliverable_goal", "usage_context"}, statuses=settled)
+    add_section("受众与视觉方向", {"audience", "tone", "style", "colors", "color_palette",
+                                  "brand", "campaign", "topic", "subject", "style_refs", "reference_images"},
+                statuses=settled)
+    add_section("交付规格", {"output_spec", "size", "format", "channel"}, statuses=settled)
+    add_section("约束与禁止项", {"asset_rules", "content_boundaries", "forbidden_items"}, statuses=settled)
+    add_section("参考资料", {"需求来源"}, statuses=settled)
+
+    confirmed = [fact for fact in spec.facts if fact.label not in used and fact.status in {"confirmed", "extracted"}]
+    if confirmed:
+        sections.extend(["## 已确认信息", *[f"- {_display_label(fact.label)}：{fact.value}" for fact in confirmed]])
+        used.update(fact.label for fact in confirmed)
+
+    tentative = [fact for fact in spec.facts if fact.label not in used and fact.status == "tentative"]
+    if tentative:
+        sections.extend(["## 暂定处理（请核对）", *[f"- {_display_label(fact.label)}：{fact.value}" for fact in tentative]])
+        used.update(fact.label for fact in tentative)
+
+    blocking = [fact for fact in spec.facts if fact.label not in used and fact.status == "blocking"]
+    sections.append("## 仍需你决定")
+    sections.extend([f"- {_display_label(fact.label)}：{fact.value}" for fact in blocking] or ["- 当前没有阻塞项"])
     sections.extend(["## 修改方式", "可直接编辑以上条目；保存后会生成新的结构化版本。"])
     return "\n\n".join(sections) + "\n"
 
 
 def update_specification_from_markdown(spec: TaskSpecification, markdown: str) -> TaskSpecification:
-    """Parse edited list items and create a new structured fact version."""
-    status_by_heading = {"已确认": "confirmed", "根据材料提取": "extracted", "暂定处理": "tentative", "仍需你决定": "blocking"}
-    status = "tentative"; parsed: list[SpecificationFact] = []
+    """Parse searchable facts while preserving the user's Markdown byte-for-byte."""
+    if not markdown.strip():
+        raise ValueError("任务书不能为空。")
+    status_by_heading = {
+        "任务目标与使用场景": "confirmed",
+        "受众与视觉方向": "extracted",
+        "交付规格": "extracted",
+        "约束与禁止项": "extracted",
+        "参考资料": "extracted",
+        "已确认": "confirmed",
+        "已确认信息": "extracted",
+        "根据材料提取": "extracted",
+        "暂定处理": "tentative",
+        "暂定处理（请核对）": "tentative",
+        "仍需你决定": "blocking",
+    }
+    status = "confirmed"; parsed: list[SpecificationFact] = []
     for raw in markdown.splitlines():
         line = raw.strip()
         if line.startswith("## "):
             status = status_by_heading.get(line[3:].strip(), status); continue
-        if not line.startswith("- ") or "：" not in line: continue
-        label, value = line[2:].split("：", 1)
+        if not line.startswith("- "): continue
+        separator = "：" if "：" in line else ":" if ":" in line else None
+        if separator is None: continue
+        label, value = line[2:].split(separator, 1)
         if value.strip() == "当前没有阻塞项": continue
-        old = next((f for f in spec.facts if f.label == label.strip()), None)
-        parsed.append(SpecificationFact(fact_id=old.fact_id if old else new_id("fact"), label=label.strip(), value=value.strip(), provenance=old.provenance if old else "人工编辑", status=status))
-    if not parsed: raise ValueError("未能从 Markdown 解析出任何任务事实。")
-    return TaskSpecification(task_id=spec.task_id, version=spec.version + 1, facts=parsed, parent_hash=spec.content_hash).finalized()
+        entered_label = label.strip()
+        canonical_label = _DISPLAY_TO_FIELD.get(entered_label, entered_label)
+        old = next((f for f in spec.facts if f.label in {canonical_label, entered_label}
+                    or _display_label(f.label) == entered_label), None)
+        parsed.append(SpecificationFact(
+            fact_id=old.fact_id if old else new_id("fact"),
+            label=old.label if old else canonical_label,
+            value=value.strip(),
+            provenance=old.provenance if old else "人工编辑",
+            status=status,
+        ))
+    if not parsed:
+        parsed = [SpecificationFact(label="任务书正文", value=markdown.strip(),
+                                    provenance="人工编辑", status="confirmed")]
+    return TaskSpecification(
+        task_id=spec.task_id,
+        version=spec.version + 1,
+        facts=parsed,
+        source_markdown=markdown,
+        parent_hash=spec.content_hash,
+    ).finalized()
 
 
 def _first_body_paragraph(markdown: str) -> str:

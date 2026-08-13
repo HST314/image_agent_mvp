@@ -60,6 +60,7 @@ class RenderPromptComposer:
         variables = {
             "deliverable_goal": deliverable_goal,
             "usage_context": usage_context,
+            "taskbook_markdown": doc.markdown_body or doc.summary,
             "confirmed_facts": self._facts(doc),
             "default_handling_for_unknowns": self._unknowns(doc),
             "category_skill_injection": self._skill_injection(category_skill),

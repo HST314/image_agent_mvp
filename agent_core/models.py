@@ -265,6 +265,9 @@ class TaskSpecification(StrictBaseModel):
     task_id: str
     version: int = Field(default=1, ge=1)
     facts: list[SpecificationFact] = Field(default_factory=list)
+    # 用户保存的 Markdown 是任务书的权威文本。结构化 facts 仍用于下游检索，
+    # 但不得在保存或再次确认时反向覆盖用户原文。
+    source_markdown: str = Field(default="", max_length=100_000)
     parent_hash: str | None = None
     content_hash: str = ""
 

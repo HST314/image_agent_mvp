@@ -60,8 +60,9 @@
 /* ===== T4 任务书 ===== */
 .taskbook__meta{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:14px 16px;margin-bottom:18px;border:1px solid var(--border);border-radius:12px;background:var(--subtle)}
 .taskbook__meta strong,.taskbook__meta p{display:block}.taskbook__meta p{margin:3px 0 0;color:var(--muted);font-size:13px}
-.taskbook__document{max-width:820px;margin:0 auto;padding:clamp(18px,3vw,34px);border:1px solid var(--border);border-radius:14px;background:var(--surface-raised)}
-.taskbook__document h1:first-child{margin-top:0}.taskbook__document h2{padding-top:12px;border-top:1px solid var(--border)}
+.taskbook__document{width:100%;max-width:none;min-height:clamp(440px,58vh,760px);margin:0;padding:clamp(26px,4vw,52px) clamp(22px,5vw,72px);border:1px solid var(--border);border-radius:14px;background:var(--surface-raised);font-size:16px;line-height:1.8;overflow-wrap:anywhere}
+.taskbook__document>*{max-width:96ch}.taskbook__document h1:first-child{margin-top:0}.taskbook__document h2{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);font-size:21px}.taskbook__document li+li{margin-top:8px}
+.taskbook__editor{display:block;min-height:clamp(440px,58vh,760px);padding:clamp(20px,3vw,34px);background:var(--surface-raised);font:15px/1.75 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}
 .taskbook__approve{position:sticky;bottom:16px;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:18px;margin:22px -4px -4px;padding:14px 16px;border:1px solid color-mix(in srgb,var(--primary) 28%,var(--border));border-radius:14px;background:color-mix(in srgb,var(--surface) 92%,transparent);box-shadow:0 12px 30px rgba(40,28,62,.14);backdrop-filter:blur(12px)}
 .taskbook__approve-copy strong,.taskbook__approve-copy small{display:block}.taskbook__approve-copy small{color:var(--muted);margin-top:2px}.taskbook__approve-copy .field-error{color:var(--danger)}
 
