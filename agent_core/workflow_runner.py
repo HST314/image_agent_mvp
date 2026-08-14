@@ -7,13 +7,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_core.batch import CandidateBatchGenerator
-from agent_core.models import ImageTaskCard, ModelRole, TaskSpecification, VisualCheckResult
+from agent_core.models import (ImageTaskCard, ModelRole, QuestionAnswer,
+                               QuestionAnswerRecord, QuestionCard,
+                               SpecificationFact, TaskSpecification,
+                               VisualCheckResult)
 from agent_core.state_machine import RecoverableWorkflow
 from agent_core.workflow import SelfCheckPolicy, validate_transition
 from agent_core.unified_workflow import (DomainState, classify_error, freeze_delivery,
                                          recovery_actions, revise_task, TaskRevision)
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
-from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
+from interaction.confirmation_builder import (build_confirmation_doc,
+    specification_from_task, specification_to_markdown, update_specification_from_markdown)
 from interaction.question_generator import generate_question_card
 from model_router.clients import build_text_client, build_vlm_client
 from model_router.gateway import RuntimeModelGateway
@@ -147,14 +151,24 @@ class WorkflowRunner:
         task = ImageTaskCard.model_validate(data["task_card"])
         fingerprints = set(data.get("previous_fingerprints", []))
         already_asked = int(data.get("clarification_asked_count", 0))
+        transcript = list(data.get("clarification_transcript", []))
         if data.get("phase") == "waiting_clarification":
             answers = options.get("clarification_answers")
             if not answers: return {"waiting": True, "phase": "waiting_clarification"}
-            facts = dict(task.known_facts); facts.update(answers)
-            task = task.model_copy(update={"known_facts": facts, "unknowns": {k:v for k,v in task.unknowns.items() if k not in answers}})
-            return {"task_card": task.model_dump(mode="json"), "clarification_answers": answers, "waiting": False, "phase": "clarification_completed",
-                    "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
-                    "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
+            card = QuestionCard.model_validate(data["question_card"])
+            record, resolved = self._answer_record(task, card, answers)
+            facts = {**task.known_facts, **resolved}
+            task = task.model_copy(update={"known_facts": facts,
+                "unknowns": {k:v for k,v in task.unknowns.items() if k not in resolved}})
+            transcript.append({"question_card": card.model_dump(mode="json"),
+                               "answer_record": record.model_dump(mode="json")})
+            data = {**data, "task_card": task.model_dump(mode="json"),
+                    "clarification_transcript": transcript, "phase": "clarification_reanalysis",
+                    "task_specification": None, "task_markdown": None,
+                    "task_revision": None, "task_approval": None}
+        remaining = max(0, self.policy.clarification_total_budget - already_asked)
+        if remaining == 0 and self._blocking_unknowns(task):
+            raise ValueError("澄清问题预算已耗尽且仍有阻塞项；须人工补充或调整预算后恢复。")
         if self.offline_mode:
             card = generate_question_card(task, previous_fingerprints=fingerprints, already_asked=already_asked,
                                           total_budget=self.policy.clarification_total_budget,
@@ -162,23 +176,53 @@ class WorkflowRunner:
         else:
             card = self.gateway.call("intake_clarify", ModelRole.REASONING_LLM,
                 lambda route: generate_question_card(task, self._text(route), previous_fingerprints=fingerprints, already_asked=already_asked, error_recorder=lambda e: self.store.events.append(**{"event_type": "model_parse_failed", **e})),
-                messages=[{"role":"user","content":"分析任务中真正阻塞的未知项"}], variables={"task":task.model_dump(mode="json")},
+                messages=[{"role":"user","content":"结合完整多轮问答重新分析；可继续提问，确认理解充分时返回 0 问。"}],
+                variables={"task":task.model_dump(mode="json"), "clarification_transcript":transcript},
                 template_id="clarification", template_version="2", input_refs=[r.ref_id for r in task.source_refs])
         if card.questions:
             fingerprints.update(q.semantic_fingerprint for q in card.questions)
             asked = already_asked + len(card.questions)
             return {"question_card": card.model_dump(mode="json"), "waiting": True, "phase": "waiting_clarification",
+                    "task_card": task.model_dump(mode="json"), "clarification_transcript": transcript,
                     "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": asked,
                     "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - asked)}
-        return {"question_card": card.model_dump(mode="json"), "waiting": False,
+        if self._blocking_unknowns(task):
+            raise ValueError("模型未继续提问，但任务仍含阻塞未知项；禁止生成任务书。")
+        return {"question_card": card.model_dump(mode="json"), "waiting": False, "phase": "ready_to_draft",
+                "task_card": task.model_dump(mode="json"), "clarification_transcript": transcript,
                 "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
                 "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
 
     def _confirmation(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
-        spec = TaskSpecification.model_validate(data["task_specification"]) if data.get("task_specification") else specification_from_task(ImageTaskCard.model_validate(data["task_card"]))
+        task = ImageTaskCard.model_validate(data["task_card"])
+        if self._blocking_unknowns(task):
+            raise ValueError("仍有阻塞未知项，禁止生成可批准任务书。")
+        if data.get("task_specification"):
+            spec = TaskSpecification.model_validate(data["task_specification"])
+            markdown = specification_to_markdown(spec)
+        elif self.offline_mode:
+            spec = specification_from_task(task)
+            markdown = specification_to_markdown(spec)
+        else:
+            transcript = list(data.get("clarification_transcript", []))
+            last = transcript[-1] if transcript else None
+            card = QuestionCard.model_validate(last["question_card"]) if last else QuestionCard(task_id=task.task_id, questions=[])
+            record = QuestionAnswerRecord.model_validate(last["answer_record"]) if last else QuestionAnswerRecord(question_card_id=card.question_card_id, task_id=task.task_id, answers=[])
+            doc = self.gateway.call("confirmation_build", ModelRole.REASONING_LLM,
+                lambda route: build_confirmation_doc(task, card, record, self._text(route), allow_fallback=False),
+                messages=[{"role":"user","content":"基于任务卡、来源材料和完整问答，重新理解并撰写创作任务书。"}],
+                variables={"task":task.model_dump(mode="json"), "clarification_transcript":transcript},
+                template_id="confirmation_build", template_version="3", input_refs=[r.ref_id for r in task.source_refs])
+            if any(u.risk_level.value == "blocking" for u in doc.default_handling_for_unknowns):
+                raise ValueError("推理模型生成的任务书仍包含阻塞待决项，禁止进入人工批准。")
+            facts = [SpecificationFact(label=f.field, value=str(f.value), provenance=f.source_ref, status="confirmed") for f in doc.confirmed_facts]
+            facts.extend(SpecificationFact(label=u.field, value=u.handling, provenance="reasoning_llm",
+                status="blocking" if u.risk_level.value == "blocking" else "tentative") for u in doc.default_handling_for_unknowns)
+            spec = TaskSpecification(task_id=task.task_id, facts=facts).finalized()
+            markdown = doc.markdown_body
         if options.get("edited_markdown"):
             spec = update_specification_from_markdown(spec, options["edited_markdown"])
-        markdown = specification_to_markdown(spec)
+            markdown = specification_to_markdown(spec)
         history = list(data.get("task_revision_history", []))
         raw_task = json.dumps(data.get("task_card"), ensure_ascii=False, sort_keys=True)
         actor = options.get("actor") or "manual-user"
@@ -197,6 +241,43 @@ class WorkflowRunner:
                 "task_revision_history": history,
                 "task_approval": ({"revision_hash": revision_hash, "actor": options["actor"]} if approved else None),
                 "waiting": not approved, "phase": "task_approved" if approved else "waiting_human_approval"}
+
+    @staticmethod
+    def _blocking_unknowns(task: ImageTaskCard) -> list[str]:
+        return [field for field, value in task.unknowns.items()
+                if isinstance(value, dict) and bool(value.get("blocking")) and not bool(value.get("has_safe_default"))]
+
+    @staticmethod
+    def _answer_record(task: ImageTaskCard, card: QuestionCard, payload: dict[str, Any]) -> tuple[QuestionAnswerRecord, dict[str, str]]:
+        raw_answers = payload.get("answers") if isinstance(payload, dict) else None
+        if not isinstance(raw_answers, list):
+            # Temporary compatibility for older API clients; new clients must send structured answers.
+            raw_answers = [{"question_id": q.question_id, "selected_option_id": None,
+                            "free_text": payload.get(q.field)} for q in card.questions if q.field in payload]
+        by_id = {q.question_id: q for q in card.questions}
+        answers: list[QuestionAnswer] = []
+        resolved: dict[str, str] = {}
+        for raw in raw_answers:
+            answer = QuestionAnswer.model_validate(raw)
+            question = by_id.get(answer.question_id)
+            if question is None:
+                raise ValueError(f"回答引用了未知问题：{answer.question_id}")
+            option = next((o for o in question.options if o.option_id == answer.selected_option_id), None)
+            if answer.selected_option_id is not None and option is None:
+                raise ValueError(f"回答引用了未知选项：{answer.selected_option_id}")
+            free_text = (answer.free_text or "").strip()
+            if option and option.requires_free_text and not free_text:
+                raise ValueError(f"选项“{option.label}”必须填写具体内容。")
+            if not answer.skipped:
+                value = free_text or (option.description if option else "")
+                if not value:
+                    raise ValueError(f"问题“{question.question}”缺少有效回答。")
+                resolved[question.field] = value
+            answers.append(answer)
+        if len(answers) != len(card.questions) or {a.question_id for a in answers} != set(by_id):
+            raise ValueError("必须逐项提交当前问题卡的结构化回答。")
+        return QuestionAnswerRecord(question_card_id=card.question_card_id,
+            task_id=task.task_id, answers=answers), resolved
 
     def _candidates(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])

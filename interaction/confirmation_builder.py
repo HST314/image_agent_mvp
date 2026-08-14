@@ -119,6 +119,7 @@ def build_confirmation_doc(
     answer_record: QuestionAnswerRecord,
     client: TextModelClient | None = None,
     stream_handler: Callable[[str], None] | None = None,
+    allow_fallback: bool = True,
 ) -> TaskConfirmationDoc:
     """Build a pending-sign confirmation document from intake artifacts.
 
@@ -129,9 +130,12 @@ def build_confirmation_doc(
 
     if client is not None:
         try:
-            return _build_with_client(task, question_card, answer_record, client, stream_handler=stream_handler)
+            return _build_with_client(task, question_card, answer_record, client,
+                                      stream_handler=stream_handler,
+                                      require_markdown=not allow_fallback)
         except (KeyError, TypeError, ValueError):
-            pass
+            if not allow_fallback:
+                raise
 
     unknowns = _unknown_handling(task) + _question_handling(question_card, answer_record)
     doc = TaskConfirmationDoc(
@@ -154,6 +158,7 @@ def _build_with_client(
     answer_record: QuestionAnswerRecord,
     client: TextModelClient,
     stream_handler: Callable[[str], None] | None = None,
+    require_markdown: bool = False,
 ) -> TaskConfirmationDoc:
     """Build and validate a confirmation document through a reasoning LLM."""
 
@@ -166,6 +171,8 @@ def _build_with_client(
     payload = json.loads(_extract_json_object(response_text))
     payload["task_id"] = task.task_id
     doc = TaskConfirmationDoc.model_validate(payload)
+    if require_markdown and not doc.markdown_body.strip():
+        raise ValueError("任务书模型没有返回其综合撰写的 markdown_body。")
     if not doc.markdown_body:
         doc.markdown_body = confirmation_doc_to_markdown(doc)
     return doc
@@ -188,10 +195,12 @@ def _build_confirmation_prompt(
         '"confirmed_facts":[{"field":"string","value":any,"source_ref":"string","locked":true}],'
         '"default_handling_for_unknowns":[{"field":"string","handling":"string","risk_level":"low|medium|high|blocking"}],'
         '"forbidden_items":["string"],'
-        '"human_annotations":["string"]'
+        '"human_annotations":["string"],'
+        '"markdown_body":"由你综合理解后撰写的完整中文创作任务书，不得逐字段照抄"'
         "}\n"
         "规则：sign_status 保持省略或 pending_sign；confirmed_facts 必须能追溯到 source_ref；"
-        "用户跳过的问题必须采用保守的未确认处理；summary、handling、human_annotations 必须使用中文。\n"
+        "用户跳过的问题必须采用保守的未确认处理；summary、handling、human_annotations、markdown_body 必须使用中文；"
+        "markdown_body 必须综合目标、受众、核心内容、视觉方向、交付规格、硬约束、禁止项和待决事项重新撰写，不得把输入字段逐项拼接。\n"
         f"任务卡 JSON: {json.dumps(task.model_dump(mode='json'), ensure_ascii=False)}\n"
         f"问题卡 JSON: {json.dumps(question_card.model_dump(mode='json'), ensure_ascii=False)}\n"
         f"回答记录 JSON: {json.dumps(answer_record.model_dump(mode='json'), ensure_ascii=False)}"
