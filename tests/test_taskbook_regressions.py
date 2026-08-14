@@ -81,7 +81,7 @@ def test_save_then_approve_never_regenerates_over_user_markdown(tmp_path: Path) 
     store = ProjectStore(tmp_path, "taskbook-regression")
     store.create(RuntimePolicy(offline_mode=True).snapshot())
     runner = WorkflowRunner(store, ROOT / "configs/model_config.yaml", offline_mode=True)
-    task_card = _task().model_dump(mode="json")
+    task_card = _task().model_copy(update={"unknowns": {}}).model_dump(mode="json")
 
     initial = runner._confirmation({"task_card": task_card}, {})
     edited = "# 用户版本\n\n自由段落也必须保留。\n\n- 交付目标：用户最后保存的版本"

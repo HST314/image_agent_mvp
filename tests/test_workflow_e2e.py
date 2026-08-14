@@ -25,7 +25,9 @@ def _try_project_lock(root: str, queue) -> None:
 
 def task_payload():
     return {"task_id":"t", "project_id":"p", "source_refs":[{"ref_id":"s","ref_type":"text"}],
-            "deliverable_goal":"海报", "usage_context":"手机", "known_facts":{"主体":"产品"}, "unknowns":{}}
+            "deliverable_goal":"海报", "usage_context":"手机",
+            "category_ref":{"category_id":"generic_visual_delivery","version":"1.0"},
+            "known_facts":{"主体":"产品"}, "unknowns":{}}
 
 
 def test_cli_new_resume_and_registry(tmp_path: Path, capsys):

@@ -65,11 +65,14 @@ def test_t9_progress_snapshots_follow_active_lineage_and_accept_auto_chinese_nam
 
     created = client.post(
         f"/api/projects/{store.project_id}/branches",
-        json={"checkpoint": taskbook, "name": "任务书-0812-090705"},
+        json={"checkpoint": taskbook, "name": "任务书-0812-090705", "mode": "fork_after"},
     )
     assert created.status_code == 200
-    assert created.json()["manifest"]["current_branch"] == "任务书-0812-090705"
-    snapshots = created.json()["progress_snapshots"]
+    assert created.json()["created"] is True
+    assert created.json()["branch"] == "任务书-0812-090705"
+    refreshed = client.get(f"/api/projects/{store.project_id}").json()
+    assert refreshed["manifest"]["current_branch"] == "任务书-0812-090705"
+    snapshots = refreshed["progress_snapshots"]
     assert [item["state"] for item in snapshots] == [
         "intake_clarify", "confirmation_build", "confirmation_build",
     ]
@@ -111,7 +114,7 @@ def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(
     client = TestClient(main_front.app)
 
     schema = client.get(f"/api/projects/{store.project_id}/settings/schema").json()
-    assert set(schema["properties"]) == set(RuntimePolicy.CONSUMERS)
+    assert set(schema["properties"]) == set(RuntimePolicy.CONSUMERS) - {"skill_invocation"}
     assert schema["scope"] == "new_project_or_confirmed_revision"
     assert all(item["consumer"] for item in schema["properties"].values())
 

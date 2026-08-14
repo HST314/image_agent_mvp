@@ -12,7 +12,7 @@ import { policyKeyLabel, policyKeyHelp, policyOptionLabel } from './copy.js';
 /* 契约 §8 分组基线：常用组 / 高级组的字段路径与排列顺序。 */
 const COMMON_PATHS = [
   'max_auto_questions', 'clarification_total_budget',
-  'skill_invocation.release',
+  'category_constraint.release', 'style_direction.release',
   'self_check.termination', 'self_check.fixed_rounds', 'self_check.max_rounds',
   'self_check.stop_early_on_pass', 'self_check.release',
   'candidate_concurrency', 'default_output_size', 'watermark', 'offline_mode',

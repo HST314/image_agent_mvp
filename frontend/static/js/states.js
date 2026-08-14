@@ -1,7 +1,7 @@
 /* 状态/动作映射（T35 验收：与后端状态表一一对应）。
  *
  * 后端事实来源（v1.7.3）：
- * - agent_core.workflow_runner.ORDER：七个生产状态；
+ * - agent_core.workflow_runner.ORDER：八个生产状态（加上前置品类约束）；
  * - WorkflowRunner.next_state / calibrator.calibration_loop：phase 语义；
  * - main_front._capabilities：服务端能力清单，前端只把这些能力映射为动作，
  *   不自行发明后端没有的入口。
@@ -11,9 +11,10 @@
  */
 
 export const WORKFLOW_STATES = [
+  { id: 'category_constraint', label: '品类约束' },
   { id: 'intake_clarify', label: '需求澄清' },
   { id: 'confirmation_build', label: '任务书' },
-  { id: 'initial_candidate_generation', label: '技能调用' },
+  { id: 'initial_candidate_generation', label: '艺术风格' },
   { id: 'master_candidate_selection', label: '主图选择' },
   { id: 'self_check_iteration', label: '画面质检' },
   { id: 'human_prompt_iteration', label: '人工修改' },
@@ -25,6 +26,8 @@ export const STATE_LABELS = Object.fromEntries(WORKFLOW_STATES.map((s) => [s.id,
 /** 服务端能力 → 前端动作（一一对应，不增不减）。 */
 export const CAPABILITY_ACTIONS = {
   retry: { id: 'retry', label: '从上一成功点重试', kind: 'job' },
+  approve_category_constraint: { id: 'approve_category_constraint', label: '确认品类约束', kind: 'job' },
+  retry_category_constraint: { id: 'retry_category_constraint', label: '重新匹配品类', kind: 'job' },
   answer_clarification: { id: 'answer_clarification', label: '提交答案并继续', kind: 'job' },
   approve_skill_invocations: { id: 'approve_skill_invocations', label: '确认技能调用并继续', kind: 'job' },
   retry_skill_invocations: { id: 'retry_skill_invocations', label: '换一版技能调用结果', kind: 'job' },
@@ -33,7 +36,15 @@ export const CAPABILITY_ACTIONS = {
   enter_human_tune: { id: 'enter_human_tune', label: '进入人工微调', kind: 'ui' },
   resume_quality_inspection: { id: 'resume_quality_inspection', label: '开始重新质检', kind: 'job' },
   submit_human_tune: { id: 'submit_human_tune', label: '提交微调', kind: 'ui' },
-  resume: { id: 'resume', label: '继续工作流', kind: 'job' },
+  start_clarification: { id: 'start_clarification', label: '开始需求澄清', kind: 'job' },
+  build_taskbook: { id: 'build_taskbook', label: '生成任务书', kind: 'job' },
+  prepare_style_direction: { id: 'prepare_style_direction', label: '准备艺术风格', kind: 'job' },
+  render_candidates: { id: 'render_candidates', label: '生成候选图', kind: 'job' },
+  choose_master: { id: 'choose_master', label: '进入主图选择', kind: 'job' },
+  start_quality_inspection: { id: 'start_quality_inspection', label: '开始画面质检', kind: 'job' },
+  open_final_approval: { id: 'open_final_approval', label: '进入最终确认', kind: 'job' },
+  edit_rework: { id: 'edit_rework', label: '修改建议后执行', kind: 'job' },
+  abandon: { id: 'abandon', label: '终止且不交付', kind: 'job' },
   branch: { id: 'branch', label: '查看分支', kind: 'ui' },
   inspect: { id: 'inspect', label: '查看交付', kind: 'ui' },
 };
@@ -58,8 +69,9 @@ export function approvalValid(snapshot) {
 /**
  * 推导当前舞台。
  * 返回 { stage, reason?, actions, waiting }；stage 取值：
- * empty | clarify | taskbook | skill_approval | gallery | calibration | disposition | annotate |
- * reinspection | resume_quality | final | failed | terminated | completed | resume
+ * empty | category | clarify | taskbook | style_processing | skill_approval | gallery |
+ * quality_pending | calibration | disposition | annotate | reinspection | resume_quality |
+ * final | failed | terminated | completed
  */
 export function deriveView(view) {
   const snapshot = view?.snapshot || {};
@@ -75,6 +87,10 @@ export function deriveView(view) {
     if (failure.state === 'final_approval' && message.includes(FINAL_APPROVAL_HINT)) {
       return { stage: 'final', actions: capabilities, waiting: true, viaFailureGate: true };
     }
+    if (failure?.error?.category === 'content_moderation' && snapshot.inspection) {
+      return { stage: 'calibration', failure, moderationFailure: true,
+        actions: capabilities, waiting: true };
+    }
     return { stage: 'failed', failure, actions: capabilities, waiting: false };
   }
 
@@ -82,6 +98,8 @@ export function deriveView(view) {
   if (snapshot.completed) return { stage: 'completed', actions: capabilities, waiting: false };
 
   // 3. 各等待阶段（与后端 next_state/capabilities 对齐）
+  if (stateId === 'category_constraint') return { stage: 'category', actions: capabilities,
+    waiting: phase === 'waiting_category_approval', processing: Boolean(view?.active_job) };
   if (phase === 'waiting_clarification') return { stage: 'clarify', actions: capabilities, waiting: true };
   if (stateId === 'confirmation_build' && phase === 'waiting_human_approval') {
     return { stage: 'taskbook', actions: capabilities, waiting: true };
@@ -89,7 +107,15 @@ export function deriveView(view) {
   if (stateId === 'initial_candidate_generation' && phase === 'waiting_skill_approval') {
     return { stage: 'skill_approval', actions: capabilities, waiting: true };
   }
+  if (stateId === 'initial_candidate_generation' && phase !== 'candidate_generation_completed') {
+    return { stage: 'style_processing', actions: capabilities, waiting: false,
+      processing: Boolean(view?.active_job) };
+  }
   if (phase === 'waiting_master_selection') return { stage: 'gallery', actions: capabilities, waiting: true };
+  if (stateId === 'master_candidate_selection' && phase === 'master_selected') {
+    return { stage: 'quality_pending', actions: capabilities, waiting: false,
+      processing: Boolean(view?.active_job) };
+  }
   if (stateId === 'self_check_iteration' && phase === 'waiting_human_approval') {
     if (String(snapshot.termination_reason || '').includes('round_limit')
         && Array.isArray(snapshot.available_actions) && snapshot.available_actions.length) {
@@ -106,8 +132,16 @@ export function deriveView(view) {
     return { stage: 'final', actions: capabilities, waiting: true };
   }
 
-  // 4. 有快照但无明确等待：可继续
-  if (stateId) return { stage: 'resume', actions: capabilities, waiting: false };
+  // 4. 每个可持久化状态都有明确舞台，不使用通用恢复状态。
+  if (stateId === 'intake_clarify') return { stage: 'clarify', actions: capabilities, waiting: false };
+  if (stateId === 'confirmation_build') return { stage: 'taskbook', actions: capabilities, waiting: false };
+  if (stateId === 'initial_candidate_generation') return { stage: 'gallery', actions: capabilities, waiting: false };
+  if (stateId === 'master_candidate_selection') return { stage: 'quality_pending', actions: capabilities, waiting: false };
+  if (stateId === 'self_check_iteration') return { stage: 'calibration', actions: capabilities, waiting: false };
+  if (stateId === 'human_prompt_iteration') return { stage: 'annotate', actions: capabilities, waiting: false };
+  if (stateId === 'final_approval') return { stage: 'final', actions: capabilities, waiting: true };
+  if (stateId) return { stage: 'failed', failure: { state: stateId,
+    error: { message: '当前阶段无法识别，请从历史检查点创建分支。' } }, actions: capabilities, waiting: false };
   return { stage: 'empty', actions: [], waiting: false };
 }
 
@@ -157,6 +191,8 @@ export const EVENT_LABELS = {
   skill_invocation_completed: '两库调用已完成',
   skill_invocation_retried: '已重新调用两库',
   skill_invocation_approved: '技能调用已人工放行',
+  category_constraint_matched: '已匹配品类约束',
+  category_constraint_approved: '品类约束已人工放行',
 };
 
 export function eventLabel(event) {

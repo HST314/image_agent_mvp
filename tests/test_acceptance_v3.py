@@ -38,7 +38,9 @@ def test_t04_production_candidate_path_returns_structured_resource_error(tmp_pat
     runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
     monkeypatch.setattr("skills.category_library_adapter.CategoryLibraryAdapter.__init__",
                         Mock(side_effect=FileNotFoundError("missing")))
-    task = _task(); spec = specification_from_task(task)
+    # No explicit category: the new front-loaded category matcher must surface
+    # a structured resource error before any paid candidate work can begin.
+    task = _task().model_copy(update={"category_ref": None}); spec = specification_from_task(task)
     with pytest.raises(ResourceError) as caught:
         runner._candidates({"task_card": task.model_dump(mode="json"),
                             "task_specification": spec.model_dump(mode="json")}, {})

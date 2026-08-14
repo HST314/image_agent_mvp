@@ -5,6 +5,7 @@ from typing import Literal
 
 TransitionMap = dict[str, frozenset[str]]
 TRANSITIONS: TransitionMap = {
+    "category_constraint": frozenset({"intake_clarify"}),
     "intake_clarify": frozenset({"confirmation_build"}),
     "confirmation_build": frozenset({"initial_candidate_generation"}),
     "initial_candidate_generation": frozenset({"master_candidate_selection"}),

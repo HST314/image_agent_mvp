@@ -82,7 +82,7 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["snapshot"]["state"] == "intake_clarify"
-    assert data["manifest"]["current_checkpoint"]["sequence"] == 1
+    assert data["manifest"]["current_checkpoint"]["sequence"] == 2
     assert data["snapshot"].get("completed") is not True
 
 

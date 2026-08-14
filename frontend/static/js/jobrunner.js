@@ -99,6 +99,8 @@ export function isTerminalJobStatus(status) { return TERMINAL_JOB_STATUS.has(sta
 
 /** 进度展示用的操作名（由 payload 推断）。 */
 export function jobOperation(payload) {
+  if (payload.category_action === 'retry') return '重新匹配品类约束';
+  if (payload.category_action === 'approve') return '确认品类约束';
   if (payload.skill_action === 'retry') return '重新调用两库';
   if (payload.skill_action === 'approve') return '确认技能调用并生成五张主图';
   if (['execute', 'edit_and_execute'].includes(payload.manual_action)) return '执行质检建议';

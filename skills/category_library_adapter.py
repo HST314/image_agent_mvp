@@ -115,11 +115,24 @@ class CategoryLibraryAdapter:
         risks = record.get("risks", {}) if isinstance(record.get("risks"), dict) else {}
         definition = record.get("product_definition", {}) if isinstance(record.get("product_definition"), dict) else {}
 
+        blocking_inputs = [str(value) for value in project_inputs.get("blocking_if_missing", [])]
+
+        def blocks(item: Any) -> bool:
+            text = str(item)
+            for blocker in blocking_inputs:
+                if blocker in text or text in blocker:
+                    return True
+                if blocker == "交付范围" and "范围" in text:
+                    return True
+                if blocker == "材料性能要求" and ("环境" in text or "寿命" in text):
+                    return True
+            return False
+
         required_questions = [
             RequiredQuestion(
                 field=f"library_required_input_{index}",
                 question=str(item),
-                blocks_generation=str(item) in {str(value) for value in project_inputs.get("blocking_if_missing", [])},
+                blocks_generation=blocks(item),
                 default_handling="缺失时保持未确认，不得在生成阶段自行补全。",
             )
             for index, item in enumerate(project_inputs.get("required", [])[:8], start=1)

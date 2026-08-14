@@ -7,6 +7,23 @@ from agent_core.workflow import SelfCheckPolicy
 from prompt_engine.context_assembler import ContextAssembler, ContextPolicy
 from storage.project_store import ProjectStore, content_hash
 
+
+def build_rework_context(*, specification: str, constraints: list[str], feedback: str,
+                         reference: ReferenceImage) -> dict[str, Any]:
+    """Build a compact delta-only rework prompt; runtime asset metadata stays out."""
+    stable = str(specification).strip()
+    if len(stable) > 4000:
+        stable = stable[:4000] + "\n（任务书其余内容已省略；不得改变已确认事实。）"
+    compact_constraints = [str(item).strip() for item in constraints if str(item).strip()][:12]
+    return ContextAssembler(ContextPolicy("image", max_text_chars=6000)).assemble(
+        objective="仅按本轮修改建议修正参考图，不新增未经确认的文字、标识或事实。",
+        specification=stable,
+        constraints=compact_constraints,
+        current_input="当前画面已通过参考图参数传递。",
+        feedback=str(feedback).strip(),
+        references=[reference],
+    )
+
 class ManualAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["execute", "edit_and_execute", "skip", "end", "accept_current", "add_rounds", "human_tune_best"]
@@ -136,7 +153,10 @@ class CalibrationLoop:
                 self.store.events.append("rework_started", round=number)
                 refs = [ReferenceImage(uri=str(current["uri"]), role="current", source=str(current.get("artifact_id", "current")), sha256=str(current["sha256"]), order=0, reason="当前最新画面必须作为首张参考")]
                 delta = choice.effective_delta(result.rework_prompt_delta)
-                assembled = ContextAssembler(ContextPolicy("image")).assemble(objective="按本轮质检意见修正画面", specification=stable_specification, constraints=constraints, current_input=str(current), feedback=delta, references=refs)
+                assembled = build_rework_context(
+                    specification=stable_specification, constraints=constraints,
+                    feedback=delta, reference=refs[0],
+                )
                 key = self.store.idempotency_key("self_check_rework", content_hash(current), content_hash(assembled["text"]), "image", current["sha256"])
                 current = self._successful(key) or self.reworker(assembled)
                 self.store.events.append("rework_completed", round=number, asset=current, references=assembled["references"], idempotency_key=key)

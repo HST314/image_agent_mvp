@@ -66,7 +66,7 @@ const projectView = (branch = '任务书-0812-090705') => ({
   progress_snapshots: [],
 });
 
-test('T9 创建即切换：直接消费创建接口返回的完整工程视图，不再二次 switch 或 GET', async () => {
+test('分支提交回执与视图刷新解耦，明确使用 rerun_stage', async () => {
   const calls = { create: 0, get: 0 };
   const created = projectView();
   const result = await createSnapshotBranch({
@@ -75,15 +75,27 @@ test('T9 创建即切换：直接消费创建接口返回的完整工程视图�
     branchFrom: async (projectId, payload) => {
       calls.create += 1;
       assert.equal(projectId, 'demo');
-      assert.deepEqual(payload, { checkpoint: 'checkpoint_source', name: '任务书-0812-090705' });
-      return created;
+      assert.deepEqual(payload, { checkpoint: 'checkpoint_source', name: '任务书-0812-090705', mode: 'rerun_stage' });
+      return { created: true, project_id: 'demo', branch: '任务书-0812-090705', checkpoint_id: 'checkpoint_new' };
     },
-    getProject: async () => { calls.get += 1; return projectView('main'); },
+    getProject: async () => { calls.get += 1; return created; },
   });
 
   assert.equal(result.view, created);
   assert.equal(result.reconciled, false);
-  assert.deepEqual(calls, { create: 1, get: 0 });
+  assert.deepEqual(calls, { create: 1, get: 1 });
+});
+
+test('分支回执已确认后，刷新失败不得改报创建失败', async () => {
+  const result = await createSnapshotBranch({
+    projectId: 'demo', checkpoint: 'checkpoint_source', branchName: '任务书-0812-090705',
+  }, {
+    branchFrom: async () => ({ created: true, project_id: 'demo', branch: '任务书-0812-090705', checkpoint_id: 'checkpoint_new' }),
+    getProject: async () => { throw new Error('渲染数据刷新失败'); },
+  });
+  assert.equal(result.refreshFailed, true);
+  assert.equal(result.receipt.created, true);
+  assert.equal(result.view, null);
 });
 
 test('T9 创建响应异常：只重新拉取工程对账，确认已创建后不重复 POST', async () => {

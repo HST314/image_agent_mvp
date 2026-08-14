@@ -8,18 +8,21 @@ import {
 
 // 后端 v1.7.3 事实表：main_front._capabilities 的全部可能输出。
 const BACKEND_CAPABILITIES = [
-  'retry', 'answer_clarification', 'select_master', 'review_calibration',
+  'retry', 'approve_category_constraint', 'retry_category_constraint',
+  'answer_clarification', 'select_master', 'review_calibration',
   'enter_human_tune',
   'approve_skill_invocations', 'retry_skill_invocations', 'resume_quality_inspection',
-  'submit_human_tune', 'resume', 'branch', 'inspect',
+  'submit_human_tune', 'start_clarification', 'build_taskbook', 'prepare_style_direction',
+  'render_candidates', 'choose_master', 'start_quality_inspection', 'open_final_approval',
+  'edit_rework', 'abandon', 'branch', 'inspect',
 ];
 
-test('七个生产状态与后端 WorkflowRunner.ORDER 一致', () => {
+test('八个生产状态与后端 WorkflowRunner.ORDER 一致', () => {
   assert.deepEqual(WORKFLOW_STATES.map((s) => s.id), [
-    'intake_clarify', 'confirmation_build', 'initial_candidate_generation',
+    'category_constraint', 'intake_clarify', 'confirmation_build', 'initial_candidate_generation',
     'master_candidate_selection', 'self_check_iteration', 'human_prompt_iteration', 'final_approval',
   ]);
-  assert.equal(stateLabel('initial_candidate_generation'), '技能调用');
+  assert.equal(stateLabel('initial_candidate_generation'), '艺术风格');
 });
 
 test('服务端每个能力都有且仅有一个前端动作', () => {
@@ -107,11 +110,33 @@ test('不可重试参数错误不暴露 retry 动作', () => {
   assert.deepEqual(d.actions, []);
 });
 
-test('completed / terminated / resume / empty 边界', () => {
+test('completed / terminated / 显式阶段 / empty 边界', () => {
   assert.equal(deriveView(view({ state: 'final_approval', completed: true })).stage, 'completed');
   assert.equal(deriveView(view({ state: 'self_check_iteration', phase: 'terminated_without_delivery' })).stage, 'terminated');
-  assert.equal(deriveView(view({ state: 'confirmation_build', phase: 'task_approved' })).stage, 'resume');
+  assert.equal(deriveView(view({ state: 'confirmation_build', phase: 'task_approved' })).stage, 'taskbook');
   assert.equal(deriveView(view({})).stage, 'empty');
+});
+
+test('master_selected + active job 保留主图上下文，不得映射为 resume', () => {
+  const result = deriveView({ snapshot: { state: 'master_candidate_selection', phase: 'master_selected' },
+    manifest: {}, capabilities: [], active_job: { status: 'running' } });
+  assert.equal(result.stage, 'quality_pending');
+  assert.equal(result.processing, true);
+});
+
+test('内容审核失败回到质检舞台并提供修改恢复动作', () => {
+  const result = deriveView(view(
+    { state: 'self_check_iteration', inspection: { passed: false } },
+    { failed_step: { state: 'self_check_iteration', error: { category: 'content_moderation', message: 'x' } } },
+    ['edit_rework', 'abandon'],
+  ));
+  assert.equal(result.stage, 'calibration');
+  assert.equal(result.moderationFailure, true);
+});
+
+test('所有生产状态均有明确舞台，永不返回 resume', () => {
+  const stages = WORKFLOW_STATES.map(({ id }) => deriveView(view({ state: id })).stage);
+  assert.equal(stages.includes('resume'), false);
 });
 
 test('approvalValid：actor + revision 哈希双条件', () => {

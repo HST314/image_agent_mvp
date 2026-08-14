@@ -94,6 +94,7 @@ class AdvanceRequest(StrictRequest):
     final_approved: bool = False
     task_approved: bool = False
     skill_action: Literal["approve", "retry"] | None = None
+    category_action: Literal["approve", "retry"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=128)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
@@ -112,6 +113,7 @@ class QualityDispositionRequest(StrictRequest):
 class BranchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
     name: str | None = Field(default=None, min_length=2, max_length=64, pattern=BRANCH_NAME_PATTERN)
+    mode: Literal["fork_after", "rerun_stage"] = "rerun_stage"
 
 class BranchSwitchRequest(StrictRequest):
     checkpoint_id: str = Field(pattern=r"^checkpoint_[0-9a-f]{24}$")
@@ -207,6 +209,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         task_approved=body.task_approved,
         actor=body.actor,
         skill_action=body.skill_action,
+        category_action=body.category_action,
     )
 
 
@@ -241,6 +244,10 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
 
 
 def _job_operation(body: AdvanceRequest) -> str:
+    if body.category_action == "retry":
+        return "重新匹配品类约束"
+    if body.category_action == "approve":
+        return "确认品类约束"
     if body.skill_action == "retry":
         return "重新调用两库"
     if body.skill_action == "approve":
@@ -265,10 +272,14 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
     """仅把生产快照已有等待原因映射为 UI 动作，不执行或替代状态迁移。"""
     if manifest.get("failed_step"):
         error = manifest["failed_step"].get("error", {})
+        if error.get("category") == "content_moderation":
+            return ["edit_rework", "abandon"]
         return ["retry"] if error.get("retryable", False) else []
     if snapshot.get("completed"):
         return ["inspect", "branch"]
     phase = snapshot.get("phase")
+    if phase == "waiting_category_approval":
+        return ["approve_category_constraint", "retry_category_constraint"]
     if phase == "waiting_clarification":
         return ["answer_clarification"]
     if phase == "waiting_skill_approval":
@@ -283,8 +294,20 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
         return ["submit_human_tune"]
     if phase == "waiting_reinspection":
         return ["resume_quality_inspection"]
+    recovery = {
+        "category_approved": "start_clarification",
+        "ready_to_draft": "build_taskbook",
+        "task_approved": "prepare_style_direction",
+        "skill_approved_pending_render": "render_candidates",
+        "candidate_generation_completed": "choose_master",
+        "master_selected": "start_quality_inspection",
+        "ready_for_quality_inspection": "start_quality_inspection",
+        "calibration_completed": "open_final_approval",
+    }
+    if snapshot and phase in recovery:
+        return [recovery[phase], "branch"]
     if snapshot:
-        return ["resume", "branch"]
+        return ["branch"]
     return []
 
 
@@ -647,8 +670,10 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
         def execute() -> dict[str, Any]:
             store = _store(project_id)
             with store.lock():
-                store.branch_from(body.checkpoint, name=body.name)
-            return _project_view(store)
+                branch = store.branch_from(body.checkpoint, name=body.name, mode=body.mode)
+                pointer = store.manifest()["current_checkpoint"]
+            return {"created": True, "project_id": store.project_id, "branch": branch,
+                    "checkpoint_id": pointer["checkpoint_id"], "mode": body.mode}
 
         return await asyncio.to_thread(execute)
     except Exception as exc:
@@ -719,8 +744,11 @@ async def project_settings_schema(project_id: str) -> dict[str, Any]:
         store = _store(project_id)
         current = json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
         schema = RuntimePolicy.model_json_schema()
-        properties = schema["properties"]
+        properties = {name: schema["properties"][name] for name in RuntimePolicy.CONSUMERS
+                      if name != "skill_invocation"}
         for name, consumer in RuntimePolicy.CONSUMERS.items():
+            if name == "skill_invocation":
+                continue
             properties[name]["consumer"] = consumer
             properties[name]["effect"] = "new_project_or_confirmed_revision"
         return {"schema_version": "1", "scope": "new_project_or_confirmed_revision",

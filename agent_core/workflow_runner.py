@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -54,14 +55,16 @@ class RunnerOptions:
     task_approved: bool = False
     actor: str | None = None
     skill_action: Literal["approve", "retry"] | None = None
+    category_action: Literal["approve", "retry"] | None = None
 
 
 class WorkflowRunner:
     """Run registered real handlers and checkpoint every successful boundary."""
 
-    ORDER = ("intake_clarify", "confirmation_build", "initial_candidate_generation",
+    ORDER = ("category_constraint", "intake_clarify", "confirmation_build", "initial_candidate_generation",
              "master_candidate_selection", "self_check_iteration", "human_prompt_iteration", "final_approval")
     DOMAIN_TARGET = {
+        "category_constraint": DomainState.TASK,
         "intake_clarify": DomainState.CLARIFICATION,
         "confirmation_build": DomainState.TASK_APPROVAL,
         "initial_candidate_generation": DomainState.FIVE_RENDER,
@@ -88,6 +91,7 @@ class WorkflowRunner:
         self.workflow = RecoverableWorkflow(store)
         self.provider_assets = ProviderImageAdapter(store)
         self.handlers: dict[str, Handler] = {
+            "category_constraint": self._category_constraint,
             "intake_clarify": self._clarify, "confirmation_build": self._confirmation,
             "initial_candidate_generation": self._candidates, "master_candidate_selection": self._selection,
             "self_check_iteration": self._self_check, "human_prompt_iteration": self._human_rework,
@@ -97,7 +101,7 @@ class WorkflowRunner:
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
         phase = snapshot.get("phase")
-        if phase in {"waiting_human_approval", "waiting_clarification", "waiting_master_selection",
+        if phase in {"waiting_category_approval", "waiting_human_approval", "waiting_clarification", "waiting_master_selection",
                      "waiting_skill_approval", "skill_approved_pending_render"}:
             return str(snapshot.get("state"))
         if phase in {"additional_rounds_approved", "waiting_reinspection"}:
@@ -145,6 +149,121 @@ class WorkflowRunner:
             if only_state or data.get("waiting") or target == "final_approval": return data
             target = self.next_state(data)
 
+    def _load_category_skill(self, task: ImageTaskCard, *, excluded: set[str] | None = None):
+        """Resolve the category library before clarification, with safe generic fallback."""
+        from skills.category_library_adapter import CategoryLibraryAdapter
+        from skills.category_loader import CategorySkillLoader
+
+        lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
+        generic_index = Path(__file__).parent.parent / "skills/category_skills/index.json"
+        # An explicit task-card category is authoritative. Advertising-library
+        # inference is only used when no category has been selected yet.
+        if task.category_ref is not None:
+            return CategorySkillLoader(generic_index).load_for_task(task), 0
+        try:
+            match = CategoryLibraryAdapter(lib_path).load_for_task(
+                task,
+                exclude_category_ids=excluded or set(),
+                allow_unmatched=bool(excluded),
+            )
+        except (FileNotFoundError, UnicodeError, json.JSONDecodeError) as exc:
+            from uuid import uuid4
+            raise ResourceError(
+                "RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_CORRUPT",
+                str(lib_path), f"trace_{uuid4().hex}",
+            ) from exc
+        if match:
+            return match.skill, match.score
+        return CategorySkillLoader(generic_index).load_for_task(task), 0
+
+    @staticmethod
+    def _category_unknowns(task: ImageTaskCard, skill: Any) -> dict[str, Any]:
+        """Turn approved category requirements into deterministic clarification blockers."""
+        known_text = json.dumps({
+            "deliverable_goal": task.deliverable_goal,
+            "usage_context": task.usage_context,
+            "known_facts": task.known_facts,
+        }, ensure_ascii=False)
+        unknowns = dict(task.unknowns)
+        for item in skill.required_questions:
+            if str(item.field) == "asset_rules" and not task.asset_inputs:
+                continue
+            if str(item.field) in task.known_facts:
+                continue
+            if item.question and item.question in known_text:
+                continue
+            field = str(item.field)
+            unknowns.setdefault(field, {
+                "question": item.question,
+                "label": item.question,
+                "blocking": bool(item.blocks_generation),
+                "has_safe_default": not bool(item.blocks_generation),
+                "impact": "该品类的制作、交付或验收依赖此信息。",
+                "evidence": f"广告品类库：{skill.display_name or skill.category_id}",
+                "options": [
+                    {"label": "现在补充（请注明）", "description": f"提供“{item.question}”的可执行内容"},
+                    {"label": "采用明确默认（请注明）", "description": "写明经人工确认的保守默认值"},
+                ],
+            })
+        return unknowns
+
+    def _category_constraint(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        """Match, version and optionally approve category constraints before clarification."""
+        from agent_core.models import CategorySkill
+
+        task = ImageTaskCard.model_validate(data["task_card"])
+        action = options.get("category_action")
+        actor = options.get("actor")
+        current = data.get("category_constraint_current") or {}
+        history = [dict(item) for item in data.get("category_constraint_history", [])]
+
+        if data.get("phase") == "waiting_category_approval" and action == "approve":
+            if not actor:
+                raise ValueError("品类约束放行需要操作者身份。")
+            history[-1] = {**history[-1], "decision": "approved", "decided_by": actor}
+            current = history[-1]
+            task = task.model_copy(update={"unknowns": self._category_unknowns(
+                task, CategorySkill.model_validate(current["skill"]),
+            )})
+            self.store.events.append("category_constraint_approved", actor=actor,
+                                     version_id=current["version_id"])
+            return {"category_constraint_current": current, "category_constraint_history": history,
+                    "category_constraint_approval": {"version_id": current["version_id"], "actor": actor},
+                    "task_card": task.model_dump(mode="json"), "waiting": False,
+                    "phase": "category_approved"}
+        if data.get("phase") == "waiting_category_approval" and action is None:
+            return {"waiting": True, "phase": "waiting_category_approval"}
+        if action not in {None, "retry"}:
+            raise ValueError("当前品类约束处置动作无效。")
+        if action == "retry" and not actor:
+            raise ValueError("品类约束换版需要操作者身份。")
+
+        excluded = {str(current.get("category_id"))} if action == "retry" and current.get("category_id") else set()
+        skill, score = self._load_category_skill(task, excluded=excluded)
+        if action == "retry" and history:
+            history[-1] = {**history[-1], "decision": "rejected", "decided_by": actor}
+        version_number = len(history) + 1
+        decision = "auto_approved" if self.policy.category_constraint.release == "auto" else "pending"
+        version = {
+            "version_id": f"category-constraint-v{version_number}", "version": version_number,
+            "category_id": skill.category_id, "category_name": skill.display_name or "通用视觉交付",
+            "score": score, "decision": decision, "skill": skill.model_dump(mode="json"),
+            "constraint_hash": content_hash(skill.model_dump(mode="json")),
+        }
+        history.append(version)
+        self.store.events.append("category_constraint_matched", version_id=version["version_id"],
+                                 category_id=skill.category_id, score=score,
+                                 release=self.policy.category_constraint.release)
+        if self.policy.category_constraint.release == "manual":
+            return {"category_constraint_current": version, "category_constraint_history": history,
+                    "category_constraint_approval": None, "waiting": True,
+                    "phase": "waiting_category_approval"}
+        task = task.model_copy(update={"unknowns": self._category_unknowns(task, skill)})
+        return {"category_constraint_current": version, "category_constraint_history": history,
+                "category_constraint_approval": {"version_id": version["version_id"], "actor": "system:auto"},
+                "task_card": task.model_dump(mode="json"), "waiting": False,
+                "phase": "category_approved"}
+
     @staticmethod
     def _advance_domain(data: dict[str, Any], target: DomainState) -> None:
         """Advance every production handler through the canonical graph."""
@@ -160,6 +279,12 @@ class WorkflowRunner:
 
     def _clarify(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
+        category = (data.get("category_constraint_current") or {}).get("skill")
+        if category:
+            from agent_core.models import CategorySkill
+            task = task.model_copy(update={
+                "unknowns": self._category_unknowns(task, CategorySkill.model_validate(category)),
+            })
         fingerprints = set(data.get("previous_fingerprints", []))
         already_asked = int(data.get("clarification_asked_count", 0))
         transcript = list(data.get("clarification_transcript", []))
@@ -186,9 +311,18 @@ class WorkflowRunner:
         else:
             card = self.gateway.call("intake_clarify", ModelRole.REASONING_LLM,
                 lambda route: generate_question_card(task, self._text(route), previous_fingerprints=fingerprints, already_asked=already_asked, error_recorder=lambda e: self.store.events.append(**{"event_type": "model_parse_failed", **e})),
-                messages=[{"role":"user","content":"结合完整多轮问答重新分析；可继续提问，确认理解充分时返回 0 问。"}],
-                variables={"task":task.model_dump(mode="json"), "clarification_transcript":transcript},
+                messages=[{"role":"user","content":"结合已批准的广告品类约束与完整多轮问答重新分析；品类阻塞项未闭合时必须提问，只有完整时才能返回 0 问。"}],
+                variables={"task":task.model_dump(mode="json"), "clarification_transcript":transcript,
+                           "category_constraint": data.get("category_constraint_current")},
                 template_id="clarification", template_version="2", input_refs=[r.ref_id for r in task.source_refs])
+        # The model cannot waive deterministic category blockers. If it returns
+        # zero questions, synthesize the next bounded question card locally.
+        if not card.questions and self._blocking_unknowns(task):
+            card = generate_question_card(
+                task, previous_fingerprints=fingerprints, already_asked=already_asked,
+                total_budget=self.policy.clarification_total_budget,
+                max_auto_questions=self.policy.max_auto_questions,
+            )
         if card.questions:
             fingerprints.update(q.semantic_fingerprint for q in card.questions)
             asked = already_asked + len(card.questions)
@@ -228,6 +362,8 @@ class WorkflowRunner:
                 template_id="confirmation_build", template_version="3", input_refs=[r.ref_id for r in task.source_refs])
             if any(u.risk_level.value == "blocking" for u in doc.default_handling_for_unknowns):
                 raise ValueError("推理模型生成的任务书仍包含阻塞待决项，禁止进入人工批准。")
+            if self._markdown_has_unresolved_items(doc.markdown_body):
+                raise ValueError("任务书正文仍包含待确认或待补充事项，禁止进入人工批准。")
             facts = [SpecificationFact(label=f.field, value=str(f.value), provenance=f.source_ref, status="confirmed") for f in doc.confirmed_facts]
             facts.extend(SpecificationFact(label=u.field, value=u.handling, provenance="reasoning_llm",
                 status="blocking" if u.risk_level.value == "blocking" else "tentative") for u in doc.default_handling_for_unknowns)
@@ -236,6 +372,8 @@ class WorkflowRunner:
         if options.get("edited_markdown") is not None:
             spec = update_specification_from_markdown(spec, options["edited_markdown"])
             markdown = specification_to_markdown(spec)
+        if self._markdown_has_unresolved_items(markdown):
+            raise ValueError("任务书正文仍包含待确认或待补充事项，禁止批准。")
         history = list(data.get("task_revision_history", []))
         raw_task = json.dumps(data.get("task_card"), ensure_ascii=False, sort_keys=True)
         actor = options.get("actor") or "manual-user"
@@ -250,6 +388,8 @@ class WorkflowRunner:
         revision_hash = revision["revision_hash"]
         approved = bool(options.get("task_approved") and options.get("actor"))
         return {"task_specification": spec.model_dump(mode="json"), "task_markdown": markdown,
+                "readiness": {"ready": True, "blocking_items": [],
+                              "category_constraint_hash": (data.get("category_constraint_current") or {}).get("constraint_hash")},
                 "task_revision": revision,
                 "task_revision_history": history,
                 "task_approval": ({"revision_hash": revision_hash, "actor": options["actor"]} if approved else None),
@@ -259,6 +399,14 @@ class WorkflowRunner:
     def _blocking_unknowns(task: ImageTaskCard) -> list[str]:
         return [field for field, value in task.unknowns.items()
                 if isinstance(value, dict) and bool(value.get("blocking")) and not bool(value.get("has_safe_default"))]
+
+    @staticmethod
+    def _markdown_has_unresolved_items(markdown: str) -> bool:
+        """Reject prose that contradicts an empty structured readiness result."""
+        marker = re.compile(r"待确认|待补充|未提供|需后续|尚未明确")
+        negated = re.compile(r"(?:无|没有|不存在).{0,8}(?:待确认|待补充|待决)|(?:待确认|待补充|待决).{0,4}(?:无|：无)")
+        return any(marker.search(line) and not negated.search(line)
+                   for line in str(markdown or "").splitlines())
 
     @staticmethod
     def _answer_record(task: ImageTaskCard, card: QuestionCard, payload: dict[str, Any]) -> tuple[QuestionAnswerRecord, dict[str, str]]:
@@ -295,12 +443,11 @@ class WorkflowRunner:
             task_id=task.task_id, answers=answers), resolved
 
     def _prepare_skill_invocations(self, data: dict[str, Any], *, retry_actor: str | None = None) -> dict[str, Any]:
-        """Call both libraries and persist one immutable, render-ready result version."""
+        """Prepare the post-taskbook style direction; category is already frozen."""
         spec = TaskSpecification.model_validate(data["task_specification"])
         task_card = ImageTaskCard.model_validate(data["task_card"])
         previous = data.get("skill_invocation_current") or {}
         previous_invocations = previous.get("skill_invocations") or data.get("skill_invocations") or {}
-        previous_category_id = previous_invocations.get("category_library", {}).get("category_id")
         previous_style_ids = [
             str(item.get("style_id"))
             for item in previous_invocations.get("style_library", {}).get("selections", [])
@@ -309,40 +456,33 @@ class WorkflowRunner:
         avoidance_context = None
         if retry_actor:
             avoidance_context = {
-                "instruction": "上一版技能调用结果已被人工否决；重新检索时必须避开上一版品类结果和五张风格卡。",
+                "instruction": "上一版艺术风格结果已被人工否决；重新检索时必须避开上一版五张风格卡。",
                 "previous_version_id": previous.get("version_id"),
-                "excluded_category_ids": [previous_category_id] if previous_category_id else [],
+                "excluded_category_ids": [],
                 "excluded_style_ids": previous_style_ids,
                 "actor": retry_actor,
             }
 
-        # 1. 匹配广告品类 Skill
-        from skills.category_library_adapter import CategoryLibraryAdapter
-        lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
-        def load_category():
-            try:
-                excluded_categories = set(avoidance_context["excluded_category_ids"]) if avoidance_context else set()
-                match = CategoryLibraryAdapter(lib_path).load_for_task(
-                    task_card,
-                    exclude_category_ids=excluded_categories,
-                    allow_unmatched=bool(excluded_categories),
-                )
-            except (FileNotFoundError, UnicodeError, json.JSONDecodeError) as exc:
-                from uuid import uuid4
-                raise ResourceError("RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_CORRUPT", str(lib_path), f"trace_{uuid4().hex}") from exc
-            if match:
-                return match.skill
-
-            # The advertising library is an optional specialization boundary.
-            # A valid visual task that has no advertising keyword must keep using
-            # the approved generic skill instead of being treated as a corrupt
-            # runtime resource.
-            from skills.category_loader import CategorySkillLoader
-            generic_index = Path(__file__).parent.parent / "skills/category_skills/index.json"
-            return CategorySkillLoader(generic_index).load_for_task(task_card)
-        category_skill = load_with_policy(load_category, resource=str(lib_path),
-            allow_degradation=self.policy.allow_skill_degradation, fallback=None,
-            emit=lambda detail: self.store.events.append("resource_degraded", **detail))
+        # New projects freeze this before clarification. Legacy checkpoints are
+        # lazily upgraded here so historical branches remain executable.
+        from agent_core.models import CategorySkill
+        category_version = data.get("category_constraint_current") or {}
+        if category_version.get("skill"):
+            approval = data.get("category_constraint_approval") or {}
+            if (not str(category_version.get("version_id", "")).startswith("category-constraint-legacy")
+                    and approval.get("version_id") != category_version.get("version_id")):
+                raise ValueError("品类约束修改后必须重新放行，才能进入艺术风格阶段。")
+            category_skill = CategorySkill.model_validate(category_version["skill"])
+        else:
+            category_skill, score = self._load_category_skill(task_card)
+            category_version = {
+                "version_id": "category-constraint-legacy-v1", "version": 1,
+                "category_id": category_skill.category_id,
+                "category_name": category_skill.display_name or "通用视觉交付",
+                "score": score, "decision": "legacy_auto_approved",
+                "skill": category_skill.model_dump(mode="json"),
+                "constraint_hash": content_hash(category_skill.model_dump(mode="json")),
+            }
 
         # 2. 唯一风格入口：图片只在 VLM 提取边界出现，渲染侧只收到文字。
         from agent_core.models import ConfirmedFact, RiskLevel, SignStatus, TaskConfirmationDoc, UnknownHandling
@@ -487,7 +627,7 @@ class WorkflowRunner:
         version = {
             "version_id": f"skill-invocation-v{version_number}",
             "version": version_number,
-            "decision": "auto_approved" if self.policy.skill_invocation.release == "auto" else "pending",
+            "decision": "auto_approved" if self._style_release() == "auto" else "pending",
             "skill_invocations": skill_invocations,
             "style_selections": style_selections,
             "render_plans": render_plans,
@@ -497,7 +637,7 @@ class WorkflowRunner:
         self.store.events.append(
             "skill_invocation_completed",
             version_id=version["version_id"],
-            release=self.policy.skill_invocation.release,
+            release=self._style_release(),
             previous_version_id=(avoidance_context or {}).get("previous_version_id"),
             excluded_category_ids=(avoidance_context or {}).get("excluded_category_ids", []),
             excluded_style_ids=(avoidance_context or {}).get("excluded_style_ids", []),
@@ -508,7 +648,14 @@ class WorkflowRunner:
             "render_plans": render_plans,
             "skill_invocation_current": version,
             "skill_invocation_history": history,
+            "category_constraint_current": category_version,
         }
+
+    def _style_release(self) -> str:
+        """Prefer the new style gate while honoring persisted legacy manual gates."""
+        if self.policy.style_direction.release == "auto" and self.policy.skill_invocation.release == "manual":
+            return "manual"
+        return self.policy.style_direction.release
 
     def _render_candidates(self, data: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
         """Cross the paid five-render boundary only after the skill gate is released."""
@@ -576,7 +723,7 @@ class WorkflowRunner:
             raise ValueError("当前不在技能调用人工确认阶段。")
 
         if phase == "waiting_skill_approval":
-            if self.policy.skill_invocation.release == "manual" and not action:
+            if self._style_release() == "manual" and not action:
                 return {"waiting": True, "phase": "waiting_skill_approval"}
             if action not in {None, "approve", "retry"}:
                 raise ValueError("技能调用处置动作无效。")
@@ -622,7 +769,7 @@ class WorkflowRunner:
             return self._render_candidates(approved_boundary, prepared)
 
         prepared = self._prepare_skill_invocations(data)
-        if self.policy.skill_invocation.release == "manual":
+        if self._style_release() == "manual":
             return {**prepared, "waiting": True, "phase": "waiting_skill_approval",
                     "skill_invocation_approval": None}
         prepared["skill_invocation_approval"] = {

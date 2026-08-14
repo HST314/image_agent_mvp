@@ -126,7 +126,8 @@ def classify_error(exc: Exception) -> str:
         return "rate_limited"
     if "TIMEOUT" in message or "UNKNOWN" in message:
         return "timeout_unknown"
-    if "MODERATION" in message or "CONTENT_POLICY" in message:
+    if ("MODERATION" in message or "CONTENT_POLICY" in message
+            or "INPUTTEXTSENSITIVECONTENTDETECTED" in message):
         return "content_moderation"
     if "VALIDATION" in name or "JSON" in message or "SCHEMA" in message:
         return "structured_output"

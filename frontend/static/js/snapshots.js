@@ -53,6 +53,11 @@ export function isCreatedBranchView(view, { projectId, branchName }) {
     && view.manifest?.current_checkpoint?.branch === branchName;
 }
 
+export function isCreatedBranchReceipt(receipt, { projectId, branchName }) {
+  return receipt?.created === true && receipt?.project_id === projectId
+    && receipt?.branch === branchName && Boolean(receipt?.checkpoint_id);
+}
+
 /**
  * “创建即切换”的单请求事务。
  *
@@ -65,9 +70,21 @@ export async function createSnapshotBranch(
 ) {
   let createError;
   try {
-    const created = await branchFrom(projectId, { checkpoint, name: branchName });
+    const created = await branchFrom(projectId, {
+      checkpoint, name: branchName, mode: 'rerun_stage',
+    });
+    if (isCreatedBranchReceipt(created, { projectId, branchName })) {
+      try {
+        const view = await getProject(projectId);
+        return { view, receipt: created, reconciled: false, refreshFailed: false };
+      } catch (refreshError) {
+        return { view: null, receipt: created, reconciled: false,
+          refreshFailed: true, refreshError };
+      }
+    }
+    // Read compatibility with servers from before the receipt contract.
     if (isCreatedBranchView(created, { projectId, branchName })) {
-      return { view: created, reconciled: false };
+      return { view: created, receipt: null, reconciled: false, refreshFailed: false };
     }
     createError = new Error('创建接口未返回完整的新分支工程视图。');
   } catch (error) {
@@ -77,7 +94,7 @@ export async function createSnapshotBranch(
   try {
     const current = await getProject(projectId);
     if (isCreatedBranchView(current, { projectId, branchName })) {
-      return { view: current, reconciled: true };
+      return { view: current, receipt: null, reconciled: true, refreshFailed: false };
     }
   } catch {
     // 保留创建请求的原始错误；GET 仅用于确认结果，不覆盖首要故障信息。
@@ -350,6 +367,22 @@ function renderFinal(container, projectId, snapshot) {
 function renderSnapshotContent(container, projectId, item) {
   const snapshot = item.snapshot || {};
   let rendered = false;
+  if (item.state === 'category_constraint') {
+    const current = snapshot.category_constraint_current || {};
+    const skill = current.skill || {};
+    const categoryOnly = {
+      skill_invocations: { category_library: {
+        category_id: current.category_id,
+        category_name: current.category_name,
+        description: skill.prompt_injection?.category_description,
+        production_constraints: skill.prompt_injection?.production_constraints || [],
+        visual_rules: skill.prompt_injection?.visual_rules || [],
+        forbidden_elements: skill.prompt_injection?.forbidden_elements || [],
+        review_checks: skill.review_checks || [],
+      }, style_library: { selections: [] } },
+    };
+    rendered = renderSkillInvocations(container, projectId, categoryOnly);
+  }
   if (item.state === 'intake_clarify') rendered = renderTaskSummary(container, snapshot);
   if (item.state === 'confirmation_build' && snapshot.task_markdown) {
     const document = el('div', { class: 'markdown-body snapshot-note' });
@@ -391,7 +424,7 @@ export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
   const label = stateLabel(item.state);
   const dialog = el('dialog', { class: 'dialog snapshot-dialog', 'aria-labelledby': 'snapshot-dialog-title' });
   const close = el('button', { type: 'button', class: 'btn btn--secondary', text: '关闭' });
-  const branch = el('button', { type: 'button', class: 'btn btn--primary', text: '从此处创建分支' });
+  const branch = el('button', { type: 'button', class: 'btn btn--primary', text: '重跑此阶段并创建分支' });
   const body = el('div', { class: 'dialog__body snapshot-dialog__body' });
   body.append(el('div', { class: 'snapshot-meta' }, [
     el('span', { class: 'badge badge--info', text: '只读快照' }),
@@ -401,7 +434,7 @@ export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
   dialog.append(
     el('div', { class: 'dialog__head' }, [el('div', {}, [el('h2', { id: 'snapshot-dialog-title', text: `${label} · 历史快照` }), el('p', { text: '回看不会改变当前工程进度。' })])]),
     body,
-    el('div', { class: 'dialog__foot snapshot-dialog__foot' }, [el('small', { text: '创建后会自动切换到新分支，可从这里继续创作。' }), close, branch]),
+    el('div', { class: 'dialog__foot snapshot-dialog__foot' }, [el('small', { text: '新分支会回到该阶段的输入边界并重新执行；原分支保持不变。' }), close, branch]),
   );
   close.addEventListener('click', () => dialog.close());
   branch.addEventListener('click', async () => {
@@ -415,13 +448,18 @@ export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
         branchName,
       });
       dialog.close();
-      toast(result.reconciled
+      toast(result.refreshFailed
+        ? `新分支已创建，但界面刷新失败，请手动刷新工程。`
+        : result.reconciled
         ? `已核对并切换到从${label}阶段创建的新分支。`
-        : `已从${label}阶段创建并切换到新分支。`);
-      onBranchCreated?.(result.view);
+        : `已重跑${label}阶段并切换到新分支。`);
+      if (result.view) {
+        try { onBranchCreated?.(result.view); }
+        catch { toast('分支已创建，界面渲染失败，请手动刷新工程。', 'error'); }
+      }
     } catch (error) {
       branch.disabled = false;
-      branch.textContent = '从此处创建分支';
+      branch.textContent = '重跑此阶段并创建分支';
       toast(error.message, 'error');
     }
   });

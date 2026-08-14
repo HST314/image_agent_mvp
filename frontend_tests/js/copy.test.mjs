@@ -157,7 +157,8 @@ test('SDK/网络类英文异常按模式归类，原文不上屏', () => {
   assert.equal(errorText('Connection error.'), '无法连接模型服务，请稍后重试。');
   assert.equal(errorText('Error code: 429 - rate limit reached'), '模型服务繁忙（触发限流），请稍后重试。');
   assert.equal(errorText('HTTP 401 Unauthorized'), '模型服务鉴权失败，请联系管理员检查密钥配置。');
-  assert.equal(errorText('503 Service Unavailable'), '模型服务暂不可用，请稍后重试。');
+  assert.equal(errorText('503 Service Unavailable'), '服务暂不可用；当前操作的已提交结果请刷新后核对。');
+  assert.equal(errorText('InputTextSensitiveContentDetected'), '输入文案触发模型内容审核，请修改质检建议或任务文案后再执行。');
 });
 
 test('中文消息原样保留；未识别英文走通用兜底', () => {

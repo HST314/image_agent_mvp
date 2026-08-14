@@ -104,17 +104,20 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
 
 function stageTitle(derived) {
   return {
-    clarify: '需求澄清', taskbook: '创作任务书', skill_approval: '技能调用人工把关',
+    category: '品类约束', clarify: '需求澄清', taskbook: '创作任务书',
+    style_processing: '艺术风格准备', skill_approval: '艺术风格人工把关',
     gallery: '选择主图', calibration: '画面自检与人工放行',
+    quality_pending: '主图已选，准备质检',
     disposition: '自动质检已达上限', annotate: '圈画微调', reinspection: '等待重新质检',
     resume_quality: '追加质检已确认', final: '最终确认', failed: '流程已暂停', terminated: '已终止且不交付',
-    completed: '最终交付', resume: '继续工作流', empty: '工程已保存',
+    completed: '最终交付', empty: '工程已保存',
   }[derived.stage] || '当前决策';
 }
 
 function stageSubtitle(derived) {
   if (derived.stage === 'taskbook') return '请通读任务目标与约束；确认后开始生成候选图';
-  if (derived.stage === 'skill_approval') return '确认两库结果后才会生成五张主图；不合适可换一版';
+  if (derived.stage === 'category') return '先确认广告品类库匹配及必需输入，再进入需求澄清';
+  if (derived.stage === 'skill_approval') return '确认五种艺术风格后才会生成五张主图；不合适可换一版';
   if (derived.stage === 'gallery') return '对比五个视觉方向，放大查看细节后选择一个作为主图';
   if (derived.stage === 'disposition') return '自动质检达到配置上限；最高分不会冒充通过，请选择分流方式';
   if (derived.stage === 'final') return '确认后冻结交付并生成说明；此后任何修改都将创建新修订';
@@ -127,6 +130,10 @@ function renderStage(panel, view, derived, ctx) {
   const { projectId, actor, refresh, jobRunner } = ctx;
   const stage = derived.stage;
 
+  if (stage === 'category') {
+    renderCategoryConstraint(panel, view, ctx);
+    return;
+  }
   if (stage === 'clarify') {
     renderClarify(panel, view, { projectId, jobRunner });
     return;
@@ -137,6 +144,11 @@ function renderStage(panel, view, derived, ctx) {
   }
   if (stage === 'skill_approval') {
     renderSkillApproval(panel, view, ctx);
+    return;
+  }
+  if (stage === 'style_processing') {
+    renderRecoveryStage(panel, derived, jobRunner, '正在准备艺术风格',
+      '系统将基于已确认任务书与品类约束筛选五种可执行风格。');
     return;
   }
   if (stage === 'gallery') {
@@ -153,6 +165,10 @@ function renderStage(panel, view, derived, ctx) {
     confirmButton.addEventListener('click', () => {
       if (selectedId) jobRunner.start({ selected_id: selectedId }, { intent: 'select' });
     });
+    return;
+  }
+  if (stage === 'quality_pending') {
+    renderSelectedMasterContext(panel, view, derived, jobRunner);
     return;
   }
   if (stage === 'calibration') {
@@ -207,16 +223,89 @@ function renderStage(panel, view, derived, ctx) {
     renderDeliveryStage(panel, view, ctx);
     return;
   }
-  // empty（T10：defer_run 创建后未启动/启动失败）与 resume（有检查点可继续）
+  // empty（T10：defer_run 创建后未启动/启动失败）
   if (stage === 'empty') {
     const btn = el('button', { type: 'button', class: 'btn btn--primary', text: '启动创作流程' });
     btn.addEventListener('click', () => jobRunner.start({}, { intent: 'bootstrap', operation: '初始化工程' }));
     panel.append(stateBlock('empty', '工程已创建', '启动后系统开始理解任务书并生成澄清问题，进度在上方状态区实时显示。', btn));
     return;
   }
-  const btn = el('button', { type: 'button', class: 'btn btn--primary', text: '继续工作流' });
-  btn.addEventListener('click', () => jobRunner.start({}));
-  panel.append(stateBlock('empty', stateLabel(snapshot.state) || '工程已保存', '从当前检查点继续推进。若外部模型或密钥不可用，系统会保存真实错误供恢复。', btn));
+  panel.append(stateBlock('error', '当前阶段无法显示', '请从上方历史进度选择明确阶段创建分支。'));
+}
+
+function renderRecoveryStage(panel, derived, jobRunner, title, description) {
+  const recoverable = !derived.processing
+    && (derived.actions || []).some((action) => !['branch'].includes(action));
+  const btn = recoverable
+    ? el('button', { type: 'button', class: 'btn btn--primary', text: '恢复此阶段' })
+    : null;
+  btn?.addEventListener('click', () => jobRunner.start({}));
+  panel.append(stateBlock(derived.processing ? 'loading' : 'empty', title, description, btn));
+}
+
+function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
+  const snapshot = view.snapshot || {};
+  const current = snapshot.category_constraint_current || {};
+  const skill = current.skill || {};
+  const required = Array.isArray(skill.required_questions) ? skill.required_questions : [];
+  panel.append(el('div', { class: 'skill-gate__head' }, [
+    el('div', {}, [
+      el('span', { class: `badge ${snapshot.phase === 'waiting_category_approval' ? 'badge--warning' : 'badge--success'}`,
+        text: snapshot.phase === 'waiting_category_approval' ? '等待人工放行' : '已匹配' }),
+      el('h3', { text: current.category_name || '广告品类约束准备中' }),
+      el('p', { text: `匹配版本 ${current.version || 1} · 约束会进入后续澄清与任务书门禁。` }),
+    ]),
+  ]));
+  if (required.length) {
+    const list = el('ul', { class: 'inspection-findings' });
+    required.forEach((item) => list.append(el('li', {
+      text: `${item.question}${item.blocks_generation ? '（阻塞项）' : '（可采用明确默认）'}`,
+    })));
+    panel.append(el('h4', { text: '该品类必需输入' }), list);
+  }
+  if (snapshot.phase !== 'waiting_category_approval') {
+    renderRecoveryStage(panel, {
+      actions: view.capabilities || [],
+      processing: Boolean(view.active_job),
+    }, jobRunner,
+      '品类约束已通过', '系统将携带这些约束进入需求澄清。');
+    return;
+  }
+  const actorState = skillApprovalActorState(actor);
+  const approve = el('button', { type: 'button', class: 'btn btn--primary', text: '确认品类约束并继续' });
+  const retry = el('button', { type: 'button', class: 'btn btn--secondary', text: '重新匹配品类' });
+  approve.disabled = retry.disabled = !actorState.ready;
+  approve.addEventListener('click', () => jobRunner.start(
+    { category_action: 'approve', actor: actorState.actor },
+    { intent: 'category-approve', operation: '确认品类约束' },
+  ));
+  retry.addEventListener('click', () => jobRunner.start(
+    { category_action: 'retry', actor: actorState.actor },
+    { intent: 'category-retry', operation: '重新匹配品类约束' },
+  ));
+  panel.append(el('p', { class: actorState.ready ? 'skill-gate__actor' : 'field-error',
+    role: actorState.ready ? 'status' : 'alert', text: actorState.message }));
+  panel.append(el('div', { class: 'button-row' }, [retry, approve]));
+}
+
+function renderSelectedMasterContext(panel, view, derived, jobRunner) {
+  const snapshot = view.snapshot || {};
+  const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
+  if (candidates.length) {
+    const grid = el('div', { class: 'snapshot-gallery', role: 'list', 'aria-label': '已生成的五张候选图' });
+    candidates.forEach((asset, index) => {
+      const selected = snapshot.selected_master?.candidate_id === (asset.id || `candidate-${index + 1}`);
+      const figure = el('figure', { class: selected ? 'is-selected' : '', role: 'listitem' });
+      const url = api.assetUrl(view.project_id, asset);
+      if (url) figure.append(el('img', { src: url, alt: `${selected ? '已选主图' : '候选图'} ${index + 1}`, loading: 'lazy' }));
+      figure.append(el('figcaption', { text: `${selected ? '已选 · ' : ''}方向 ${index + 1}` }));
+      grid.append(figure);
+    });
+    panel.append(grid);
+  }
+  renderRecoveryStage(panel, derived, jobRunner,
+    derived.processing ? '正在确认主图并开始质检' : '上次质检推进已中断',
+    derived.processing ? '候选图保持只读，质检完成后会自动刷新。' : '已保留五图与主图选择，可从该边界恢复质检。');
 }
 
 function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
@@ -226,7 +315,7 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
   panel.append(el('div', { class: 'skill-gate__head' }, [
     el('div', {}, [
       el('span', { class: 'badge badge--warning', text: '等待人工放行' }),
-      el('h3', { text: `技能调用版本 ${current.version || history.length || 1}` }),
+      el('h3', { text: `艺术风格版本 ${current.version || history.length || 1}` }),
       el('p', { text: `已保留 ${history.length} 个版本供审计；当前结果确认前不会发起五图生成。` }),
     ]),
   ]));
@@ -270,7 +359,7 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
   panel.append(el('div', { class: 'skill-gate__actions' }, [
     el('div', {}, [
       el('strong', { text: '人工门禁' }),
-      el('p', { text: 'Retry 会携带上一版的品类与五张风格卡作为排除上下文。' }),
+      el('p', { text: '换版只会重选五张艺术风格卡；已批准的品类约束保持不变。' }),
       el('p', {
         id: actorHelpId,
         class: actorState.ready ? 'skill-gate__actor' : 'field-error',
@@ -317,11 +406,20 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
   layout.append(visual, details);
   panel.append(layout);
 
+  const moderationFailure = view.manifest?.failed_step?.error?.category === 'content_moderation';
+  if (moderationFailure) {
+    panel.append(stateBlock('error', '输入文案触发模型内容审核',
+      '请修改质检建议或任务文案后再执行；系统不会自动重试。'));
+  }
+
   const actionSection = el('div', { class: 'decision-section' }, [
     el('div', {}, [el('h3', { text: '选择下一步' }), el('p', { text: '建议优先执行自检建议；所有决定都会写入审计记录。' })]),
   ]);
   const row = el('div', { class: 'decision-actions' });
-  for (const action of MANUAL_ACTIONS) {
+  const visibleActions = moderationFailure
+    ? MANUAL_ACTIONS.filter((action) => ['edit_and_execute', 'end'].includes(action.id))
+    : MANUAL_ACTIONS;
+  for (const action of visibleActions) {
     const btn = el('button', {
       type: 'button',
       class: `btn ${action.primary ? 'btn--primary' : action.danger ? 'btn--danger' : 'btn--secondary'}`,

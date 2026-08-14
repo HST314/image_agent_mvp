@@ -19,6 +19,13 @@ export const hasCJK = (text) => CJK_RE.test(String(text ?? ''));
 /* ---------- 工程阶段（snapshot.phase） ---------- */
 
 const PHASE_LABELS = {
+  waiting_category_approval: '等待品类约束人工确认',
+  category_approved: '品类约束已确认',
+  ready_for_category_match: '等待重新匹配品类',
+  ready_for_clarification: '等待重新澄清',
+  ready_for_taskbook: '等待重新生成任务书',
+  ready_for_style_direction: '等待重新准备艺术风格',
+  ready_for_quality_inspection: '等待重新质检',
   waiting_clarification: '等待澄清回答',
   waiting_human_approval: '等待人工确认',
   waiting_skill_approval: '等待技能调用人工确认',
@@ -161,6 +168,8 @@ const POLICY_KEY_LABELS = {
   'self_check.max_rounds': '最大自检轮次',
   'self_check.stop_early_on_pass': '通过后提前停止',
   'self_check.release': '放行方式',
+  'category_constraint.release': '品类约束放行方式',
+  'style_direction.release': '艺术风格放行方式',
   'skill_invocation.release': '技能调用放行方式',
   candidate_concurrency: '候选图并发数',
   default_output_size: '默认出图尺寸',
@@ -178,6 +187,8 @@ const POLICY_KEY_LABELS = {
 const POLICY_ENUM_LABELS = {
   'self_check.termination': { fix: '固定轮次', solo: '按质量判定' },
   'self_check.release': { auto: '自动放行', manual: '人工确认放行' },
+  'category_constraint.release': { auto: '自动放行', manual: '人工确认后继续' },
+  'style_direction.release': { auto: '自动放行', manual: '人工确认后继续' },
   'skill_invocation.release': { auto: '后台自动继续', manual: '人工确认后继续' },
   response_format: { url: 'URL 链接', b64_json: 'Base64 数据' },
 };
@@ -191,7 +202,9 @@ const POLICY_KEY_HELP = {
   'self_check.max_rounds': '自检最多进行的轮数',
   'self_check.stop_early_on_pass': '自检达标即提前结束',
   'self_check.release': '自检通过后自动放行，或需人工确认后放行',
-  'skill_invocation.release': '只控制两库调用后的独立门禁，不影响后续画面自检模式',
+  'category_constraint.release': '控制广告品类库匹配后是否需要人工确认',
+  'style_direction.release': '控制五种艺术风格筛选后是否需要人工确认',
+  'skill_invocation.release': '旧工程兼容字段；新工程使用品类约束与艺术风格两个独立开关',
   candidate_concurrency: '同时生成的候选图数量（1–5）',
   default_output_size: '如 1K / 2K / 4K，或具体像素（如 2560x1440）',
   watermark: '生成图是否带水印',
@@ -302,6 +315,7 @@ export function jobStatusLabel(status) {
 /* 后端英文错误码 → 中文提示。匹配方式为"包含"（兼容 "CODE:detail" 形态），
  * 按从具体到通用的顺序声明。 */
 const ERROR_CODE_MAP = [
+  ['INPUTTEXTSENSITIVECONTENTDETECTED', '输入文案触发模型内容审核，请修改质检建议或任务文案后再执行。'],
   ['HUMAN_TUNE_NOT_ACTIVE', '当前不在人工微调阶段，请刷新后重试。'],
   ['QUALITY_LIMIT_NOT_REACHED', '尚未达到质检轮次上限，暂不能执行该操作。'],
   ['QUALITY_TUNE_NOT_AVAILABLE', '该质检检查点不完整，无法进入人工微调。'],
@@ -362,8 +376,8 @@ const ERROR_PATTERN_MAP = [
   [/rate[ _-]?limit|\b429\b/i, '模型服务繁忙（触发限流），请稍后重试。'],
   [/\b401\b|\b403\b|unauthorized|forbidden|invalid api key/i, '模型服务鉴权失败，请联系管理员检查密钥配置。'],
   [/econn|connection|connect|network|socket|dns/i, '无法连接模型服务，请稍后重试。'],
-  [/\b5\d{2}\b|unavailable|overloaded/i, '模型服务暂不可用，请稍后重试。'],
   [/content[ _-]?filter|moderation|safety/i, '内容未通过审核，请调整后重试。'],
+  [/\b5\d{2}\b|unavailable|overloaded/i, '服务暂不可用；当前操作的已提交结果请刷新后核对。'],
 ];
 
 const ERROR_FALLBACK = '服务暂时无法完成该操作，请稍后重试。';

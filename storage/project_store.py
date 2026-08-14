@@ -398,7 +398,75 @@ class ProjectStore:
         self.events.append("retry_started", branch=branch, state=failure["state"], from_checkpoint=pointer["checkpoint_id"])
         return execute(failure["state"], self.resume())
 
-    def branch_from(self, checkpoint_id: str, *, name: str | None = None) -> str:
+    def _rewind_stage(self, state: str, source: dict[str, Any]) -> dict[str, Any]:
+        """Return the stage input boundary for an explicit rerun branch."""
+        data = dict(source)
+        if state in {"category_constraint", "intake_clarify"}:
+            original = self.root / "intake_task.json"
+            if original.is_file():
+                data["task_card"] = json.loads(original.read_text(encoding="utf-8"))
+        downstream = {
+            "category_constraint": {
+                "category_constraint_current", "category_constraint_history", "category_constraint_approval",
+                "question_card", "clarification_transcript", "previous_fingerprints",
+                "clarification_asked_count", "clarification_remaining_budget",
+            },
+            "intake_clarify": {
+                "question_card", "clarification_transcript", "previous_fingerprints",
+                "clarification_asked_count", "clarification_remaining_budget",
+            },
+            "confirmation_build": {"task_specification", "task_markdown", "task_revision",
+                                   "task_revision_history", "task_approval", "readiness"},
+            "initial_candidate_generation": {"skill_invocations", "style_selections", "render_plans",
+                                             "skill_invocation_current", "skill_invocation_history",
+                                             "skill_invocation_approval", "candidates"},
+            "master_candidate_selection": {"master_asset", "selected_master"},
+        }
+        order = ["category_constraint", "intake_clarify", "confirmation_build",
+                 "initial_candidate_generation", "master_candidate_selection"]
+        common_after_master = {"asset", "current_asset", "inspection_asset", "inspection", "round",
+                               "best_asset", "available_actions", "calibration_status", "termination_satisfied",
+                               "termination_reason", "latest_checked_asset_hash", "selected_policy",
+                               "human_tune_mode", "final_asset", "frozen_delivery", "delivery_envelope",
+                               "delivery_files", "completed"}
+        if state not in order and state not in {"self_check_iteration", "human_prompt_iteration", "final_approval"}:
+            raise ValueError("该历史阶段暂不支持重跑。")
+        start = order.index(state) if state in order else len(order)
+        for stage in order[start:]:
+            for key in downstream.get(stage, set()):
+                data.pop(key, None)
+        if state in order and order.index(state) <= order.index("master_candidate_selection"):
+            for key in common_after_master:
+                data.pop(key, None)
+        data.update(state=state, waiting=False)
+        if state == "category_constraint":
+            data["phase"] = "ready_for_category_match"
+        elif state == "intake_clarify":
+            data["phase"] = "ready_for_clarification"
+        elif state == "confirmation_build":
+            data["phase"] = "ready_for_taskbook"
+        elif state == "initial_candidate_generation":
+            data["phase"] = "ready_for_style_direction"
+        elif state == "master_candidate_selection":
+            if len(data.get("candidates") or []) != 5:
+                raise ValueError("主图选择重跑需要保留完整的 5 张候选图。")
+            data.update(phase="waiting_master_selection", waiting=True)
+        elif state == "self_check_iteration":
+            if not (data.get("master_asset") or data.get("asset")):
+                raise ValueError("画面质检重跑缺少可检查主图。")
+            for key in common_after_master:
+                if key not in {"asset", "current_asset"}:
+                    data.pop(key, None)
+            data.update(phase="ready_for_quality_inspection", waiting=False)
+        elif state == "human_prompt_iteration":
+            data.update(phase="waiting_human_tune", waiting=True, human_tune_mode=True)
+        else:
+            data.update(phase="ready_for_final_approval", waiting=False)
+        data.pop("domain_state", None)
+        return data
+
+    def branch_from(self, checkpoint_id: str, *, name: str | None = None,
+                    mode: str = "fork_after") -> str:
         self._recover_transaction()
         source = self.checkpoints.load(checkpoint_id)
         branches_path = self.root / "branches.json"
@@ -406,9 +474,13 @@ class ProjectStore:
         branch = name or f"branch-{uuid4().hex[:8]}"
         if branch in branches["branches"]:
             raise ValueError("分支名称已存在。")
-        prepared = self.checkpoints.prepare(branch, 1, source["state"], source["data"])
+        if mode not in {"fork_after", "rerun_stage"}:
+            raise ValueError("分支模式无效。")
+        branch_data = (self._rewind_stage(source["state"], source["data"])
+                       if mode == "rerun_stage" else source["data"])
+        prepared = self.checkpoints.prepare(branch, 1, source["state"], branch_data)
         transaction = {"format_version": FORMAT_VERSION, "kind": "branch", "status": "intent",
-                       "branch": branch, "sequence": 1, "state": source["state"], "data": source["data"],
+                       "branch": branch, "sequence": 1, "state": source["state"], "data": branch_data,
                        "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
                        "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id}
         atomic_json(self.root / "transactions/pending.json", transaction)
@@ -419,14 +491,16 @@ class ProjectStore:
             parent_details.update(runtime_policy=policy, runtime_policy_hash=content_hash(policy))
         branches["branches"][branch] = {
             "parent": source["branch"], "from_checkpoint": checkpoint_id, "created_at": _now(),
+            "mode": mode,
             "runtime_policy": policy, "runtime_policy_hash": content_hash(policy),
         }
         atomic_json(branches_path, branches)
         manifest = self.manifest()
-        new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], source["data"], prepared=prepared)
+        new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], branch_data, prepared=prepared)
         manifest.update(current_branch=branch, current_checkpoint={"checkpoint_id": new_id, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}, failed_step=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
-        self.events.append("branch_created", branch=branch, parent=source["branch"], from_checkpoint=checkpoint_id)
+        self.events.append("branch_created", branch=branch, parent=source["branch"],
+                           from_checkpoint=checkpoint_id, mode=mode)
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
         return branch
 

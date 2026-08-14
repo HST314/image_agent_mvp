@@ -9,7 +9,7 @@ from storage.prompt_store import PromptStore
 
 T = TypeVar("T")
 
-@dataclass(frozen=True)
+@dataclass
 class ModelCallError(RuntimeError):
     message: str
     retryable: bool
@@ -36,7 +36,9 @@ class ModelExecutor(Generic[T]):
                 last = exc
                 category, retryable = self.classify(exc)
             if not retryable or attempt == self.max_attempts:
-                raise ModelCallError(str(last) or category, retryable, category, req, trace) from last
+                message = ("输入文案触发模型内容审核，请修改质检建议或任务文案后再执行。"
+                           if category == "content_moderation" else (str(last) or category))
+                raise ModelCallError(message, retryable, category, req, trace) from last
             self.sleeper(self.base_delay * 2 ** (attempt - 1) + self.randomizer(0, self.base_delay))
         raise AssertionError("unreachable")
 
@@ -53,6 +55,12 @@ class ModelExecutor(Generic[T]):
     @staticmethod
     def classify(exc: BaseException) -> tuple[str, bool]:
         if isinstance(exc, (ValueError, TypeError, PermissionError)): return "validation_or_refusal", False
+        provider_text = ModelExecutor._provider_error_text(exc).upper()
+        if any(code in provider_text for code in (
+            "INPUTTEXTSENSITIVECONTENTDETECTED", "CONTENT_FILTER", "CONTENTFILTER",
+            "MODERATION", "SAFETY_VIOLATION", "CONTENT_POLICY",
+        )):
+            return "content_moderation", False
         status = getattr(exc, "status_code", None)
         if status in {400, 401, 403, 404, 422}: return "request_rejected", False
         if status == 429: return "rate_limited_unknown", False
@@ -60,3 +68,16 @@ class ModelExecutor(Generic[T]):
         if isinstance(exc, TimeoutError): return "timeout_unknown", False
         if isinstance(exc, ConnectionError): return "transport_unknown", False
         return "provider_error_unknown", False
+
+    @staticmethod
+    def _provider_error_text(exc: BaseException) -> str:
+        """Collect provider codes/bodies before generic HTTP status handling."""
+        values: list[str] = [str(exc), str(getattr(exc, "code", "")), str(getattr(exc, "body", ""))]
+        response = getattr(exc, "response", None)
+        if response is not None:
+            values.extend([str(getattr(response, "text", "")), str(getattr(response, "content", ""))])
+            try:
+                values.append(str(response.json()))
+            except Exception:
+                pass
+        return " ".join(values)
