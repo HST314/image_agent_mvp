@@ -94,7 +94,8 @@ def _candidate(
         field=field,
         question=question,
         options=[
-            QuestionOption(option_id=chr(65 + i), label=label, description=desc)
+            QuestionOption(option_id=chr(65 + i), label=label, description=desc,
+                           requires_free_text=("请注明" in label or "自定义" in label))
             for i, (label, desc) in enumerate(choices)
         ],
         recommended_option_id="A",
@@ -218,6 +219,11 @@ def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> Questio
                 o.pop("id", None)
                 o["label"] = str(o.get("label") or f"选项 {opt_id}")
                 o["description"] = str(o.get("description") or o["label"])
+                o["requires_free_text"] = bool(
+                    o.get("requires_free_text")
+                    or "请注明" in o["label"]
+                    or "自定义" in o["label"]
+                )
                 norm_options.append(o)
             elif isinstance(opt, (str, int)):
                 norm_options.append(
@@ -278,7 +284,7 @@ def _prompt(task: ImageTaskCard, limit: int, seen: set[str]) -> str:
         "每个问题必须包含以下字段（注意类型）：\n"
         "- field: 字符串，缺失的字段名\n"
         "- question: 字符串，向用户提问的中文问题\n"
-        '- options: 列表，每个选项格式为 {"option_id": "A", "label": "标题", "description": "说明"}，option_id 必须是字母字符串如 "A", "B"\n'
+        '- options: 列表，每个选项格式为 {"option_id": "A", "label": "标题", "description": "说明", "requires_free_text": false}，option_id 必须是字母字符串如 "A", "B"；“其他/自定义”必须设 requires_free_text=true\n'
         '- recommended_option_id: 字符串，推荐的 option_id，如 "A"\n'
         "- impact: 字符串，影响说明\n"
         "- evidence: 字符串，依据材料\n"

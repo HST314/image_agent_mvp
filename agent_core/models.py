@@ -146,6 +146,7 @@ class QuestionOption(StrictBaseModel):
     option_id: str
     label: str
     description: str
+    requires_free_text: bool = False
 
 
 class QuestionItem(StrictBaseModel):
