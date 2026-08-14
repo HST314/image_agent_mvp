@@ -106,6 +106,7 @@ class QualityDispositionRequest(StrictRequest):
     action: Literal["add_rounds_with_cost_confirmation", "human_tune_best", "abandon"]
     additional_rounds: int = Field(default=0, ge=0, le=20)
     cost_confirmed: bool = False
+    checkpoint: str | None = Field(default=None, pattern=r"^checkpoint_[0-9a-f]{24}$")
 
 
 class BranchRequest(StrictRequest):
@@ -275,7 +276,7 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
     if phase == "waiting_master_selection":
         return ["select_master"]
     if phase == "waiting_human_approval":
-        return ["review_calibration"]
+        return ["review_calibration", "enter_human_tune"]
     if phase == "additional_rounds_approved":
         return ["resume_quality_inspection"]
     if phase == "waiting_human_tune":
@@ -519,12 +520,23 @@ async def quality_disposition(project_id: str, body: QualityDispositionRequest) 
         def execute():
             store=_store(project_id)
             with store.lock():
+                if body.checkpoint:
+                    source = store.checkpoints.load(body.checkpoint).get("data") or {}
+                    if body.action != "human_tune_best" or source.get("state") != "self_check_iteration" or not (source.get("asset") or source.get("current_asset")):
+                        raise ValueError("QUALITY_TUNE_NOT_AVAILABLE")
+                    store.branch_from(body.checkpoint)
                 snapshot=store.resume() or {}
-                if snapshot.get("phase") != "waiting_human_approval" or "round_limit" not in str(snapshot.get("termination_reason")):
+                at_limit = (snapshot.get("phase") == "waiting_human_approval" and
+                            "round_limit" in str(snapshot.get("termination_reason")))
+                can_tune = (snapshot.get("state") == "self_check_iteration" and
+                            bool(snapshot.get("asset") or snapshot.get("current_asset")))
+                if body.action == "human_tune_best" and not can_tune:
+                    raise ValueError("QUALITY_TUNE_NOT_AVAILABLE")
+                if body.action != "human_tune_best" and not at_limit:
                     raise ValueError("QUALITY_LIMIT_NOT_REACHED")
                 if body.action=="add_rounds_with_cost_confirmation" and (not body.cost_confirmed or body.additional_rounds<1):
                     raise ValueError("COST_CONFIRMATION_REQUIRED")
-                asset=snapshot.get("best_asset") or snapshot.get("asset")
+                asset=(snapshot.get("best_asset") if at_limit else None) or snapshot.get("inspection_asset") or snapshot.get("asset") or snapshot.get("current_asset")
                 store.events.append("quality_disposition", action=body.action, additional_rounds=body.additional_rounds,
                                     cost_confirmed=body.cost_confirmed, selected_asset=asset)
                 updated=dict(snapshot)
@@ -534,14 +546,17 @@ async def quality_disposition(project_id: str, body: QualityDispositionRequest) 
                     status_value="abandoned"
                 elif body.action=="human_tune_best":
                     updated.update(asset=asset,current_asset=asset,phase="waiting_human_tune",calibration_status="waiting_human_tune",
-                                   human_tune_mode=True,termination_satisfied=False,latest_checked_asset_hash=None,inspection=None)
+                                   human_tune_mode=True,termination_satisfied=False,termination_reason="human_tune_in_progress",
+                                   latest_checked_asset_hash=None,inspection=None,available_actions=[],best_asset=None)
                     status_value="waiting_human_tune"
                 else:
                     policy=dict(updated.get("self_check_policy") or updated.get("selected_policy") or {})
                     policy["termination"]="solo"; policy["max_rounds"]=int(snapshot.get("round",0))+body.additional_rounds
                     policy["fixed_rounds"]=min(int(policy.get("fixed_rounds",1)),policy["max_rounds"])
                     updated.update(asset=asset,current_asset=asset,phase="additional_rounds_approved",calibration_status="pending",
-                                   self_check_policy=policy,round=int(snapshot.get("round",0))+1)
+                                   self_check_policy=policy,round=int(snapshot.get("round",0))+1,
+                                   available_actions=[],best_asset=None,inspection=None,termination_reason=None,
+                                   termination_satisfied=False)
                     status_value="additional_rounds_approved"
                 store.checkpoint("self_check_iteration",updated)
             return {"status":status_value,"additional_rounds":body.additional_rounds,"asset":asset}

@@ -17,7 +17,7 @@ import { createAnnotator } from './annotate.js';
 import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { errorText, terminationReasonLabel } from './copy.js';
-import { renderProgressSteps, renderSkillInvocations } from './snapshots.js';
+import { renderProgressSteps, renderQualityHistory, renderSkillInvocations } from './snapshots.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -128,7 +128,7 @@ function renderStage(panel, view, derived, ctx) {
   const stage = derived.stage;
 
   if (stage === 'clarify') {
-    renderClarify(panel, view, { projectId, onSubmitted: refresh });
+    renderClarify(panel, view, { projectId, jobRunner });
     return;
   }
   if (stage === 'taskbook') {
@@ -300,6 +300,7 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
     badge,
   ]);
   details.append(summary, el('p', { class: 'inspection-recommendation', text: inspection.rework_prompt_delta || '请审阅当前图像与自检结果。' }));
+  appendQualityMetrics(details, inspection);
   if (Array.isArray(inspection.deviations) && inspection.deviations.length) {
     details.append(el('h4', { text: '发现的问题' }));
     const ul = el('ul', { class: 'inspection-findings' });
@@ -343,8 +344,21 @@ function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
     });
     row.append(btn);
   }
+  if ((view.capabilities || []).includes('enter_human_tune')) {
+    const tune = el('button', { type: 'button', class: 'btn btn--secondary', text: '进入人工微调' });
+    tune.addEventListener('click', async () => {
+      tune.disabled = true;
+      try {
+        await api.qualityDisposition(projectId, { action: 'human_tune_best' });
+        toast('已从本轮进入人工微调。');
+        refresh();
+      } catch (error) { tune.disabled = false; toast(error.message, 'error'); }
+    });
+    row.append(tune);
+  }
   actionSection.append(row);
   panel.append(actionSection);
+  renderQualityHistory(panel, view, { onChanged: refresh });
 }
 
 function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
@@ -359,6 +373,7 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
     el('h3', { text: `已完成第 ${snapshot.round || 1} 轮自检` }),
     el('p', { class: 'inspection-recommendation', text: '自动自检已按策略停止，请明确选择继续投入、人工微调、接受当前图或放弃交付。' }),
   );
+  appendQualityMetrics(details, inspection);
   if (Array.isArray(inspection.deviations) && inspection.deviations.length) {
     details.append(el('h4', { text: '仍需关注' }));
     const ul = el('ul', { class: 'inspection-findings' });
@@ -410,6 +425,20 @@ function renderDisposition(panel, view, { projectId, refresh, jobRunner }) {
     el('div', {}, [el('h3', { text: '选择后续处置' }), el('p', { text: '继续投入会产生新的模型调用；接受或放弃将结束自动自检。' })]),
     row,
   ]));
+  renderQualityHistory(panel, view, { onChanged: refresh });
+}
+
+function appendQualityMetrics(container, inspection) {
+  const score = Number(inspection?.overall_score);
+  const confidence = Number(inspection?.confidence);
+  const metrics = el('div', { class: 'quality-metrics', 'aria-label': '模型量化评价' });
+  if (Number.isFinite(score) && score > 0) metrics.append(el('div', {}, [el('strong', { text: score.toFixed(0) }), el('span', { text: '质量分 / 100' })]));
+  if (Number.isFinite(confidence)) metrics.append(el('div', {}, [el('strong', { text: `${Math.round(confidence * 100)}%` }), el('span', { text: '判断置信度' })]));
+  for (const [name, value] of Object.entries(inspection?.dimension_scores || {})) {
+    const number = Number(value);
+    if (Number.isFinite(number)) metrics.append(el('div', {}, [el('strong', { text: number.toFixed(0) }), el('span', { text: name })]));
+  }
+  if (metrics.children.length) container.append(metrics);
 }
 
 function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {

@@ -5,6 +5,7 @@ import {
   completedStageSnapshots,
   createSnapshotBranch,
   isCreatedBranchView,
+  qualityRoundSnapshots,
   skillInvocationDomIds,
   skillInvocationView,
 } from '../../frontend/static/js/snapshots.js';
@@ -35,6 +36,18 @@ test('T9 已完成工程允许回看最终交付快照', () => {
     completedStageSnapshots(items, { state: 'final_approval', completed: true }).map((item) => item.state),
     ['final_approval'],
   );
+});
+
+test('逐轮质检历史只收录完整可恢复快照，并按轮次保留最新检查点', () => {
+  const items = [
+    { ...checkpoint('self_check_iteration', 6), snapshot: { phase: 'waiting_human_approval', round: 1, inspection: { confidence: .8 } } },
+    { ...checkpoint('self_check_iteration', 7), snapshot: { state: 'self_check_iteration', round: 1, inspection: { overall_score: 70 } } },
+    { ...checkpoint('self_check_iteration', 8), snapshot: { state: 'self_check_iteration', round: 1, inspection: { overall_score: 72 } } },
+    { ...checkpoint('self_check_iteration', 9), snapshot: { state: 'self_check_iteration', round: 2, inspection: { overall_score: 81 } } },
+  ];
+  const rounds = qualityRoundSnapshots(items);
+  assert.deepEqual(rounds.map((item) => item.snapshot.round), [1, 2]);
+  assert.equal(rounds[0].sequence, 8);
 });
 
 test('T9 自动分支名由中文来源阶段与本地时间组成', () => {

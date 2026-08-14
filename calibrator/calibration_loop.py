@@ -26,9 +26,26 @@ class CalibrationLoop:
     def __init__(self, store: ProjectStore, policy: SelfCheckPolicy, *, inspector: Callable[[str, str], dict[str, Any]], reworker: Callable[[dict[str, Any]], dict[str, Any]], presenter: Callable[[int, VisualCheckResult], None] | None = None) -> None:
         self.store, self.policy, self.inspector, self.reworker, self.presenter = store, policy, inspector, reworker, presenter or (lambda _n, _r: None)
 
-    def run(self, *, current_asset: dict[str, Any], stable_specification: str, constraints: list[str], approve: Callable[[VisualCheckResult], ManualAction] | None = None, start_round: int = 1) -> dict[str, Any]:
+    def run(self, *, current_asset: dict[str, Any], stable_specification: str, constraints: list[str], approve: Callable[[VisualCheckResult], ManualAction] | None = None, start_round: int = 1, snapshot_context: dict[str, Any] | None = None) -> dict[str, Any]:
         current = current_asset
-        scored = [(float(e.get("result", {}).get("confidence", 0)), e.get("asset"))
+        context = dict(snapshot_context or {})
+
+        def canonical(extra: dict[str, Any]) -> dict[str, Any]:
+            """Persist a complete resumable workflow snapshot, never a sparse loop fragment."""
+            return {
+                **context,
+                "available_actions": [],
+                "best_asset": None,
+                "reason": None,
+                **extra,
+                "state": "self_check_iteration",
+            }
+
+        def checkpoint(extra: dict[str, Any]) -> None:
+            self.store.checkpoint("self_check_iteration", canonical(extra))
+
+        scored = [((1 if e.get("result", {}).get("passed") else 0,
+                    float(e.get("result", {}).get("overall_score", 0))), e.get("asset"))
                   for e in self.store.events.read_all() if e.get("type") == "inspection_completed" and e.get("asset")]
         limit = self.policy.fixed_rounds if self.policy.termination == "fix" else self.policy.max_rounds
         for number in range(start_round, limit + 1):
@@ -39,7 +56,8 @@ class CalibrationLoop:
             result = VisualCheckResult.model_validate(raw)
             self.store.events.append("inspection_reused" if cached else "inspection_completed", round=number, asset=current,
                                      result=result.model_dump(mode="json"), idempotency_key=inspection_key)
-            scored.append((result.confidence, current))
+            inspected_asset = current
+            scored.append(((1 if result.passed else 0, result.overall_score), inspected_asset))
             self.presenter(number, result)
             checked_hash = str(current["sha256"])
             choice = ManualAction(action="execute")
@@ -48,13 +66,22 @@ class CalibrationLoop:
             # so for every inspection.
             if self.policy.needs_human_release() or result.decision == "blocked":
                 self.store.events.append("waiting_human_approval", round=number)
-                self.store.checkpoint("self_check_iteration", {"phase": "waiting_human_approval", "round": number, "asset": current, "inspection": result.model_dump(mode="json")})
+                checkpoint({"phase": "waiting_human_approval", "waiting": True, "round": number,
+                            "asset": current, "current_asset": current, "inspection_asset": inspected_asset,
+                            "inspection": result.model_dump(mode="json"),
+                            "calibration_status": "waiting_human_decision",
+                            "termination_satisfied": False,
+                            "termination_reason": "inspection_blocked" if result.decision == "blocked" else "manual_release_required",
+                            "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__})
                 if approve is None:
                     return {"waiting": True, "phase": "waiting_human_approval", "round": number, "asset": current,
                             "inspection": result.model_dump(mode="json"), "calibration_status": "waiting_human_decision",
                             "termination_satisfied": False, "termination_reason": "inspection_blocked" if result.decision == "blocked" else "manual_release_required",
                             "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
                 choice = approve(result)
+                # One human decision releases exactly one round.  A following
+                # inspection must create a fresh waiting boundary.
+                approve = None
             if choice.action == "end":
                 self.store.events.append("calibration_terminated_without_delivery", round=number, asset_hash=checked_hash, decision=result.decision)
                 return {"waiting": True, "phase": "terminated_without_delivery", "round": number, "asset": current,
@@ -77,7 +104,10 @@ class CalibrationLoop:
                             "inspection": result.model_dump(mode="json"), "calibration_status": "completed",
                             "termination_satisfied": True, "termination_reason": "pass",
                             "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
-                self.store.checkpoint("self_check_iteration", {"phase": "round_checkpointed", "round": number, "asset": current})
+                checkpoint({"phase": "round_checkpointed", "waiting": False, "round": number,
+                            "asset": current, "current_asset": current, "inspection_asset": inspected_asset,
+                            "inspection": result.model_dump(mode="json"),
+                            "termination_reason": None, "termination_satisfied": False})
                 self.store.events.append("round_checkpointed", round=number, asset=current)
                 continue
             if number >= limit:
@@ -88,9 +118,13 @@ class CalibrationLoop:
                 reason = "fixed_round_limit" if self.policy.termination == "fix" else "solo_round_limit"
                 self.store.events.append("calibration_round_limit_reached", round=number, asset_hash=checked_hash,
                                          decision=result.decision, policy=self.policy.__dict__)
-                self.store.checkpoint("self_check_iteration", {"phase": "waiting_human_approval", "round": number,
-                    "asset": current, "inspection": result.model_dump(mode="json"),
-                    "latest_checked_asset_hash": checked_hash, "termination_reason": reason})
+                checkpoint({"phase": "waiting_human_approval", "waiting": True, "round": number,
+                    "asset": current, "current_asset": current, "inspection_asset": inspected_asset,
+                    "inspection": result.model_dump(mode="json"),
+                    "latest_checked_asset_hash": checked_hash, "termination_reason": reason,
+                    "termination_satisfied": False, "calibration_status": "waiting_human_decision",
+                    "best_asset": max(scored, key=lambda item: item[0])[1],
+                    "available_actions": ["add_rounds_with_cost_confirmation", "human_tune_best", "abandon"]})
                 return {"waiting": True, "phase": "waiting_human_approval", "round": number,
                         "reason": "已达到质检轮次上限，请人工决定。", "asset": current,
                         "best_asset": max(scored, key=lambda item: item[0])[1],
@@ -106,7 +140,10 @@ class CalibrationLoop:
                 key = self.store.idempotency_key("self_check_rework", content_hash(current), content_hash(assembled["text"]), "image", current["sha256"])
                 current = self._successful(key) or self.reworker(assembled)
                 self.store.events.append("rework_completed", round=number, asset=current, references=assembled["references"], idempotency_key=key)
-            self.store.checkpoint("self_check_iteration", {"phase": "round_checkpointed", "round": number, "asset": current})
+            checkpoint({"phase": "round_checkpointed", "waiting": False, "round": number,
+                        "asset": current, "current_asset": current, "inspection_asset": inspected_asset,
+                        "inspection": result.model_dump(mode="json"),
+                        "termination_reason": None, "termination_satisfied": False})
             self.store.events.append("round_checkpointed", round=number, asset=current)
         raise RuntimeError("质检循环意外退出，未形成可审计的终止事实。")
 

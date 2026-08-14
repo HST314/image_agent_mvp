@@ -472,7 +472,16 @@ class VisualCheckResult(StrictBaseModel):
     issues: list[dict[str, Any]] = Field(default_factory=list)
     preserve: list[str] = Field(default_factory=list)
     stop_reason: str = ""
+    overall_score: float = Field(default=0.0, ge=0.0, le=100.0)
+    dimension_scores: dict[str, float] = Field(default_factory=dict)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @field_validator("dimension_scores")
+    @classmethod
+    def validate_dimension_scores(cls, value: dict[str, float]) -> dict[str, float]:
+        if any(score < 0 or score > 100 for score in value.values()):
+            raise ValueError("质检维度分必须位于 0 到 100 之间。")
+        return value
 
 
 class WorkflowState(str, Enum):

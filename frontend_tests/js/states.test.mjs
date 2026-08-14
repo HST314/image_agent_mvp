@@ -9,6 +9,7 @@ import {
 // 后端 v1.7.3 事实表：main_front._capabilities 的全部可能输出。
 const BACKEND_CAPABILITIES = [
   'retry', 'answer_clarification', 'select_master', 'review_calibration',
+  'enter_human_tune',
   'approve_skill_invocations', 'retry_skill_invocations', 'resume_quality_inspection',
   'submit_human_tune', 'resume', 'branch', 'inspect',
 ];
@@ -56,8 +57,13 @@ test('waiting_skill_approval → 独立技能调用人工门禁舞台', () => {
 });
 
 test('self_check 等待 + available_actions → disposition（上限分流）', () => {
-  const v = view({ state: 'self_check_iteration', phase: 'waiting_human_approval', available_actions: ['abandon'] });
+  const v = view({ state: 'self_check_iteration', phase: 'waiting_human_approval', termination_reason: 'solo_round_limit', available_actions: ['abandon'] });
   assert.equal(deriveView(v).stage, 'disposition');
+});
+
+test('残留 available_actions 不得把普通人工门禁误判为轮次上限', () => {
+  const v = view({ state: 'self_check_iteration', phase: 'waiting_human_approval', termination_reason: 'manual_release_required', available_actions: ['abandon'] });
+  assert.equal(deriveView(v).stage, 'calibration');
 });
 
 test('self_check 等待无 available_actions → calibration（人工放行）', () => {

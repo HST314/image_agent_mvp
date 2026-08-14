@@ -705,7 +705,9 @@ class WorkflowRunner:
                                          additional_rounds=action.additional_rounds, cost_confirmed=True,
                                          selected_asset=asset)
                 data = {**data, "asset": asset, "current_asset": asset, "round": round_number + 1,
-                        "phase": "additional_rounds_approved"}
+                        "phase": "additional_rounds_approved", "available_actions": [],
+                        "best_asset": None, "inspection": None, "termination_reason": None,
+                        "termination_satisfied": False}
             elif action.action not in {"execute", "edit_and_execute", "skip"}:
                 raise ValueError(f"轮次上限不支持处置动作：{action.action}")
         loop = CalibrationLoop(self.store, SelfCheckPolicy(**policy_data), inspector=self._inspect,
@@ -713,7 +715,11 @@ class WorkflowRunner:
             presenter=lambda number, result: self._present_inspection(number, result))
         result = loop.run(current_asset=data.get("asset") or data["master_asset"], stable_specification=specification_to_markdown(spec),
                           constraints=[], approve=(lambda _: action) if action else None,
-                          start_round=int(data.get("round", 1)))
+                          start_round=int(data.get("round", 1)), snapshot_context=data)
+        result["inspection_asset"] = result.get("inspection_asset") or result.get("asset")
+        if "round_limit" not in str(result.get("termination_reason")):
+            result["available_actions"] = []
+            result["best_asset"] = None
         return {**result, "current_asset": result.get("asset", data.get("master_asset"))}
     
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
@@ -792,7 +798,9 @@ class WorkflowRunner:
 
     def _inspect(self, image_uri: str, prompt: str) -> dict[str, Any]:
             if self.offline_mode:
-                return {"passed": False, "decision": "continue", "rework_prompt_delta": "提高主体清晰度", "confidence": 0.8}
+                return {"passed": False, "decision": "continue", "rework_prompt_delta": "提高主体清晰度",
+                        "overall_score": 72, "dimension_scores": {"任务符合度": 75, "文字正确性": 70,
+                        "构图": 72, "视觉质量": 72, "安全合规": 100}, "confidence": 0.8}
             
             # 👇 构造明确要求返回 JSON 的质检 Prompt
             inspection_prompt = (
@@ -803,6 +811,8 @@ class WorkflowRunner:
                 f'  "decision": "pass"（符合）或 "continue"（需微调）或 "blocked"（严重不符）,\n'
                 f'  "deviations": ["发现的问题或偏差描述"],\n'
                 f'  "rework_prompt_delta": "如果不符合，给出具体的改图提示词建议",\n'
+                f'  "overall_score": 0到100的整体画面质量分,\n'
+                f'  "dimension_scores": {{"任务符合度": 0到100, "文字正确性": 0到100, "构图": 0到100, "视觉质量": 0到100, "安全合规": 0到100}},\n'
                 f'  "confidence": 0.95\n'
                 f"}}\n\n"
                 f"设计任务书要求：\n{prompt}"

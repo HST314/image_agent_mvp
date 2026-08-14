@@ -26,6 +26,19 @@ export function completedStageSnapshots(items = [], currentSnapshot = {}) {
     .map((stage) => latest.get(stage.id));
 }
 
+/** Canonical per-round quality checkpoints, newest checkpoint wins within a round. */
+export function qualityRoundSnapshots(items = []) {
+  const rounds = new Map();
+  for (const item of items || []) {
+    const snapshot = item?.snapshot || {};
+    const round = Number(snapshot.round);
+    if (item?.state !== 'self_check_iteration' || snapshot.state !== 'self_check_iteration'
+        || !Number.isInteger(round) || round < 1 || !snapshot.inspection) continue;
+    rounds.set(round, item);
+  }
+  return [...rounds.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+}
+
 /** 契约 §6/Q7-C：来源阶段 + 本地时间，秒级避免连续建分支重名。 */
 export function automaticBranchName(state, date = new Date()) {
   const pad = (value) => String(value).padStart(2, '0');
@@ -238,7 +251,7 @@ export function renderSkillInvocations(container, projectId, snapshot) {
 
 function renderInspection(container, projectId, snapshot) {
   const inspection = snapshot.inspection;
-  const asset = snapshot.best_asset || snapshot.current_asset || snapshot.asset || snapshot.master_asset;
+  const asset = snapshot.inspection_asset || snapshot.best_asset || snapshot.current_asset || snapshot.asset || snapshot.master_asset;
   if (!inspection && !asset) return false;
   const layout = el('div', { class: 'snapshot-inspection' });
   const visual = el('div', { class: 'snapshot-asset' });
@@ -246,6 +259,16 @@ function renderInspection(container, projectId, snapshot) {
   const detail = el('div');
   detail.append(el('span', { class: `badge ${inspection?.passed ? 'badge--success' : 'badge--warning'}`, text: inspection?.passed ? '本轮质检通过' : terminationReasonLabel(snapshot.termination_reason) }));
   if (snapshot.round) detail.append(el('h3', { text: `第 ${snapshot.round} 轮自检` }));
+  const metrics = [];
+  if (Number(inspection?.overall_score) > 0) metrics.push(`质量分 ${Math.round(Number(inspection.overall_score))}/100`);
+  if (Number.isFinite(Number(inspection?.confidence))) metrics.push(`判断置信度 ${Math.round(Number(inspection.confidence) * 100)}%`);
+  if (metrics.length) detail.append(el('p', { class: 'snapshot-quality-score', text: metrics.join(' · ') }));
+  const dimensions = Object.entries(inspection?.dimension_scores || {});
+  if (dimensions.length) {
+    const list = el('dl', { class: 'snapshot-kv snapshot-kv--compact' });
+    dimensions.forEach(([name, value]) => list.append(el('dt', { text: name }), el('dd', { text: `${Math.round(Number(value))} / 100` })));
+    detail.append(list);
+  }
   const deviations = inspection?.deviations || [];
   if (deviations.length) {
     const list = el('ul', { class: 'snapshot-list' });
@@ -255,6 +278,57 @@ function renderInspection(container, projectId, snapshot) {
   layout.append(visual, detail);
   container.append(layout);
   return true;
+}
+
+export function renderQualityHistory(container, view, { onChanged } = {}) {
+  const items = qualityRoundSnapshots(view?.progress_snapshots);
+  if (!items.length) return;
+  const history = el('details', { class: 'quality-history' });
+  history.append(el('summary', { text: `查看逐轮质检历史（${items.length} 轮）` }));
+  const list = el('div', { class: 'quality-history__list' });
+  const currentId = view?.manifest?.current_checkpoint?.checkpoint_id;
+  for (const item of items) {
+    const snapshot = item.snapshot || {};
+    const inspection = snapshot.inspection || {};
+    const card = el('section', { class: 'quality-history__card' });
+    const score = Number(inspection.overall_score);
+    card.append(el('div', { class: 'quality-history__head' }, [
+      el('strong', { text: `第 ${snapshot.round} 轮` }),
+      el('span', { class: inspection.passed ? 'badge badge--success' : 'badge badge--warning', text: inspection.passed ? '通过' : '建议修改' }),
+      Number.isFinite(score) && score > 0 ? el('span', { text: `质量分 ${Math.round(score)}` }) : null,
+    ]));
+    if (inspection.rework_prompt_delta) card.append(el('p', { text: inspection.rework_prompt_delta }));
+    const actions = el('div', { class: 'button-row' });
+    const branch = el('button', { type: 'button', class: 'btn btn--secondary', text: '从此轮创建分支' });
+    branch.addEventListener('click', async () => {
+      branch.disabled = true;
+      try {
+        const result = await createSnapshotBranch({
+          projectId: view.project_id, checkpoint: item.checkpoint_id,
+          branchName: automaticBranchName('self_check_iteration'),
+        });
+        toast(`已从第 ${snapshot.round} 轮创建分支。`);
+        onChanged?.(result.view);
+      } catch (error) { branch.disabled = false; toast(error.message, 'error'); }
+    });
+    const tune = el('button', { type: 'button', class: 'btn btn--secondary', text: '从此轮进入人工微调' });
+    tune.addEventListener('click', async () => {
+      tune.disabled = true;
+      try {
+        await api.qualityDisposition(view.project_id, {
+          action: 'human_tune_best',
+          ...(item.checkpoint_id === currentId ? {} : { checkpoint: item.checkpoint_id }),
+        });
+        toast(`已从第 ${snapshot.round} 轮进入人工微调。`);
+        onChanged?.();
+      } catch (error) { tune.disabled = false; toast(error.message, 'error'); }
+    });
+    actions.append(branch, tune);
+    card.append(actions);
+    list.append(card);
+  }
+  history.append(list);
+  container.append(history);
 }
 
 function renderFinal(container, projectId, snapshot) {
@@ -298,14 +372,16 @@ function renderSnapshotContent(container, projectId, item) {
 export function renderProgressSteps(container, view, { onBranchCreated }) {
   const current = view.snapshot || {};
   const currentIndex = STAGE_INDEX.get(current.state) ?? 0;
+  const jobStatus = String(view?.active_job?.status || '');
+  const isRunning = Boolean(jobStatus && !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(jobStatus));
   const completed = new Map(completedStageSnapshots(view.progress_snapshots, current).map((item) => [item.state, item]));
   WORKFLOW_STATES.forEach((stage, index) => {
     const item = completed.get(stage.id);
-    const className = `step ${item ? 'is-done step--interactive' : index === currentIndex ? 'is-current' : ''}`;
+    const className = `step ${item ? 'is-done step--interactive' : index === currentIndex ? `is-current${isRunning ? ' is-running' : ''}` : ''}`;
     const node = item
       ? el('button', { type: 'button', class: className, 'aria-label': `查看${stage.label}阶段只读快照` })
       : el('div', { class: className, 'aria-current': index === currentIndex ? 'step' : null });
-    node.append(el('div', { class: 'step__bar' }), el('span', { text: stage.label }));
+    node.append(el('div', { class: 'step__bar' }), el('span', { text: `${stage.label}${index === currentIndex && isRunning ? ' · 处理中' : ''}` }));
     if (item) node.addEventListener('click', () => openSnapshotDialog({ projectId: view.project_id, item, onBranchCreated }));
     container.append(node);
   });

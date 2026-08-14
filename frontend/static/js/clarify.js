@@ -2,7 +2,6 @@
 
 import { el, toast } from './dom.js';
 import { saveDraft, loadDraft, clearDraft } from './store.js';
-import { advance } from './api.js';
 import { fieldLabel } from './copy.js';
 
 const DRAFT_NAME = 'clarification-answers';
@@ -64,7 +63,7 @@ export function buildClarificationSubmission(card, answersByQuestion) {
   };
 }
 
-export function renderClarify(container, view, { projectId, onSubmitted }) {
+export function renderClarify(container, view, { projectId, jobRunner }) {
   const card = view.snapshot?.question_card || { questions: [] };
   const questions = card.questions || [];
   const storedDraft = loadDraft(projectId, DRAFT_NAME)?.value || {};
@@ -188,10 +187,11 @@ export function renderClarify(container, view, { projectId, onSubmitted }) {
     submit.textContent = '正在提交并重新分析…';
     form.setAttribute('aria-busy', 'true');
     try {
-      const updated = await advance(projectId, { clarification_answers: buildClarificationSubmission(card, answers) });
-      clearDraft(projectId, DRAFT_NAME);
-      toast('答案已提交。');
-      onSubmitted?.(updated);
+      const job = await jobRunner.start(
+        { clarification_answers: buildClarificationSubmission(card, answers) },
+        { intent: 'answer-clarification', operation: '提交答案并重新分析' },
+      );
+      if (job) clearDraft(projectId, DRAFT_NAME);
     } catch (error) {
       toast(error.message, 'error');
       submit.disabled = false;

@@ -25,11 +25,12 @@ export const STATE_LABELS = Object.fromEntries(WORKFLOW_STATES.map((s) => [s.id,
 /** 服务端能力 → 前端动作（一一对应，不增不减）。 */
 export const CAPABILITY_ACTIONS = {
   retry: { id: 'retry', label: '从上一成功点重试', kind: 'job' },
-  answer_clarification: { id: 'answer_clarification', label: '提交答案并继续', kind: 'sync' },
+  answer_clarification: { id: 'answer_clarification', label: '提交答案并继续', kind: 'job' },
   approve_skill_invocations: { id: 'approve_skill_invocations', label: '确认技能调用并继续', kind: 'job' },
   retry_skill_invocations: { id: 'retry_skill_invocations', label: '换一版技能调用结果', kind: 'job' },
   select_master: { id: 'select_master', label: '确认当前主图', kind: 'job' },
   review_calibration: { id: 'review_calibration', label: '人工处置', kind: 'ui' },
+  enter_human_tune: { id: 'enter_human_tune', label: '进入人工微调', kind: 'ui' },
   resume_quality_inspection: { id: 'resume_quality_inspection', label: '开始重新质检', kind: 'job' },
   submit_human_tune: { id: 'submit_human_tune', label: '提交微调', kind: 'ui' },
   resume: { id: 'resume', label: '继续工作流', kind: 'job' },
@@ -90,7 +91,8 @@ export function deriveView(view) {
   }
   if (phase === 'waiting_master_selection') return { stage: 'gallery', actions: capabilities, waiting: true };
   if (stateId === 'self_check_iteration' && phase === 'waiting_human_approval') {
-    if (Array.isArray(snapshot.available_actions) && snapshot.available_actions.length) {
+    if (String(snapshot.termination_reason || '').includes('round_limit')
+        && Array.isArray(snapshot.available_actions) && snapshot.available_actions.length) {
       return { stage: 'disposition', actions: capabilities, waiting: true };
     }
     return { stage: 'calibration', actions: capabilities, waiting: true };

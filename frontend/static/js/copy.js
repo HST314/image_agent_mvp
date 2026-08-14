@@ -304,6 +304,7 @@ export function jobStatusLabel(status) {
 const ERROR_CODE_MAP = [
   ['HUMAN_TUNE_NOT_ACTIVE', '当前不在人工微调阶段，请刷新后重试。'],
   ['QUALITY_LIMIT_NOT_REACHED', '尚未达到质检轮次上限，暂不能执行该操作。'],
+  ['QUALITY_TUNE_NOT_AVAILABLE', '该质检检查点不完整，无法进入人工微调。'],
   ['COST_CONFIRMATION_REQUIRED', '追加质检轮次前需要先确认费用。'],
   ['DELIVERY_NOT_FROZEN', '交付尚未冻结，暂不能重新生成说明。'],
   ['PROJECT_ID_INVALID', '工程标识无效。'],
