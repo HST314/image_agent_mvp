@@ -43,8 +43,19 @@ def test_other_option_requires_concrete_free_text(tmp_path):
              "task_card": _task(), "question_card": _card().model_dump(mode="json")}
 
     with pytest.raises(ValueError, match="必须填写具体内容"):
-        runner.run(state, RunnerOptions(clarification_answers={"answers": [{
+        runner.run(state, RunnerOptions(clarification_answers={"question_card_id": state["question_card"]["question_card_id"], "answers": [{
             "question_id": "q1", "selected_option_id": "D", "free_text": ""
+        }]}), only_state="intake_clarify")
+
+
+def test_structured_answer_must_match_current_question_card(tmp_path):
+    runner = _runner(tmp_path)
+    state = {"state": "intake_clarify", "phase": "waiting_clarification",
+             "task_card": _task(), "question_card": _card().model_dump(mode="json")}
+
+    with pytest.raises(ValueError, match="问题卡已失效"):
+        runner.run(state, RunnerOptions(clarification_answers={"question_card_id": "stale-card", "answers": [{
+            "question_id": "q1", "selected_option_id": "A", "free_text": None,
         }]}), only_state="intake_clarify")
 
 
@@ -60,7 +71,7 @@ def test_answer_is_persisted_structurally_and_reanalysed(tmp_path):
     state = {"state": "intake_clarify", "phase": "waiting_clarification",
              "task_card": _task(), "question_card": _card().model_dump(mode="json"),
              "clarification_asked_count": 1, "previous_fingerprints": ["mission-name-v1"]}
-    result = runner.run(state, RunnerOptions(clarification_answers={"answers": [{
+    result = runner.run(state, RunnerOptions(clarification_answers={"question_card_id": state["question_card"]["question_card_id"], "answers": [{
         "question_id": "q1", "selected_option_id": "D", "free_text": "春日发布会"
     }]}), only_state="intake_clarify")
 
@@ -102,3 +113,24 @@ def test_confirmation_build_is_a_reasoning_model_boundary(tmp_path):
     assert calls[0][1]["template_version"] == "3"
     assert result["task_markdown"].startswith("# 模型重写的任务书")
     assert result["phase"] == "waiting_human_approval"
+
+
+def test_taskbook_approval_preserves_reasoning_model_markdown(tmp_path):
+    runner = _runner(tmp_path, offline=False)
+    authored = "# 模型重写的任务书\n\n这是综合理解后的执行说明。\n"
+
+    class Doc:
+        confirmed_facts = []
+        default_handling_for_unknowns = []
+        markdown_body = authored
+
+    runner.gateway.call = lambda *_args, **_kwargs: Doc()
+    first = runner.run({"state": "intake_clarify", "phase": "ready_to_draft",
+                        "task_card": _task(), "clarification_transcript": []},
+                       RunnerOptions(), only_state="confirmation_build")
+    approved = runner.run(first, RunnerOptions(task_approved=True, actor="reviewer"),
+                          only_state="confirmation_build")
+
+    assert approved["task_markdown"] == authored
+    assert approved["task_revision"]["revision_hash"] == first["task_revision"]["revision_hash"]
+    assert approved["task_approval"]["revision_hash"] == first["task_revision"]["revision_hash"]

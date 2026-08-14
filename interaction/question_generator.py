@@ -95,7 +95,7 @@ def _candidate(
         question=question,
         options=[
             QuestionOption(option_id=chr(65 + i), label=label, description=desc,
-                           requires_free_text=("请注明" in label or "自定义" in label))
+                           requires_free_text=("其他" in label or "请注明" in label or "自定义" in label))
             for i, (label, desc) in enumerate(choices)
         ],
         recommended_option_id="A",
@@ -221,6 +221,7 @@ def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> Questio
                 o["description"] = str(o.get("description") or o["label"])
                 o["requires_free_text"] = bool(
                     o.get("requires_free_text")
+                    or "其他" in o["label"]
                     or "请注明" in o["label"]
                     or "自定义" in o["label"]
                 )

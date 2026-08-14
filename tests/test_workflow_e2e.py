@@ -163,8 +163,19 @@ def test_clarification_budget_and_fingerprints_survive_resume(tmp_path: Path):
     restored = store.resume()
     assert restored["clarification_asked_count"] == 3 and restored["clarification_remaining_budget"] == 7
     assert len(restored["previous_fingerprints"]) == 3
-    second = runner.run(restored, RunnerOptions(clarification_answers={"output_spec":"9:16"}), only_state="intake_clarify")
+    current_card = restored["question_card"]
+    structured_answers = {
+        "question_card_id": current_card["question_card_id"],
+        "answers": [
+            {"question_id": question["question_id"],
+             "selected_option_id": question["options"][0]["option_id"],
+             "free_text": None, "skipped": False}
+            for question in current_card["questions"]
+        ],
+    }
+    second = runner.run(restored, RunnerOptions(clarification_answers=structured_answers), only_state="intake_clarify")
     assert second["clarification_asked_count"] == 3 and second["clarification_remaining_budget"] == 7
+    assert len(second["clarification_transcript"]) == 1
 
 def test_blocked_and_manual_end_cannot_be_delivered(tmp_path: Path):
     store = ProjectStore(tmp_path, "blocked"); store.create()

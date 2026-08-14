@@ -105,7 +105,9 @@ export function renderClarify(container, view, { projectId, onSubmitted }) {
         label.classList.add('is-checked');
         custom.required = Boolean(opt.requires_free_text);
         helper.textContent = opt.requires_free_text ? `选择“${opt.label}”后必须填写具体内容。` : '可选：补充选项中未涵盖的具体要求。';
-        validateField(field);
+        field.error.textContent = '';
+        cards.setAttribute('aria-invalid', 'false');
+        custom.setAttribute('aria-invalid', 'false');
         persist();
         if (opt.requires_free_text) custom.focus();
       });

@@ -163,6 +163,7 @@ class WorkflowRunner:
         fingerprints = set(data.get("previous_fingerprints", []))
         already_asked = int(data.get("clarification_asked_count", 0))
         transcript = list(data.get("clarification_transcript", []))
+        invalidated: dict[str, Any] = {}
         if data.get("phase") == "waiting_clarification":
             answers = options.get("clarification_answers")
             if not answers: return {"waiting": True, "phase": "waiting_clarification"}
@@ -173,10 +174,8 @@ class WorkflowRunner:
                 "unknowns": {k:v for k,v in task.unknowns.items() if k not in resolved}})
             transcript.append({"question_card": card.model_dump(mode="json"),
                                "answer_record": record.model_dump(mode="json")})
-            data = {**data, "task_card": task.model_dump(mode="json"),
-                    "clarification_transcript": transcript, "phase": "clarification_reanalysis",
-                    "task_specification": None, "task_markdown": None,
-                    "task_revision": None, "task_approval": None}
+            invalidated = {"task_specification": None, "task_markdown": None,
+                           "task_revision": None, "task_approval": None}
         remaining = max(0, self.policy.clarification_total_budget - already_asked)
         if remaining == 0 and self._blocking_unknowns(task):
             raise ValueError("澄清问题预算已耗尽且仍有阻塞项；须人工补充或调整预算后恢复。")
@@ -193,13 +192,13 @@ class WorkflowRunner:
         if card.questions:
             fingerprints.update(q.semantic_fingerprint for q in card.questions)
             asked = already_asked + len(card.questions)
-            return {"question_card": card.model_dump(mode="json"), "waiting": True, "phase": "waiting_clarification",
+            return {**invalidated, "question_card": card.model_dump(mode="json"), "waiting": True, "phase": "waiting_clarification",
                     "task_card": task.model_dump(mode="json"), "clarification_transcript": transcript,
                     "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": asked,
                     "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - asked)}
         if self._blocking_unknowns(task):
             raise ValueError("模型未继续提问，但任务仍含阻塞未知项；禁止生成任务书。")
-        return {"question_card": card.model_dump(mode="json"), "waiting": False, "phase": "ready_to_draft",
+        return {**invalidated, "question_card": card.model_dump(mode="json"), "waiting": False, "phase": "ready_to_draft",
                 "task_card": task.model_dump(mode="json"), "clarification_transcript": transcript,
                 "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
                 "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
@@ -210,7 +209,10 @@ class WorkflowRunner:
             raise ValueError("仍有阻塞未知项，禁止生成可批准任务书。")
         if data.get("task_specification"):
             spec = TaskSpecification.model_validate(data["task_specification"])
-            markdown = specification_to_markdown(spec)
+            # The first pass is authored by the reasoning model.  Re-entering the
+            # approval gate must preserve that exact document instead of silently
+            # replacing it with the deterministic schema renderer.
+            markdown = str(data.get("task_markdown") or specification_to_markdown(spec))
         elif self.offline_mode:
             spec = specification_from_task(task)
             markdown = specification_to_markdown(spec)
@@ -261,6 +263,8 @@ class WorkflowRunner:
     @staticmethod
     def _answer_record(task: ImageTaskCard, card: QuestionCard, payload: dict[str, Any]) -> tuple[QuestionAnswerRecord, dict[str, str]]:
         raw_answers = payload.get("answers") if isinstance(payload, dict) else None
+        if isinstance(raw_answers, list) and payload.get("question_card_id") != card.question_card_id:
+            raise ValueError("回答的问题卡已失效，请刷新后重新填写。")
         if not isinstance(raw_answers, list):
             # Temporary compatibility for older API clients; new clients must send structured answers.
             raw_answers = [{"question_id": q.question_id, "selected_option_id": None,

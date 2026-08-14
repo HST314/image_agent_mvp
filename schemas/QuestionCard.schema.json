@@ -27,7 +27,8 @@
               "properties": {
                 "option_id": { "type": "string" },
                 "label": { "type": "string" },
-                "description": { "type": "string" }
+                "description": { "type": "string" },
+                "requires_free_text": { "type": "boolean", "default": false }
               }
             }
           },
