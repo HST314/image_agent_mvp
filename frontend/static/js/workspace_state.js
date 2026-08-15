@@ -18,7 +18,46 @@ function storage() {
   return {
     getItem: (key) => memory.get(key) || null,
     setItem: (key, value) => memory.set(key, String(value)),
+    removeItem: (key) => memory.delete(key),
   };
+}
+
+function keyPart(value) {
+  const text = String(value || '').trim();
+  return text ? encodeURIComponent(text) : null;
+}
+
+/** 圈画草稿比通用工作区状态多一层 asset 隔离，避免同一检查点换图后串稿。 */
+export function annotationDraftKey({ projectId, branch, checkpointId, assetId } = {}) {
+  const parts = [projectId, branch, checkpointId, assetId].map(keyPart);
+  if (parts.some((part) => !part)) return null;
+  return `studio-annotation:${parts.join(':')}`;
+}
+
+export function saveAnnotationDraft(scope, value, target = storage()) {
+  const key = annotationDraftKey(scope);
+  if (!key) return false;
+  const payload = JSON.stringify(value);
+  memory.set(key, payload);
+  try { target.setItem(key, payload); } catch { /* storage quota/privacy fallback */ }
+  return true;
+}
+
+export function loadAnnotationDraft(scope, target = storage()) {
+  const key = annotationDraftKey(scope);
+  if (!key) return null;
+  try {
+    const raw = target.getItem(key) || memory.get(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+export function clearAnnotationDraft(scope, target = storage()) {
+  const key = annotationDraftKey(scope);
+  if (!key) return false;
+  memory.delete(key);
+  try { target.removeItem?.(key); } catch { /* storage quota/privacy fallback */ }
+  return true;
 }
 
 export function saveWorkspaceState(view, value, target = storage()) {

@@ -8,6 +8,9 @@
 
 import { el, toast } from './dom.js';
 import { assetUrl, assetIdOf, submitAnnotation } from './api.js';
+import {
+  clearAnnotationDraft, loadAnnotationDraft, saveAnnotationDraft,
+} from './workspace_state.js';
 
 export const MAX_STROKE_POINTS = 5000;
 const MIN_POINT_DIST = 0.004; // 归一化坐标下的最小采样间距
@@ -58,8 +61,57 @@ export function thinStroke(points, minDist = MIN_POINT_DIST, maxPoints = MAX_STR
   return out;
 }
 
-export function createMarksModel() {
-  const marks = [];
+function normalizedColor(value, fallback = '#ff0000') {
+  const color = String(value || '').toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(color) ? color : fallback;
+}
+
+function normalizedWidth(value, fallback = 6) {
+  const width = Number(value);
+  return Number.isFinite(width) ? Math.min(64, Math.max(1, width)) : fallback;
+}
+
+function normalizedMark(mark) {
+  if (!mark || typeof mark !== 'object') return null;
+  const color = normalizedColor(mark.color);
+  const width = normalizedWidth(mark.width);
+  if (mark.kind === 'rectangle') {
+    const values = [mark.x, mark.y, mark.w, mark.h].map(Number);
+    if (!values.every(Number.isFinite)) return null;
+    const [rawX, rawY, rawW, rawH] = values;
+    const x = clamp01(rawX);
+    const y = clamp01(rawY);
+    const x2 = clamp01(rawX + rawW);
+    const y2 = clamp01(rawY + rawH);
+    if (x2 <= x || y2 <= y) return null;
+    return { kind: 'rectangle', x, y, w: x2 - x, h: y2 - y, color, width };
+  }
+  if (mark.kind === 'stroke' && Array.isArray(mark.points)) {
+    const points = mark.points.slice(0, MAX_STROKE_POINTS).map((point) => {
+      if (!Array.isArray(point) || point.length !== 2) return null;
+      const [x, y] = point.map(Number);
+      return Number.isFinite(x) && Number.isFinite(y) ? [clamp01(x), clamp01(y)] : null;
+    }).filter(Boolean);
+    if (points.length < 2) return null;
+    return { kind: 'stroke', points, color, width };
+  }
+  return null;
+}
+
+export function normalizeAnnotationDraft(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    version: 1,
+    marks: (Array.isArray(value.marks) ? value.marks : []).map(normalizedMark).filter(Boolean),
+    tool: value.tool === 'stroke' ? 'stroke' : 'rectangle',
+    color: normalizedColor(value.color),
+    width: normalizedWidth(value.width),
+    prompt: typeof value.prompt === 'string' ? value.prompt.slice(0, 10000) : '',
+  };
+}
+
+export function createMarksModel(initialMarks = []) {
+  const marks = initialMarks.map(normalizedMark).filter(Boolean);
   return {
     list: () => marks.slice(),
     isEmpty: () => marks.length === 0,
@@ -109,12 +161,28 @@ function drawMarks(ctx, marks, w, h) {
   }
 }
 
-export function createAnnotator(container, { projectId, asset, history = [], onSubmitted, onBusy }) {
-  const model = createMarksModel();
-  let tool = 'rectangle';
-  let color = '#ff0000';
-  let width = 6;
+export function createAnnotator(container, {
+  projectId, asset, history = [], onSubmitted, onBusy, draftScope = null,
+}) {
+  const scope = draftScope ? { ...draftScope, projectId, assetId: assetIdOf(asset) } : null;
+  const restoredDraft = normalizeAnnotationDraft(loadAnnotationDraft(scope)) || normalizeAnnotationDraft({});
+  const model = createMarksModel(restoredDraft.marks);
+  let tool = restoredDraft.tool;
+  let color = restoredDraft.color;
+  let width = restoredDraft.width;
   let drawing = null; // {kind, start, points}
+  let promptInput = null;
+
+  function persistDraft() {
+    saveAnnotationDraft(scope, {
+      version: 1,
+      marks: model.serialize(),
+      tool,
+      color,
+      width,
+      prompt: promptInput?.value ?? restoredDraft.prompt,
+    });
+  }
 
   const stage = el('div', { class: 'annotate-stage' });
   const img = el('img', { alt: '待微调图像', draggable: 'false' });
@@ -194,23 +262,24 @@ export function createAnnotator(container, { projectId, asset, history = [], onS
     drawing = null;
     redraw();
     syncToolState();
+    persistDraft();
   });
   canvas.addEventListener('pointercancel', () => { drawing = null; redraw(); });
 
   /* ---- 工具栏 ---- */
-  const rectBtn = el('button', { type: 'button', class: 'tool-btn', text: '矩形框', 'aria-pressed': 'true' });
-  const brushBtn = el('button', { type: 'button', class: 'tool-btn', text: '自由画笔', 'aria-pressed': 'false' });
-  rectBtn.addEventListener('click', () => { tool = 'rectangle'; syncToolState(); });
-  brushBtn.addEventListener('click', () => { tool = 'stroke'; syncToolState(); });
+  const rectBtn = el('button', { type: 'button', class: 'tool-btn', text: '矩形框', 'aria-pressed': String(tool === 'rectangle') });
+  const brushBtn = el('button', { type: 'button', class: 'tool-btn', text: '自由画笔', 'aria-pressed': String(tool === 'stroke') });
+  rectBtn.addEventListener('click', () => { tool = 'rectangle'; syncToolState(); persistDraft(); });
+  brushBtn.addEventListener('click', () => { tool = 'stroke'; syncToolState(); persistDraft(); });
   const colorInput = el('input', { type: 'color', class: 'input', value: color, 'aria-label': '标注颜色' });
-  colorInput.addEventListener('input', () => { color = colorInput.value; });
+  colorInput.addEventListener('input', () => { color = colorInput.value; persistDraft(); });
   const widthInput = el('input', { type: 'range', class: 'input', min: '1', max: '64', value: String(width), 'aria-label': '笔触粗细' });
   const widthValue = el('small', { text: `${width}px` });
-  widthInput.addEventListener('input', () => { width = Number(widthInput.value); widthValue.textContent = `${width}px`; });
+  widthInput.addEventListener('input', () => { width = Number(widthInput.value); widthValue.textContent = `${width}px`; persistDraft(); });
   const undoBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '撤销', disabled: 'disabled' });
-  undoBtn.addEventListener('click', () => { model.undo(); redraw(); syncToolState(); });
+  undoBtn.addEventListener('click', () => { model.undo(); redraw(); syncToolState(); persistDraft(); });
   const clearBtn = el('button', { type: 'button', class: 'btn btn--secondary', text: '清空', disabled: 'disabled' });
-  clearBtn.addEventListener('click', () => { model.clear(); redraw(); syncToolState(); });
+  clearBtn.addEventListener('click', () => { model.clear(); redraw(); syncToolState(); persistDraft(); });
 
   function syncToolState() {
     rectBtn.setAttribute('aria-pressed', String(tool === 'rectangle'));
@@ -220,7 +289,9 @@ export function createAnnotator(container, { projectId, asset, history = [], onS
     else { undoBtn.removeAttribute('disabled'); clearBtn.removeAttribute('disabled'); }
   }
 
-  const promptInput = el('textarea', { class: 'input', id: 'annotate-prompt', 'aria-describedby': 'annotate-prompt-help', placeholder: '例如：把框选区域的颜色调暖，保持构图不变' });
+  promptInput = el('textarea', { class: 'input', id: 'annotate-prompt', 'aria-describedby': 'annotate-prompt-help', placeholder: '例如：把框选区域的颜色调暖，保持构图不变' });
+  promptInput.value = restoredDraft.prompt;
+  promptInput.addEventListener('input', persistDraft);
   const promptError = el('div', { class: 'field-error', role: 'alert' });
 
   /* ---- 提交前指导图预览（验收：显示坐标与原图坐标一致） ---- */
@@ -261,6 +332,7 @@ export function createAnnotator(container, { projectId, asset, history = [], onS
       try {
         const artifactId = assetIdOf(asset);
         await submitAnnotation(projectId, { artifact_id: artifactId, marks, prompt });
+        clearAnnotationDraft(scope);
         toast('微调已提交，等待重新质检。');
         onSubmitted?.();
       } catch (error) {
@@ -312,6 +384,7 @@ export function createAnnotator(container, { projectId, asset, history = [], onS
   img.addEventListener('load', layout);
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(layout).observe(stage);
   layout();
+  syncToolState();
 
-  return { model, layout };
+  return { model, layout, draftScope: scope };
 }

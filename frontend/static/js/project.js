@@ -634,6 +634,10 @@ function renderAnnotateStage(panel, view, { projectId, refresh, jobRunner }) {
     projectId,
     asset,
     history: view.history || [],
+    draftScope: {
+      branch: view.manifest?.current_branch || 'main',
+      checkpointId: view.manifest?.current_checkpoint?.checkpoint_id || 'empty',
+    },
     onSubmitted: refresh,
     onBusy: setTuneBusy,
   });

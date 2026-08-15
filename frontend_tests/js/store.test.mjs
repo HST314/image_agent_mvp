@@ -3,7 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { saveDraft, loadDraft, clearDraft, intentIdempotencyKey, clearIntentIdempotencyKey } from '../../frontend/static/js/store.js';
 import { assetUrl, assetIdOf } from '../../frontend/static/js/api.js';
-import { workspaceStateKey, saveWorkspaceState, loadWorkspaceState } from '../../frontend/static/js/workspace_state.js';
+import {
+  annotationDraftKey, clearAnnotationDraft, loadAnnotationDraft, saveAnnotationDraft,
+  workspaceStateKey, saveWorkspaceState, loadWorkspaceState,
+} from '../../frontend/static/js/workspace_state.js';
 
 function memoryStorage() {
   const map = new Map();
@@ -25,6 +28,24 @@ test('工作区 UI 状态按工程、分支和检查点隔离', () => {
   saveWorkspaceState(view, { scrollY: 320, details: [true] }, storage);
   assert.deepEqual(loadWorkspaceState(view, storage), { scrollY: 320, details: [true] });
   assert.equal(loadWorkspaceState({ ...view, manifest: { ...view.manifest, current_checkpoint: { checkpoint_id: 'checkpoint_2' } } }, storage), null);
+});
+
+test('标注草稿按工程、分支、检查点和资产四层隔离并可清除', () => {
+  const storage = memoryStorage();
+  const scope = { projectId: 'p/1', branch: '修订 A', checkpointId: 'checkpoint_1', assetId: 'artifact_1' };
+  assert.equal(
+    annotationDraftKey(scope),
+    'studio-annotation:p%2F1:%E4%BF%AE%E8%AE%A2%20A:checkpoint_1:artifact_1',
+  );
+  const draft = { marks: [{ kind: 'rectangle' }], tool: 'stroke', color: '#00ff00', width: 12 };
+  saveAnnotationDraft(scope, draft, storage);
+  assert.deepEqual(loadAnnotationDraft(scope, storage), draft);
+  assert.equal(loadAnnotationDraft({ ...scope, assetId: 'artifact_2' }, storage), null);
+  assert.equal(loadAnnotationDraft({ ...scope, checkpointId: 'checkpoint_2' }, storage), null);
+  assert.equal(loadAnnotationDraft({ ...scope, branch: '修订 B' }, storage), null);
+  assert.equal(loadAnnotationDraft({ ...scope, projectId: 'p2' }, storage), null);
+  clearAnnotationDraft(scope, storage);
+  assert.equal(loadAnnotationDraft(scope, storage), null);
 });
 
 test('草稿往返：保存后可恢复，清除后为空', () => {

@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  containRect, toNormalized, clamp01, isInsideContent, thinStroke, createMarksModel, MAX_STROKE_POINTS,
+  containRect, toNormalized, clamp01, isInsideContent, thinStroke, createMarksModel,
+  normalizeAnnotationDraft, MAX_STROKE_POINTS,
 } from '../../frontend/static/js/annotate.js';
 
 test('containRect：横图在方形容器上下留白', () => {
@@ -78,4 +79,37 @@ test('MarksModel：画笔序列化为 [x,y] 数组；撤销/清空语义正确',
   model.addStroke([{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.5 }], '#ff0000', 6);
   model.clear();
   assert.equal(model.isEmpty(), true);
+});
+
+test('标注草稿恢复矩形、笔迹、工具、颜色、粗细与说明文字', () => {
+  const restored = normalizeAnnotationDraft({
+    marks: [
+      { kind: 'rectangle', x: .1, y: .2, w: .3, h: .4, color: '#AABBCC', width: 9 },
+      { kind: 'stroke', points: [[.2, .3], [.5, .7]], color: '#00ff00', width: 17 },
+    ],
+    tool: 'stroke', color: '#123456', width: 17, prompt: '保留主体，调暖框选区域',
+  });
+  assert.equal(restored.tool, 'stroke');
+  assert.equal(restored.color, '#123456');
+  assert.equal(restored.width, 17);
+  assert.equal(restored.prompt, '保留主体，调暖框选区域');
+  const model = createMarksModel(restored.marks);
+  assert.deepEqual(model.serialize(), restored.marks);
+});
+
+test('损坏的标注草稿被裁剪和过滤，不污染运行态', () => {
+  const restored = normalizeAnnotationDraft({
+    marks: [
+      { kind: 'rectangle', x: -1, y: .2, w: 3, h: .4, color: 'bad', width: 999 },
+      { kind: 'stroke', points: [[.1, .1], ['bad', .2]] },
+      { kind: 'unknown' },
+    ],
+    tool: 'eraser', color: 'red', width: -5,
+  });
+  assert.equal(restored.tool, 'rectangle');
+  assert.equal(restored.color, '#ff0000');
+  assert.equal(restored.width, 1);
+  assert.deepEqual(restored.marks, [
+    { kind: 'rectangle', x: 0, y: .2, w: 1, h: .4000000000000001, color: '#ff0000', width: 64 },
+  ]);
 });

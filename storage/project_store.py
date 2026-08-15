@@ -684,10 +684,23 @@ class ProjectStore:
         return branch
 
     def branches(self) -> dict[str, Any]:
-        """Expose branch lineage and read-only checkpoint metadata."""
-        manifest = self.manifest()
+        """Expose branch lineage from one stable, read-only commit projection.
+
+        A branch transaction writes ``branches.json`` and the checkpoint index
+        before swapping the manifest.  While its pending intent exists, hide
+        those target records and serve the previous manifest just like the
+        project-detail GET; readers must never observe a half-committed branch.
+        """
+        intent = self.pending_transaction()
+        manifest = self.read_manifest()
         branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
         checkpoints = self.checkpoints.list()
+        if intent:
+            pending_checkpoint = intent.get("checkpoint_id")
+            checkpoints = [item for item in checkpoints if item["checkpoint_id"] != pending_checkpoint]
+            if intent.get("kind") == "branch":
+                branches.pop(str(intent.get("branch") or ""), None)
+        checkpoints = [item for item in checkpoints if item["branch"] in branches]
         return {
             "current_branch": manifest["current_branch"],
             "current_checkpoint_id": (manifest.get("current_checkpoint") or {}).get("checkpoint_id"),

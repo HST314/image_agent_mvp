@@ -133,6 +133,60 @@ def test_project_get_during_branch_intent_serves_previous_commit_without_mutatio
     assert (store.root / "transactions/pending.json").is_file()
 
 
+def test_branch_listing_hides_pending_branch_and_checkpoint_without_mutation(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, source = _store(tmp_path)
+    previous_manifest = store.manifest()
+    source_envelope = store.checkpoints.load(source)
+    branch = "尚未提交分支"
+    prepared = store.checkpoints.prepare(branch, 1, source_envelope["state"], source_envelope["data"])
+    checkpoint_id, relative, checksum = store.checkpoints.save(
+        branch, 1, source_envelope["state"], source_envelope["data"], prepared=prepared,
+    )
+    branches_path = store.root / "branches.json"
+    branch_document = json.loads(branches_path.read_text())
+    branch_document["branches"][branch] = {"parent": "main", "from_checkpoint": source}
+    atomic_json(branches_path, branch_document)
+    manifest = dict(previous_manifest)
+    manifest.update(current_branch=branch, current_checkpoint={
+        "checkpoint_id": checkpoint_id, "checksum": checksum, "branch": branch,
+        "sequence": 1, "state": source_envelope["state"],
+    })
+    atomic_json(store.root / "manifest.json", manifest)
+    atomic_json(store.root / "transactions/pending.json", {
+        "format_version": 1, "kind": "branch", "status": "intent", "branch": branch,
+        "sequence": 1, "state": source_envelope["state"], "data": source_envelope["data"],
+        "from_checkpoint": source, "checkpoint_id": checkpoint_id, "path": relative,
+        "checksum": checksum, "previous_manifest": previous_manifest,
+    })
+    before = {
+        "manifest": (store.root / "manifest.json").read_bytes(),
+        "branches": branches_path.read_bytes(),
+        "index": store.checkpoints.index_path.read_bytes(),
+        "pending": (store.root / "transactions/pending.json").read_bytes(),
+    }
+
+    response = TestClient(main_front.app, raise_server_exceptions=False).get(
+        f"/api/projects/{store.project_id}/branches"
+    )
+
+    assert response.status_code == 200
+    listing = response.json()
+    assert listing["current_branch"] == previous_manifest["current_branch"] == "main"
+    assert listing["current_checkpoint_id"] == source
+    assert [item["name"] for item in listing["items"]] == ["main"]
+    assert checkpoint_id not in {
+        checkpoint["checkpoint_id"]
+        for item in listing["items"] for checkpoint in item["checkpoints"]
+    }
+    assert before == {
+        "manifest": (store.root / "manifest.json").read_bytes(),
+        "branches": branches_path.read_bytes(),
+        "index": store.checkpoints.index_path.read_bytes(),
+        "pending": (store.root / "transactions/pending.json").read_bytes(),
+    }
+
+
 def test_project_corrupt_response_is_sanitized_and_traceable(caplog):
     exc = CorruptProjectError("private/projects/用户/secret/checkpoint.json")
     exc.project_context = {
