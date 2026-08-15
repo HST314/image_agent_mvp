@@ -15,6 +15,7 @@ import { buildNewProjectTask } from './createform.js';
 import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { createAuxPageRefresher, createViewSwitcher } from './viewswitch.js';
+import { captureWorkspaceState } from './workspace_state.js';
 
 async function boot() {
   patch({ offline: safeGet('studio-offline') === 'true' });
@@ -107,7 +108,48 @@ const auxPageRefresher = createAuxPageRefresher({
 }, viewOperations);
 const refreshAuxPage = auxPageRefresher.refresh;
 
+let workspaceReconcileController = null;
+function cancelWorkspaceReconcile() {
+  workspaceReconcileController?.abort();
+  workspaceReconcileController = null;
+}
+
+function workspaceRevision(view) {
+  const manifest = view?.manifest || {};
+  const job = view?.active_job || {};
+  return [
+    manifest.current_branch,
+    manifest.current_checkpoint?.checkpoint_id,
+    manifest.updated_at,
+    job.job_id,
+    job.status,
+  ].map((value) => String(value || '')).join(':');
+}
+
+async function reconcileWorkspace(cached) {
+  cancelWorkspaceReconcile();
+  const controller = new AbortController();
+  workspaceReconcileController = controller;
+  try {
+    const fresh = await api.getProject(cached.project_id, { signal: controller.signal, cache: 'no-store' });
+    if (controller.signal.aborted || state.view !== 'workspace'
+        || state.current?.project_id !== cached.project_id) return;
+    if (workspaceRevision(fresh) === workspaceRevision(cached)) {
+      // 同一提交只更新内存权威视图，不重建 DOM，保留用户刚恢复的 UI 状态。
+      patch({ current: fresh });
+      return;
+    }
+    renderProject(fresh);
+    renderNav();
+  } catch (error) {
+    if (!controller.signal.aborted) toast(error.message, 'error');
+  } finally {
+    if (workspaceReconcileController === controller) workspaceReconcileController = null;
+  }
+}
+
 function goHome() {
+  cancelWorkspaceReconcile();
   leavePage();
   stopJobTracking();
 
@@ -129,6 +171,7 @@ const navigation = createNavigator({
   notify: toast,
 });
 export const openProject = (id) => {
+  cancelWorkspaceReconcile();
   leavePage();
   return navigation.openProject(id);
 };
@@ -143,6 +186,15 @@ const viewSwitcher = createViewSwitcher({
   renderPage,
   openProject,
   goHome,
+  captureWorkspace: (view) => {
+    cancelWorkspaceReconcile();
+    captureWorkspaceState($('#content'), view);
+  },
+  renderCachedWorkspace: (view) => {
+    leavePage();
+    renderProject(view);
+  },
+  reconcileWorkspace,
 });
 const setView = viewSwitcher.setView;
 

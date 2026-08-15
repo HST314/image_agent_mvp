@@ -198,6 +198,10 @@ test('formatError：对象 detail 的英文 code 不直接上屏', () => {
     formatError({ code: 'PROJECT_FILE_MISSING', message: '读取 C:\\用户\\作品\\检查点.json 失败' }),
     '工程数据不完整，请运行工程健康检查并修复后重试。',
   );
+  assert.equal(
+    formatError({ code: 'PROJECT_CORRUPT', message: '工程数据校验失败，请运行工程健康检查并修复后重试。', trace_id: 'trace_safe123' }),
+    '工程数据校验失败，请运行工程健康检查并修复后重试。（追踪号：trace_safe123）',
+  );
 });
 
 /* ---- 任务书预览字段标签 ---- */

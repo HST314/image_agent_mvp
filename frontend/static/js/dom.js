@@ -36,16 +36,24 @@ export const icons = {
 
 export function iconHtml(name) { return icons[name] || icons.info; }
 
+const activeToasts = new Map();
+
 export function toast(message, type = 'info') {
   const region = $('#toasts');
   if (!region) return;
+  const key = `${type}:${String(message)}`;
+  if (activeToasts.has(key)) return;
   const item = el('div', {
     class: `toast ${type === 'error' ? 'toast--error' : ''}`,
     role: type === 'error' ? 'alert' : 'status',
     text: message,
   });
+  activeToasts.set(key, item);
   region.append(item);
-  setTimeout(() => item.remove(), 5000);
+  setTimeout(() => {
+    item.remove();
+    if (activeToasts.get(key) === item) activeToasts.delete(key);
+  }, 5000);
 }
 
 /** T35 统一加载/空态/错误态组件。 */

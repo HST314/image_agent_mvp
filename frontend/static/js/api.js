@@ -8,11 +8,12 @@ const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interr
 const TERMINAL_EVENTS = new Set(['succeeded', 'failed', 'cancelled']);
 
 export class ApiError extends Error {
-  constructor(message, { status = null, code = null } = {}) {
+  constructor(message, { status = null, code = null, traceId = null } = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.traceId = traceId;
   }
 }
 
@@ -32,8 +33,10 @@ export function formatError(detail) {
   if (typeof detail === 'string') return errorText(detail);
   if (Array.isArray(detail)) return detail.map((x) => `${locLabel(x.loc)}：${validationText(x.msg)}`).join('；');
   if (detail && typeof detail === 'object') {
-    if (detail.code === 'PROJECT_FILE_MISSING') return errorText(detail.code);
-    return errorText(detail.message || detail.code || '');
+    const message = detail.code === 'PROJECT_FILE_MISSING'
+      ? errorText(detail.code)
+      : errorText(detail.message || detail.code || '');
+    return detail.trace_id ? `${message}（追踪号：${detail.trace_id}）` : message;
   }
   return '请求未完成，请检查输入后重试。';
 }
@@ -60,6 +63,7 @@ export async function api(path, options = {}) {
     if (!res.ok) throw new ApiError(formatError(data.detail), {
       status: res.status,
       code: data.detail && typeof data.detail === 'object' ? data.detail.code : null,
+      traceId: data.detail && typeof data.detail === 'object' ? data.detail.trace_id : null,
     });
     return data;
   } catch (error) {

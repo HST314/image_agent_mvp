@@ -80,6 +80,8 @@ def test_t10_crash_after_checkpoint_file_before_index_recovers(tmp_path: Path):
     atomic_json(target, prepared["envelope"])
     assert target.exists()
     assert store.resume() == {"v": 1}
+    assert target.exists() and pending.exists(), "只读恢复不得改写正在进行的事务"
+    store.recover_pending_transaction()
     assert not target.exists() and not pending.exists()
     assert store.checkpoint("next", {"v": 2}).startswith("checkpoint_")
 
@@ -99,4 +101,6 @@ def test_t10_branch_crash_rolls_back_and_path_names_are_rejected(tmp_path: Path)
         "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
         "checksum": prepared["checksum"]})
     assert store.resume() == {"v": 1}
+    assert "repair" in json.loads(branches_path.read_text())["branches"]
+    store.recover_pending_transaction()
     assert "repair" not in json.loads(branches_path.read_text())["branches"]

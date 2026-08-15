@@ -7,8 +7,15 @@ import {
   isCreatedBranchView,
   qualityRoundSnapshots,
   skillInvocationDomIds,
+  skillInvocationSections,
   skillInvocationView,
 } from '../../frontend/static/js/snapshots.js';
+
+test('阶段专属技能卡：品类阶段只显示品类库，艺术风格阶段只显示艺术风格库', () => {
+  assert.deepEqual(skillInvocationSections('category'), { category: true, style: false });
+  assert.deepEqual(skillInvocationSections('style'), { category: false, style: true });
+  assert.deepEqual(skillInvocationSections('both'), { category: true, style: true });
+});
 
 const checkpoint = (state, sequence, branch = 'main') => ({
   checkpoint_id: `checkpoint_${String(sequence).padStart(24, '0')}`,

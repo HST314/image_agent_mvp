@@ -80,4 +80,6 @@ def test_t10_t12_checkpoint_id_and_pending_recovery(tmp_path: Path):
     pending = store.root / "transactions/pending.json"
     pending.parent.mkdir(parents=True, exist_ok=True)
     pending.write_text(json.dumps({"format_version": 1, "status": "intent", "branch": "main", "sequence": 2, "state": "next", "data": {}}))
-    assert store.resume() == {"ok": True} and not pending.exists()
+    assert store.resume() == {"ok": True} and pending.exists()
+    store.recover_pending_transaction()
+    assert not pending.exists()

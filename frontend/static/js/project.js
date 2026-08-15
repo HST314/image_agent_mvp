@@ -18,6 +18,7 @@ import { renderJobProgress } from './history.js';
 import { markActiveTab, setTopContext } from './topnav.js';
 import { errorText, terminationReasonLabel } from './copy.js';
 import { renderProgressSteps, renderQualityHistory, renderSkillInvocations } from './snapshots.js';
+import { restoreWorkspaceState } from './workspace_state.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -35,6 +36,9 @@ export function stopJobTracking() { viewOperations.leave(); }
 
 export function renderProject(view, { autostartBootstrap = false } = {}) {
   viewOperations.begin();
+  // 后台对账重渲染前关闭旧的历史快照弹窗；同检查点的弹窗会由 UI 状态恢复
+  // 重新打开，避免 body 上叠出两个 modal。
+  document.querySelectorAll('dialog.snapshot-dialog[open]').forEach((dialog) => dialog.close());
   /* 渲染工程即回到工作区视图，并同步顶栏「工程名 · 分支」标识（T1）。 */
   patch({ current: view, view: 'workspace' });
   markActiveTab('workspace');
@@ -113,6 +117,7 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
      * 或刷新重进不会重复执行（后端 JOBS.submit 按工程+键去重）。 */
     jobRunner.start({}, { intent: 'bootstrap', operation: '初始化工程' });
   }
+  restoreWorkspaceState(content, view);
 }
 
 /* ---------- 舞台 ---------- */
@@ -162,6 +167,11 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'style_processing') {
+    // 已落盘的艺术风格结果属于当前阶段上下文；状态页往返或刷新时应继续
+    // 展示，而不是退化为只有“准备中”的空占位。
+    if (snapshot.skill_invocations || snapshot.skill_invocation_current || snapshot.style_selections) {
+      renderSkillInvocations(panel, projectId, snapshot, { mode: 'style' });
+    }
     renderRecoveryStage(panel, derived, jobRunner, '正在准备艺术风格',
       '系统将基于已确认任务书与品类约束筛选五种可执行风格。');
     return;
@@ -352,7 +362,7 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
       el('p', { text: `已保留 ${history.length} 个版本供审计；当前结果确认前不会发起五图生成。` }),
     ]),
   ]));
-  renderSkillInvocations(panel, projectId, snapshot);
+  renderSkillInvocations(panel, projectId, snapshot, { mode: 'style' });
   if (history.length) {
     const audit = el('details', { class: 'skill-gate__history' });
     audit.append(el('summary', { text: `查看 ${history.length} 个技能调用审计版本` }));
@@ -364,7 +374,7 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
         text: `版本 ${version.version || '—'} · ${decisionLabel[version.decision] || '已记录'}`,
       }));
       const body = el('div', { class: 'skill-gate__version-body' });
-      renderSkillInvocations(body, projectId, version);
+      renderSkillInvocations(body, projectId, version, { mode: 'style' });
       item.append(body);
       versions.append(item);
     });

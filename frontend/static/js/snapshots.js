@@ -238,10 +238,18 @@ export function skillInvocationDomIds(snapshot = {}) {
   };
 }
 
-export function renderSkillInvocations(container, projectId, snapshot) {
+export function skillInvocationSections(mode = 'both') {
+  return {
+    category: mode === 'both' || mode === 'category',
+    style: mode === 'both' || mode === 'style',
+  };
+}
+
+export function renderSkillInvocations(container, projectId, snapshot, { mode = 'both' } = {}) {
   const model = skillInvocationView(snapshot);
   const titleIds = skillInvocationDomIds(snapshot);
-  const layout = el('div', { class: 'skill-call-grid' });
+  const { category: showCategory, style: showStyle } = skillInvocationSections(mode);
+  const layout = el('div', { class: `skill-call-grid skill-call-grid--${mode}` });
 
   const categoryCard = el('section', { class: 'skill-call-card', 'aria-labelledby': titleIds.category });
   categoryCard.append(el('div', { class: 'skill-call-card__head' }, [
@@ -261,7 +269,7 @@ export function renderSkillInvocations(container, projectId, snapshot) {
 
   const styleCard = el('section', { class: 'skill-call-card skill-call-card--styles', 'aria-labelledby': titleIds.style });
   styleCard.append(el('div', { class: 'skill-call-card__head' }, [
-    el('span', { class: 'skill-call-card__index', text: '02', 'aria-hidden': 'true' }),
+    el('span', { class: 'skill-call-card__index', text: showCategory ? '02' : '01', 'aria-hidden': 'true' }),
     el('div', {}, [
       el('h3', { id: titleIds.style, text: '艺术风格库' }),
       el('p', { text: `已选择 ${model.styles.length}/5 张风格参考图，并提取可迁移的视觉机制` }),
@@ -285,9 +293,10 @@ export function renderSkillInvocations(container, projectId, snapshot) {
   } else {
     styleCard.append(el('p', { class: 'skill-call-card__empty', text: '该快照没有可展示的艺术风格库调用结果。' }));
   }
-  layout.append(categoryCard, styleCard);
+  if (showCategory) layout.append(categoryCard);
+  if (showStyle) layout.append(styleCard);
   container.append(layout);
-  return true;
+  return showCategory || showStyle;
 }
 
 function renderInspection(container, projectId, snapshot) {
@@ -409,7 +418,7 @@ function renderSnapshotContent(container, projectId, item) {
         review_checks: skill.review_checks || [],
       }, style_library: { selections: [] } },
     };
-    rendered = renderSkillInvocations(container, projectId, categoryOnly);
+    rendered = renderSkillInvocations(container, projectId, categoryOnly, { mode: 'category' });
   }
   if (item.state === 'intake_clarify') rendered = renderTaskSummary(container, snapshot);
   if (item.state === 'confirmation_build' && snapshot.task_markdown) {
@@ -418,7 +427,7 @@ function renderSnapshotContent(container, projectId, item) {
     container.append(document);
     rendered = true;
   }
-  if (item.state === 'initial_candidate_generation') rendered = renderSkillInvocations(container, projectId, snapshot) || rendered;
+  if (item.state === 'initial_candidate_generation') rendered = renderSkillInvocations(container, projectId, snapshot, { mode: 'style' }) || rendered;
   if (item.state === 'master_candidate_selection') rendered = renderCandidates(container, projectId, snapshot) || rendered;
   if (item.state === 'self_check_iteration') rendered = renderInspection(container, projectId, snapshot) || rendered;
   if (item.state === 'human_prompt_iteration') {
@@ -440,7 +449,8 @@ export function renderProgressSteps(container, view, { onBranchCreated }) {
     const item = completed.get(stage.id);
     const className = `step ${item ? 'is-done step--interactive' : index === currentIndex ? `is-current${isRunning ? ' is-running' : ''}` : ''}`;
     const node = item
-      ? el('button', { type: 'button', class: className, 'aria-label': `查看${stage.label}阶段只读快照` })
+      ? el('button', { type: 'button', class: className, 'aria-label': `查看${stage.label}阶段只读快照`,
+        dataset: { snapshotCheckpoint: item.checkpoint_id } })
       : el('div', { class: className, 'aria-current': index === currentIndex ? 'step' : null });
     node.append(el('div', { class: 'step__bar' }), el('span', { text: `${stage.label}${index === currentIndex && isRunning ? ' · 处理中' : ''}` }));
     if (item) node.addEventListener('click', () => openSnapshotDialog({ projectId: view.project_id, item, onBranchCreated }));
@@ -450,7 +460,8 @@ export function renderProgressSteps(container, view, { onBranchCreated }) {
 
 export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
   const label = stateLabel(item.state);
-  const dialog = el('dialog', { class: 'dialog snapshot-dialog', 'aria-labelledby': 'snapshot-dialog-title' });
+  const dialog = el('dialog', { class: 'dialog snapshot-dialog', 'aria-labelledby': 'snapshot-dialog-title',
+    dataset: { snapshotCheckpoint: item.checkpoint_id } });
   const close = el('button', { type: 'button', class: 'btn btn--secondary', text: '关闭' });
   const branch = el('button', { type: 'button', class: 'btn btn--primary', text: '重跑此阶段并创建分支' });
   const body = el('div', { class: 'dialog__body snapshot-dialog__body' });

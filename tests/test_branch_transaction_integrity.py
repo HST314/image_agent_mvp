@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main_front
-from storage.project_store import ProjectStore, atomic_json
+from storage.project_store import CorruptProjectError, ProjectStore, atomic_json
 
 
 def _store(tmp_path: Path) -> tuple[ProjectStore, str]:
@@ -63,7 +63,7 @@ def test_page_projection_failure_after_api_commit_does_not_rollback_branch(tmp_p
     assert reconciled.json()["manifest"]["current_branch"] == "投影失败分支"
 
 
-def test_recovery_rejects_manifest_only_commit_when_checkpoint_file_is_missing(tmp_path: Path):
+def test_read_paths_never_recover_or_delete_a_writer_transaction(tmp_path: Path):
     store, source = _store(tmp_path)
     previous_manifest = store.manifest()
     source_envelope = store.checkpoints.load(source)
@@ -90,10 +90,66 @@ def test_recovery_rejects_manifest_only_commit_when_checkpoint_file_is_missing(t
     })
     (store.root / relative).unlink()
 
+    # Ordinary project reads serve the last complete version and leave the
+    # writer's intent untouched.  They must never roll back another request.
     assert store.resume() == source_envelope["data"]
+    assert store.progress_snapshots()[-1]["checkpoint_id"] == source
+    assert (store.root / "transactions/pending.json").is_file()
+    assert store.manifest()["current_branch"] == branch
+
+    # Recovery is an explicit, lock-owning write operation.
+    store.recover_pending_transaction()
     assert store.manifest() == previous_manifest
     assert branch not in json.loads(branches_path.read_text())["branches"]
     assert checkpoint_id not in {item["checkpoint_id"] for item in store.checkpoints.list()}
+
+
+def test_project_get_during_branch_intent_serves_previous_commit_without_mutation(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, source = _store(tmp_path)
+    previous_manifest = store.manifest()
+    source_envelope = store.checkpoints.load(source)
+    atomic_json(store.root / "transactions/pending.json", {
+        "format_version": 1,
+        "kind": "branch",
+        "status": "intent",
+        "branch": "正在写入的分支",
+        "sequence": 1,
+        "state": source_envelope["state"],
+        "data": source_envelope["data"],
+        "from_checkpoint": source,
+        "checkpoint_id": "checkpoint_pending0000000000000",
+        "path": "checkpoints/正在写入的分支/000001-confirmation_build.json",
+        "checksum": "pending",
+        "previous_manifest": previous_manifest,
+    })
+
+    client = TestClient(main_front.app, raise_server_exceptions=False)
+    response = client.get(f"/api/projects/{store.project_id}")
+
+    assert response.status_code == 200
+    assert response.json()["manifest"] == previous_manifest
+    assert response.json()["snapshot"] == source_envelope["data"]
+    assert (store.root / "transactions/pending.json").is_file()
+
+
+def test_project_corrupt_response_is_sanitized_and_traceable(caplog):
+    exc = CorruptProjectError("private/projects/用户/secret/checkpoint.json")
+    exc.project_context = {
+        "operation": "project_view",
+        "transaction_phase": "prepared",
+        "source_checkpoint": "checkpoint_source",
+        "target_checkpoint": "checkpoint_target",
+        "lock_owned_by_current": False,
+    }
+
+    response = main_front._translate_error(exc)
+
+    assert response.status_code == 409
+    assert response.detail["code"] == "PROJECT_CORRUPT"
+    assert response.detail["trace_id"].startswith("trace_")
+    assert "private/projects" not in response.detail["message"]
+    assert "transaction_phase" in caplog.text
 
 
 def test_health_tool_repairs_mojibake_index_by_checksum_with_backup(tmp_path: Path):

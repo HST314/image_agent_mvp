@@ -255,33 +255,41 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
 
 
 def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = True) -> dict[str, Any]:
-    manifest = store.manifest()
-    snapshot = store.resume() or {}
-    delivery_status = None
-    delivery_status_path = store.root / "delivery" / "finalized.json"
-    if delivery_status_path.is_file():
-        try:
-            delivery_status = json.loads(delivery_status_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            delivery_status = None
-    view = {
-        "project_id": store.project_id,
-        "manifest": manifest,
-        "snapshot": snapshot,
-        "history": store.history(),
-        "capabilities": _capabilities(manifest, snapshot),
-        "resource_events": [e for e in store.history() if e.get("type") == "resource_degraded"],
-        "unknown_actions": _gateway_for_store(store).unknown_actions(),
-        "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
-        "active_job": JOBS.active_for_project(store.project_id),
-        "delivery_status": delivery_status,
-    }
-    if include_progress_snapshots:
-        # T9：只返回当前分支谱系上的不可变检查点；前端据此展示已完成阶段的
-        # 只读快照，回看本身不修改 manifest/current_checkpoint。工程列表无需
-        # 这些大字段，避免为每张工程卡重复载入完整历史快照。
-        view["progress_snapshots"] = store.progress_snapshots()
-    return view
+    try:
+        # A GET never recovers a transaction.  When a writer is between atomic
+        # control-file swaps, read_manifest() selects the intent's last complete
+        # version and that same manifest is passed to every checkpoint projection.
+        manifest = store.read_manifest()
+        snapshot = store.resume(manifest=manifest) or {}
+        delivery_status = None
+        delivery_status_path = store.root / "delivery" / "finalized.json"
+        if delivery_status_path.is_file():
+            try:
+                delivery_status = json.loads(delivery_status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                delivery_status = None
+        history = store.history()
+        view = {
+            "project_id": store.project_id,
+            "manifest": manifest,
+            "snapshot": snapshot,
+            "history": history,
+            "capabilities": _capabilities(manifest, snapshot),
+            "resource_events": [e for e in history if e.get("type") == "resource_degraded"],
+            "unknown_actions": _gateway_for_store(store).unknown_actions(),
+            "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
+            "active_job": JOBS.active_for_project(store.project_id),
+            "delivery_status": delivery_status,
+        }
+        if include_progress_snapshots:
+            # T9：只返回当前分支谱系上的不可变检查点；前端据此展示已完成阶段的
+            # 只读快照，回看本身不修改 manifest/current_checkpoint。工程列表无需
+            # 这些大字段，避免为每张工程卡重复载入完整历史快照。
+            view["progress_snapshots"] = store.progress_snapshots(manifest=manifest)
+        return view
+    except CorruptProjectError as exc:
+        exc.project_context = store.corruption_context("project_view")
+        raise
 
 
 def _job_operation(body: AdvanceRequest) -> str:
@@ -366,7 +374,16 @@ def _translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, JobNotFoundError):
         return HTTPException(status_code=404, detail={"code":"JOB_NOT_FOUND","message":str(exc)})
     if isinstance(exc, CorruptProjectError):
-        return HTTPException(status_code=409, detail={"code":"PROJECT_CORRUPT","message":str(exc)})
+        trace_id = f"trace_{uuid4().hex[:16]}"
+        LOGGER.warning(
+            "Project corrupt trace_id=%s context=%s error=%r",
+            trace_id, getattr(exc, "project_context", None), exc,
+        )
+        return HTTPException(status_code=409, detail={
+            "code": "PROJECT_CORRUPT",
+            "message": "工程数据校验失败，请运行工程健康检查并修复后重试。",
+            "trace_id": trace_id,
+        })
     if isinstance(exc, ProjectNotFoundError):
         return HTTPException(status_code=404, detail="PROJECT_NOT_FOUND: 工程不存在。")
     if isinstance(exc, FileNotFoundError):

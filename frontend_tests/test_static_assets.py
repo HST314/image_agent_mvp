@@ -26,6 +26,8 @@ EXPECTED_JS = {
     "statuspage.js", "eventlog.js", "policyform.js",
     # T9 进度卡只读快照与历史分支
     "snapshots.js",
+    # Q1-A 工作区纯 UI 状态恢复
+    "workspace_state.js",
 }
 
 

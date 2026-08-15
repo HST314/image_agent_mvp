@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { saveDraft, loadDraft, clearDraft, intentIdempotencyKey, clearIntentIdempotencyKey } from '../../frontend/static/js/store.js';
 import { assetUrl, assetIdOf } from '../../frontend/static/js/api.js';
+import { workspaceStateKey, saveWorkspaceState, loadWorkspaceState } from '../../frontend/static/js/workspace_state.js';
 
 function memoryStorage() {
   const map = new Map();
@@ -13,6 +14,18 @@ function memoryStorage() {
     map,
   };
 }
+
+test('工作区 UI 状态按工程、分支和检查点隔离', () => {
+  const storage = memoryStorage();
+  const view = {
+    project_id: 'p1',
+    manifest: { current_branch: 'main', current_checkpoint: { checkpoint_id: 'checkpoint_1' } },
+  };
+  assert.equal(workspaceStateKey(view), 'studio-workspace:p1:main:checkpoint_1');
+  saveWorkspaceState(view, { scrollY: 320, details: [true] }, storage);
+  assert.deepEqual(loadWorkspaceState(view, storage), { scrollY: 320, details: [true] });
+  assert.equal(loadWorkspaceState({ ...view, manifest: { ...view.manifest, current_checkpoint: { checkpoint_id: 'checkpoint_2' } } }, storage), null);
+});
 
 test('草稿往返：保存后可恢复，清除后为空', () => {
   const storage = memoryStorage();

@@ -12,7 +12,7 @@ function fakeApp(registry, initialView = 'status') {
   const state = { view: initialView, current: null };
   const calls = {
     gets: [], rendered: [], pages: [], tabs: [], notified: [],
-    leaves: 0, home: 0,
+    leaves: 0, home: 0, cached: [], captured: [],
   };
   const nav = createNavigator({
     getProject: (id, opts) => new Promise((resolve, reject) => {
@@ -29,6 +29,8 @@ function fakeApp(registry, initialView = 'status') {
     renderPage: (view) => calls.pages.push(view),
     openProject: nav.openProject,
     goHome: () => { calls.home += 1; },
+    captureWorkspace: (view) => calls.captured.push(view.project_id),
+    renderCachedWorkspace: (view) => calls.cached.push(view.project_id),
   });
   return {
     state, calls, nav, switcher,
@@ -125,8 +127,20 @@ test('切回工作区：有当前工程则重新打开，无当前工程则回�
   assert.deepEqual(app.calls.tabs, ['workspace']);
   assert.equal(app.calls.gets.length, 1);
   assert.equal(app.calls.gets[0].id, 'p9');
+  assert.deepEqual(app.calls.cached, ['p9'], '应先同步恢复缓存工作区，再后台请求权威视图');
   app.settleGet(0, { project_id: 'p9' });
   await Promise.resolve();
+});
+
+test('离开工作区前捕获当前工程 UI 状态，辅助页之间切换不重复捕获', () => {
+  const registry = createOperationRegistry();
+  const app = fakeApp(registry, 'workspace');
+  app.state.current = { project_id: 'p1' };
+
+  app.switcher.setView('status');
+  assert.deepEqual(app.calls.captured, ['p1']);
+  app.switcher.setView('settings');
+  assert.deepEqual(app.calls.captured, ['p1']);
 });
 
 test('非法视图名直接忽略', () => {

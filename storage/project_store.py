@@ -332,6 +332,59 @@ class ProjectStore:
             raise CorruptProjectError("工程版本不受支持。")
         return data
 
+    def pending_transaction(self) -> dict[str, Any] | None:
+        """Read a pending intent without recovering or mutating project data.
+
+        Ordinary reads must never decide the fate of a writer's transaction.  A
+        reader instead projects the last complete manifest recorded in the
+        intent while the writer owns the project lock.
+        """
+        pending = self.root / "transactions/pending.json"
+        if not pending.is_file():
+            return None
+        try:
+            intent = json.loads(pending.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CorruptProjectError("工程事务记录无法读取。") from exc
+        if not isinstance(intent, dict) or intent.get("format_version") != FORMAT_VERSION:
+            raise CorruptProjectError("工程事务记录版本无效。")
+        return intent
+
+    def read_manifest(self) -> dict[str, Any]:
+        """Return a stable, read-only manifest projection.
+
+        During a checkpoint/branch commit the intent contains the previously
+        committed manifest.  Serving that version keeps GET paths readable and,
+        crucially, leaves recovery/rollback exclusively to lock-owning writers.
+        """
+        intent = self.pending_transaction()
+        previous = intent.get("previous_manifest") if intent else None
+        if isinstance(previous, dict) and previous.get("format_version") == FORMAT_VERSION:
+            return dict(previous)
+        return self.manifest()
+
+    def corruption_context(self, operation: str) -> dict[str, Any]:
+        """Build a sanitized server-log context for PROJECT_CORRUPT failures."""
+        context: dict[str, Any] = {
+            "operation": operation,
+            "project_id": self.project_id,
+            "lock_owned_by_current": bool(getattr(self._lock_state, "depth", 0)),
+            "lock_file_present": (self.root / ".lock").is_file(),
+        }
+        try:
+            intent = self.pending_transaction()
+        except CorruptProjectError:
+            context["transaction"] = "unreadable"
+            return context
+        if intent:
+            context.update(
+                transaction_kind=intent.get("kind"),
+                transaction_phase=intent.get("status"),
+                source_checkpoint=intent.get("from_checkpoint"),
+                target_checkpoint=intent.get("checkpoint_id"),
+            )
+        return context
+
     def checkpoint_context(self, state: str, context: Any, *, branch: str | None = None) -> str:
         return self.checkpoint(state, context.dump_snapshot(), branch=branch)
 
@@ -452,6 +505,13 @@ class ProjectStore:
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
 
     def _recover_transaction(self) -> None:
+        # Recovery is a write operation.  If a legacy/direct caller reaches a
+        # write helper without already owning the lock, acquire it before
+        # inspecting or changing the intent.  Read paths never call this method.
+        if not getattr(self._lock_state, "depth", 0):
+            with self.lock():
+                self._recover_transaction()
+            return
         if getattr(self._lock_state, "validating_transaction", False):
             return
         pending = self.root / "transactions/pending.json"
@@ -482,9 +542,13 @@ class ProjectStore:
         atomic_json(self.root / "manifest.json", manifest)
         self.events.append("step_failed", branch=manifest["current_branch"], state=state, error=error)
 
-    def resume(self) -> dict[str, Any] | None:
-        self._recover_transaction()
-        pointer = self.manifest().get("current_checkpoint")
+    def recover_pending_transaction(self) -> None:
+        """Explicitly recover an interrupted write while holding the project lock."""
+        with self.lock():
+            self._recover_transaction()
+
+    def resume(self, *, manifest: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        pointer = (manifest or self.read_manifest()).get("current_checkpoint")
         return self.checkpoints.load(pointer["checkpoint_id"])["data"] if pointer else None
 
     def retry(self, execute: Any, *, name: str | None = None) -> Any:
@@ -732,7 +796,7 @@ class ProjectStore:
             "backup": backup,
         }
 
-    def progress_snapshots(self) -> list[dict[str, Any]]:
+    def progress_snapshots(self, *, manifest: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return immutable snapshots along the active branch lineage.
 
         A branch stores only its fork checkpoint and subsequent work.  Walking
@@ -740,8 +804,7 @@ class ProjectStore:
         stages in the progress card after a historical fork without exposing
         unrelated branch contents.
         """
-        self._recover_transaction()
-        manifest = self.manifest()
+        manifest = manifest or self.read_manifest()
         branch_defs = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
         checkpoints = self.checkpoints.list()
         by_branch: dict[str, list[dict[str, Any]]] = {}

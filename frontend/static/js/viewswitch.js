@@ -50,6 +50,8 @@ export function createViewSwitcher(deps) {
   const {
     getState, patch, markActiveTab,
     stopJobTracking, renderPage, openProject, goHome,
+    captureWorkspace = () => {}, renderCachedWorkspace = () => {},
+    reconcileWorkspace = (current) => openProject(current.project_id),
   } = deps;
 
   return {
@@ -68,7 +70,10 @@ export function createViewSwitcher(deps) {
         if (current) {
           patch({ view });
           markActiveTab(view);
-          openProject(current.project_id);
+          // 先用内存中的权威视图同步恢复页面与纯 UI 状态，再在后台 GET 对账。
+          // 用户无需面对空白等待；后续新检查点仍由 openProject 正常接管。
+          renderCachedWorkspace(current);
+          reconcileWorkspace(current);
         } else {
           goHome();
         }
@@ -76,6 +81,7 @@ export function createViewSwitcher(deps) {
       }
       /* 离开工作区：中止进行中的操作与跟踪循环（后台 job 仍继续，
        * 回到工作区重新打开工程时会按既有逻辑恢复挂载）。 */
+      if (getState().view === 'workspace' && getState().current) captureWorkspace(getState().current);
       stopJobTracking();
       patch({ view });
       markActiveTab(view);
