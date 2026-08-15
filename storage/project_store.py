@@ -691,10 +691,17 @@ class ProjectStore:
         those target records and serve the previous manifest just like the
         project-detail GET; readers must never observe a half-committed branch.
         """
-        intent = self.pending_transaction()
-        manifest = self.read_manifest()
-        branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
-        checkpoints = self.checkpoints.list()
+        # Writers hold the exclusive project lock for the whole transaction.
+        # Taking a shared lock makes the four reads below one commit projection:
+        # a reader either runs before the writer creates pending.json or after
+        # it removes it, never across either boundary.  The shared lock is
+        # deliberately read-only; unlike ``lock()`` it does not rewrite .lock
+        # and it never invokes transaction recovery.
+        with self.read_lock():
+            intent = self.pending_transaction()
+            manifest = self.read_manifest()
+            branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
+            checkpoints = self.checkpoints.list()
         if intent:
             pending_checkpoint = intent.get("checkpoint_id")
             checkpoints = [item for item in checkpoints if item["checkpoint_id"] != pending_checkpoint]
@@ -711,6 +718,22 @@ class ProjectStore:
                 for name, details in branches.items()
             ],
         }
+
+    @contextmanager
+    def read_lock(self) -> Iterator[None]:
+        """Wait for writers and hold a non-mutating shared project lock."""
+        if getattr(self._lock_state, "depth", 0):
+            yield
+            return
+        lock_path = self.root / ".lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        stream = lock_path.open("a+b", buffering=0)
+        try:
+            portalocker.lock(stream, portalocker.LOCK_SH)
+            yield
+        finally:
+            portalocker.unlock(stream)
+            stream.close()
 
     def check_health(self, *, repair: bool = False) -> dict[str, Any]:
         """Inspect project references and optionally repair unambiguous index drift.

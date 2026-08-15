@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,80 @@ def test_branch_listing_hides_pending_branch_and_checkpoint_without_mutation(tmp
         "index": store.checkpoints.index_path.read_bytes(),
         "pending": (store.root / "transactions/pending.json").read_bytes(),
     }
+
+
+def _control_bytes(store: ProjectStore) -> dict[str, bytes | None]:
+    paths = {
+        "manifest": store.root / "manifest.json",
+        "branches": store.root / "branches.json",
+        "index": store.checkpoints.index_path,
+        "pending": store.root / "transactions/pending.json",
+    }
+    return {name: path.read_bytes() if path.exists() else None for name, path in paths.items()}
+
+
+def test_branch_listing_is_atomic_when_pending_is_created_during_read(tmp_path: Path):
+    store, source = _store(tmp_path)
+    reader_started = threading.Event()
+    result: dict = {}
+
+    def read() -> None:
+        reader_started.set()
+        result.update(store.branches())
+
+    with store.lock():
+        reader = threading.Thread(target=read)
+        reader.start()
+        assert reader_started.wait(1)
+
+        def fail_after_pending_created() -> None:
+            raise RuntimeError("deterministic rollback")
+
+        with pytest.raises(RuntimeError, match="deterministic rollback"):
+            store.branch_from(source, name="pending-created", verify=fail_after_pending_created)
+        committed = _control_bytes(store)
+
+    reader.join(timeout=2)
+    assert not reader.is_alive()
+    assert result["current_branch"] == "main"
+    assert [item["name"] for item in result["items"]] == ["main"]
+    assert result["items"][0]["current"] is True
+    assert _control_bytes(store) == committed
+
+
+def test_branch_listing_is_atomic_when_pending_is_cleared_during_read(tmp_path: Path):
+    store, source = _store(tmp_path)
+    reader_started = threading.Event()
+    release_commit = threading.Event()
+    result: dict = {}
+
+    def read() -> None:
+        reader_started.set()
+        result.update(store.branches())
+
+    def pause_with_pending() -> None:
+        reader = threading.Thread(target=read)
+        result["reader"] = reader
+        reader.start()
+        assert reader_started.wait(1)
+        release_commit.set()
+
+    with store.lock():
+        store.branch_from(source, name="pending-cleared", verify=pause_with_pending)
+        assert release_commit.is_set()
+        committed = _control_bytes(store)
+
+    reader = result.pop("reader")
+    reader.join(timeout=2)
+    assert not reader.is_alive()
+    assert result["current_branch"] == "pending-cleared"
+    assert {item["name"] for item in result["items"]} == {"main", "pending-cleared"}
+    assert [item["name"] for item in result["items"] if item["current"]] == ["pending-cleared"]
+    assert result["current_checkpoint_id"] in {
+        checkpoint["checkpoint_id"]
+        for item in result["items"] for checkpoint in item["checkpoints"]
+    }
+    assert _control_bytes(store) == committed
 
 
 def test_project_corrupt_response_is_sanitized_and_traceable(caplog):
