@@ -7,7 +7,14 @@ import { errorText, validationText, fieldLabel, hasCJK } from './copy.js';
 const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
 const TERMINAL_EVENTS = new Set(['succeeded', 'failed', 'cancelled']);
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(message, { status = null, code = null } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
 
 /* 422 校验错误的字段路径（body.policy.self_check…）→ 中文路径；含未收录英文段时整体兜底。 */
 function locLabel(loc) {
@@ -24,7 +31,10 @@ function locLabel(loc) {
 export function formatError(detail) {
   if (typeof detail === 'string') return errorText(detail);
   if (Array.isArray(detail)) return detail.map((x) => `${locLabel(x.loc)}：${validationText(x.msg)}`).join('；');
-  if (detail && typeof detail === 'object') return errorText(detail.message || detail.code || '');
+  if (detail && typeof detail === 'object') {
+    if (detail.code === 'PROJECT_FILE_MISSING') return errorText(detail.code);
+    return errorText(detail.message || detail.code || '');
+  }
   return '请求未完成，请检查输入后重试。';
 }
 
@@ -47,7 +57,10 @@ export async function api(path, options = {}) {
     });
     let data;
     try { data = await res.json(); } catch { data = { detail: '服务返回了无法解析的响应。' }; }
-    if (!res.ok) throw new ApiError(formatError(data.detail));
+    if (!res.ok) throw new ApiError(formatError(data.detail), {
+      status: res.status,
+      code: data.detail && typeof data.detail === 'object' ? data.detail.code : null,
+    });
     return data;
   } catch (error) {
     if (error.name === 'AbortError') {
@@ -83,7 +96,8 @@ export function assetIdOf(asset) {
 /* ---- 工程 ---- */
 export const listProjects = () => api('/api/projects');
 export const health = () => api('/api/health');
-export const getProject = (id, { signal } = {}) => api(`/api/projects/${encodeURIComponent(id)}`, { signal });
+export const getProject = (id, { signal, cache = 'default' } = {}) =>
+  api(`/api/projects/${encodeURIComponent(id)}`, { signal, cache });
 export const createProject = (payload, { signal } = {}) =>
   api('/api/projects', { method: 'POST', body: JSON.stringify(payload), signal });
 /* T10：时间线增量拉取（契约 §7——实时状态只来自后端真实事件，不做前端假状态）。 */

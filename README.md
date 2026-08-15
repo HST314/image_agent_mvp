@@ -93,6 +93,8 @@ python3 main.py resume demo --approve-final
 | `resume <project_id>` | 从最后成功 Checkpoint 的下一状态或人工等待点继续 |
 | `retry <project_id>` | 从上一成功点创建新分支，重试已记录的失败状态 |
 | `rewind <project_id> --from <checkpoint> --name <branch>` | 从历史 Checkpoint 创建无损分支；加 `--continue` 立即推进 |
+| `repair-project <project_id> --dry-run` | 只读检查 manifest、索引和 Checkpoint 文件的一致性 |
+| `repair-project <project_id> --apply` | 备份控制文件后，按 checksum 修复唯一可确认的索引悬空引用 |
 | `history <project_id>` | 查看自然中文审计时间线和分支信息 |
 | `inspect <project_id>` | 查看工程技术信息；需配合全局 `--debug` 显示 JSON |
 
@@ -154,4 +156,3 @@ python3 -m pytest -q
 ```
 
 测试使用 Fake Clients / 离线客户端验证模型调用链，不消耗真实图片生成额度。
-

@@ -23,9 +23,12 @@ def test_job_registry_recovers_when_persistence_directory_was_replaced(tmp_path)
 
 
 def test_missing_internal_file_is_not_mislabeled_as_missing_project():
-    response = _translate_error(FileNotFoundError("资产索引不存在。"))
+    response = _translate_error(FileNotFoundError("C:\\Users\\owner\\工程\\检查点.json 不存在。"))
     assert response.status_code == 409
-    assert response.detail == {"code": "PROJECT_FILE_MISSING", "message": "资产索引不存在。"}
+    assert response.detail["code"] == "PROJECT_FILE_MISSING"
+    assert response.detail["message"] == "工程数据不完整，请运行工程健康检查并修复后重试。"
+    assert response.detail["trace_id"].startswith("trace_")
+    assert "Users" not in str(response.detail)
 
 
 def test_actual_missing_project_keeps_public_error_contract():

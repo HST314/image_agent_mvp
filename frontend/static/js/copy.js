@@ -315,6 +315,9 @@ export function jobStatusLabel(status) {
 /* 后端英文错误码 → 中文提示。匹配方式为"包含"（兼容 "CODE:detail" 形态），
  * 按从具体到通用的顺序声明。 */
 const ERROR_CODE_MAP = [
+  ['PROJECT_FILE_MISSING', '工程数据不完整，请运行工程健康检查并修复后重试。'],
+  ['PROJECT_CORRUPT', '工程数据校验失败，请运行工程健康检查并修复后重试。'],
+  ['BACKEND_UNAVAILABLE', '后端能力暂不可用，已有进度已保留，请稍后重试。'],
   ['INPUTTEXTSENSITIVECONTENTDETECTED', '输入文案触发模型内容审核，请修改质检建议或任务文案后再执行。'],
   ['HUMAN_TUNE_NOT_ACTIVE', '当前不在人工微调阶段，请刷新后重试。'],
   ['QUALITY_LIMIT_NOT_REACHED', '尚未达到质检轮次上限，暂不能执行该操作。'],

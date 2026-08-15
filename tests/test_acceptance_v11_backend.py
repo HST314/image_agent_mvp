@@ -68,8 +68,9 @@ def test_t9_progress_snapshots_follow_active_lineage_and_accept_auto_chinese_nam
         json={"checkpoint": taskbook, "name": "任务书-0812-090705", "mode": "fork_after"},
     )
     assert created.status_code == 200
-    assert created.json()["created"] is True
-    assert created.json()["branch"] == "任务书-0812-090705"
+    assert created.json()["manifest"]["current_branch"] == "任务书-0812-090705"
+    assert created.json()["manifest"]["current_checkpoint"]["branch"] == "任务书-0812-090705"
+    assert created.json()["snapshot"]["state"] == "confirmation_build"
     refreshed = client.get(f"/api/projects/{store.project_id}").json()
     assert refreshed["manifest"]["current_branch"] == "任务书-0812-090705"
     snapshots = refreshed["progress_snapshots"]

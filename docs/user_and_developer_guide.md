@@ -219,8 +219,15 @@ self_check:
 - **工程正在处理**：同一工程由 `.lock` 保证进程互斥；等待另一个进程完成后重试。不要手工删除正在使用的锁。
 - **模型调用失败**：查看 `history`；确认 manifest 已记录失败后使用 `retry`。
 - **想换方案而非重试失败**：使用 `rewind` 从满意的历史节点创建新分支。
-- **Checkpoint 完整性错误**：不要修改历史快照；回到更早的有效 Checkpoint 创建分支。
+- **Checkpoint 完整性错误**：先运行 `repair-project <project_id> --dry-run`。只有 checksum 能唯一匹配到有效文件时才可使用 `--apply`；工具会先把 `index.json`、`branches.json` 和 `manifest.json` 备份到工程的 `backups/health-*` 目录。无法唯一确认的故障不会自动修改，应回到更早的有效 Checkpoint 创建分支。
 - **离线结果无法交付**：用真实模型配置和凭证从生成前的 Checkpoint `rewind`，再推进新分支。
+
+例如：
+
+```bash
+python3 main.py --projects-root ./projects repair-project demo --dry-run
+python3 main.py --projects-root ./projects repair-project demo --apply
+```
 
 ## 二、系统架构与开发者指南
 

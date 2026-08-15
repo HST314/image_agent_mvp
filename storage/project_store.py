@@ -13,7 +13,7 @@ from io import BytesIO
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 FORMAT_VERSION = 1
@@ -256,6 +256,33 @@ class CheckpointStore:
             raise CorruptProjectError("检查点版本或完整性校验失败。")
         envelope["checksum"] = checksum
         envelope["checkpoint_id"] = checkpoint_id
+        for field in ("branch", "sequence", "state"):
+            if item.get(field) != envelope.get(field):
+                raise CorruptProjectError("检查点索引与文件内容不一致。")
+        if item.get("checksum") != checksum:
+            raise CorruptProjectError("检查点索引与文件校验值不一致。")
+        return envelope
+
+    def validate(self, checkpoint_id: str, *, expected: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Validate index, path, envelope metadata and checksum as one unit."""
+        index = self._index()
+        item = index.get("items", {}).get(checkpoint_id)
+        if not item:
+            raise CorruptProjectError("检查点索引记录缺失。")
+        envelope = self.load(checkpoint_id)
+        if expected:
+            expected_fields = {
+                "checkpoint_id": checkpoint_id,
+                "path": item.get("path"),
+                "checksum": envelope.get("checksum"),
+                "branch": envelope.get("branch"),
+                "sequence": envelope.get("sequence"),
+                "state": envelope.get("state"),
+            }
+            for field, actual in expected_fields.items():
+                value = expected.get(field)
+                if value is not None and value != actual:
+                    raise CorruptProjectError("检查点事务记录与落盘结果不一致。")
         return envelope
 
     def list(self) -> list[dict[str, Any]]:
@@ -311,6 +338,7 @@ class ProjectStore:
     def checkpoint(self, state: str, data: dict[str, Any], *, branch: str | None = None) -> str:
         self._recover_transaction()
         manifest = self.manifest()
+        previous_manifest = dict(manifest)
         active = branch or manifest["current_branch"]
         previous = manifest.get("current_checkpoint")
         sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
@@ -318,7 +346,7 @@ class ProjectStore:
         transaction = {"format_version": FORMAT_VERSION, "kind": "checkpoint", "status": "intent",
                        "branch": active, "sequence": sequence, "state": state, "data": data,
                        "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
-                       "checksum": prepared["checksum"]}
+                       "checksum": prepared["checksum"], "previous_manifest": previous_manifest}
         atomic_json(self.root / "transactions/pending.json", transaction)
         checkpoint_id, relative, checksum = self.checkpoints.save(active, sequence, state, data, prepared=prepared)
         transaction.update(status="prepared", checkpoint_id=checkpoint_id, path=relative, checksum=checksum)
@@ -330,24 +358,67 @@ class ProjectStore:
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
         return checkpoint_id
 
-    def _recover_transaction(self) -> None:
-        pending = self.root / "transactions/pending.json"
-        if not pending.exists():
-            return
-        intent = json.loads(pending.read_text(encoding="utf-8"))
-        manifest = self.manifest()
+    def _transaction_complete(self, intent: dict[str, Any], manifest: dict[str, Any]) -> bool:
         pointer = manifest.get("current_checkpoint") or {}
-        if pointer.get("branch") == intent["branch"] and pointer.get("sequence") == intent["sequence"]:
-            checkpoint_id = pointer.get("checkpoint_id")
+        expected_pointer = {
+            "checkpoint_id": intent.get("checkpoint_id"),
+            "checksum": intent.get("checksum"),
+            "branch": intent.get("branch"),
+            "sequence": intent.get("sequence"),
+            "state": intent.get("state"),
+        }
+        if any(pointer.get(key) != value for key, value in expected_pointer.items()):
+            return False
+        if manifest.get("current_branch") != intent.get("branch"):
+            return False
+        try:
+            self.checkpoints.validate(str(intent.get("checkpoint_id") or ""), expected=intent)
             if intent.get("kind") == "branch":
-                if not any(e.get("type") == "branch_created" and e.get("branch") == intent["branch"] for e in self.events.read_all()):
-                    source = self.checkpoints.load(intent["from_checkpoint"])
-                    self.events.append("branch_created", branch=intent["branch"], parent=source["branch"],
-                                       from_checkpoint=intent["from_checkpoint"], recovered=True)
-            elif not any(e.get("type") == "step_succeeded" and e.get("checkpoint_id") == checkpoint_id for e in self.events.read_all()):
-                self.events.append("step_succeeded", branch=intent["branch"], state=intent["state"], checkpoint_id=checkpoint_id, recovered=True)
-            pending.unlink(missing_ok=True)
+                branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
+                details = branches.get(intent["branch"])
+                if not details or details.get("from_checkpoint") != intent.get("from_checkpoint"):
+                    return False
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return False
+        return True
+
+    def _restore_manifest_after_rollback(self, intent: dict[str, Any], manifest: dict[str, Any]) -> None:
+        previous = intent.get("previous_manifest")
+        if isinstance(previous, dict) and previous.get("format_version") == FORMAT_VERSION:
+            atomic_json(self.root / "manifest.json", previous)
             return
+        pointer = manifest.get("current_checkpoint") or {}
+        if pointer.get("branch") != intent.get("branch") or pointer.get("sequence") != intent.get("sequence"):
+            return
+        candidates = [
+            item for item in self.checkpoints.list()
+            if item["branch"] == intent.get("branch") and item["sequence"] < int(intent.get("sequence", 0))
+        ]
+        if intent.get("kind") == "branch" and intent.get("from_checkpoint"):
+            try:
+                source = self.checkpoints.validate(intent["from_checkpoint"])
+                candidates = [{
+                    "checkpoint_id": intent["from_checkpoint"], "checksum": source["checksum"],
+                    "branch": source["branch"], "sequence": source["sequence"], "state": source["state"],
+                }]
+            except (OSError, ValueError, json.JSONDecodeError):
+                candidates = []
+        if candidates:
+            target = max(candidates, key=lambda item: item["sequence"])
+            envelope = self.checkpoints.validate(target["checkpoint_id"])
+            manifest.update(
+                current_branch=envelope["branch"],
+                current_checkpoint={
+                    "checkpoint_id": target["checkpoint_id"], "checksum": envelope["checksum"],
+                    "branch": envelope["branch"], "sequence": envelope["sequence"], "state": envelope["state"],
+                },
+                updated_at=_now(),
+            )
+        else:
+            manifest.update(current_branch="main", current_checkpoint=None, updated_at=_now())
+        atomic_json(self.root / "manifest.json", manifest)
+
+    def _rollback_transaction(self, intent: dict[str, Any], manifest: dict[str, Any]) -> None:
         # Roll back every observable part, including a file written before its
         # index update. The intent contains the deterministic target up front.
         index = self.checkpoints._index()
@@ -361,7 +432,9 @@ class ProjectStore:
             index["items"].pop(expected_id, None)
         for checkpoint_id, item in list(index["items"].items()):
             if item["branch"] == intent["branch"] and item["sequence"] == intent["sequence"]:
-                (self.root / item["path"]).unlink(missing_ok=True)
+                target = (self.root / item["path"]).resolve()
+                if self.root.resolve() in target.parents:
+                    target.unlink(missing_ok=True)
                 del index["items"][checkpoint_id]
         atomic_json(self.checkpoints.index_path, index)
         if intent.get("kind") == "branch":
@@ -369,7 +442,29 @@ class ProjectStore:
             branches = json.loads(branches_path.read_text(encoding="utf-8"))
             branches["branches"].pop(intent["branch"], None)
             atomic_json(branches_path, branches)
-        pending.unlink(missing_ok=True)
+        self._restore_manifest_after_rollback(intent, manifest)
+        (self.root / "transactions/pending.json").unlink(missing_ok=True)
+
+    def _recover_transaction(self) -> None:
+        if getattr(self._lock_state, "validating_transaction", False):
+            return
+        pending = self.root / "transactions/pending.json"
+        if not pending.exists():
+            return
+        intent = json.loads(pending.read_text(encoding="utf-8"))
+        manifest = self.manifest()
+        if self._transaction_complete(intent, manifest):
+            checkpoint_id = intent.get("checkpoint_id")
+            if intent.get("kind") == "branch":
+                if not any(e.get("type") == "branch_created" and e.get("branch") == intent["branch"] for e in self.events.read_all()):
+                    source = self.checkpoints.load(intent["from_checkpoint"])
+                    self.events.append("branch_created", branch=intent["branch"], parent=source["branch"],
+                                       from_checkpoint=intent["from_checkpoint"], recovered=True)
+            elif not any(e.get("type") == "step_succeeded" and e.get("checkpoint_id") == checkpoint_id for e in self.events.read_all()):
+                self.events.append("step_succeeded", branch=intent["branch"], state=intent["state"], checkpoint_id=checkpoint_id, recovered=True)
+            pending.unlink(missing_ok=True)
+            return
+        self._rollback_transaction(intent, manifest)
 
     def start_step(self, state: str, **details: Any) -> None:
         self.events.append("step_started", branch=self.manifest()["current_branch"], state=state, **details)
@@ -382,8 +477,8 @@ class ProjectStore:
         self.events.append("step_failed", branch=manifest["current_branch"], state=state, error=error)
 
     def resume(self) -> dict[str, Any] | None:
-        pointer = self.manifest().get("current_checkpoint")
         self._recover_transaction()
+        pointer = self.manifest().get("current_checkpoint")
         return self.checkpoints.load(pointer["checkpoint_id"])["data"] if pointer else None
 
     def retry(self, execute: Any, *, name: str | None = None) -> Any:
@@ -466,7 +561,7 @@ class ProjectStore:
         return data
 
     def branch_from(self, checkpoint_id: str, *, name: str | None = None,
-                    mode: str = "fork_after") -> str:
+                    mode: str = "fork_after", verify: Callable[[], Any] | None = None) -> str:
         self._recover_transaction()
         source = self.checkpoints.load(checkpoint_id)
         branches_path = self.root / "branches.json"
@@ -479,10 +574,12 @@ class ProjectStore:
         branch_data = (self._rewind_stage(source["state"], source["data"])
                        if mode == "rerun_stage" else source["data"])
         prepared = self.checkpoints.prepare(branch, 1, source["state"], branch_data)
+        previous_manifest = self.manifest()
         transaction = {"format_version": FORMAT_VERSION, "kind": "branch", "status": "intent",
                        "branch": branch, "sequence": 1, "state": source["state"], "data": branch_data,
                        "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
-                       "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id}
+                       "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id,
+                       "previous_manifest": previous_manifest}
         atomic_json(self.root / "transactions/pending.json", transaction)
         parent_details = branches["branches"][source["branch"]]
         policy = parent_details.get("runtime_policy")
@@ -495,10 +592,20 @@ class ProjectStore:
             "runtime_policy": policy, "runtime_policy_hash": content_hash(policy),
         }
         atomic_json(branches_path, branches)
-        manifest = self.manifest()
+        manifest = dict(previous_manifest)
         new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], branch_data, prepared=prepared)
         manifest.update(current_branch=branch, current_checkpoint={"checkpoint_id": new_id, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}, failed_step=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
+        try:
+            self.checkpoints.validate(new_id, expected=transaction)
+            if verify:
+                self._lock_state.validating_transaction = True
+                verify()
+        except Exception:
+            self._rollback_transaction(transaction, manifest)
+            raise
+        finally:
+            self._lock_state.validating_transaction = False
         self.events.append("branch_created", branch=branch, parent=source["branch"],
                            from_checkpoint=checkpoint_id, mode=mode)
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
@@ -518,6 +625,103 @@ class ProjectStore:
                  "checkpoints": [item for item in checkpoints if item["branch"] == name]}
                 for name, details in branches.items()
             ],
+        }
+
+    def check_health(self, *, repair: bool = False) -> dict[str, Any]:
+        """Inspect project references and optionally repair unambiguous index drift.
+
+        Repairs are checksum-driven: an index record is changed only when exactly
+        one valid checkpoint file has the same checksum and names an existing
+        branch. The original control files are backed up before any write.
+        """
+        manifest = self.manifest()
+        branches_path = self.root / "branches.json"
+        branches_document = json.loads(branches_path.read_text(encoding="utf-8"))
+        branch_defs = branches_document.get("branches", {})
+        index = self.checkpoints._index()
+        issues: list[dict[str, Any]] = []
+        repairs: list[dict[str, Any]] = []
+        physical: dict[str, list[dict[str, Any]]] = {}
+
+        for path in (self.root / "checkpoints").glob("**/*.json"):
+            if path == self.checkpoints.index_path:
+                continue
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+                checksum = document.pop("checksum", None)
+                if document.get("format_version") != FORMAT_VERSION or checksum != content_hash(document):
+                    continue
+                relative = path.relative_to(self.root).as_posix()
+                physical.setdefault(str(checksum), []).append({**document, "path": relative, "checksum": checksum})
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+
+        for checkpoint_id, item in list(index.get("items", {}).items()):
+            try:
+                self.checkpoints.validate(checkpoint_id)
+                continue
+            except (OSError, ValueError, json.JSONDecodeError):
+                candidates = [
+                    candidate for candidate in physical.get(str(item.get("checksum")), [])
+                    if candidate.get("branch") in branch_defs
+                    and checkpoint_id == f"checkpoint_{str(candidate.get('checksum'))[:24]}"
+                ]
+                issue = {
+                    "code": "CHECKPOINT_REFERENCE_INVALID",
+                    "checkpoint_id": checkpoint_id,
+                    "message": "检查点索引无法读取对应文件或与文件内容不一致。",
+                    "repairable": len(candidates) == 1,
+                }
+                if len(candidates) == 1:
+                    candidate = candidates[0]
+                    replacement = {
+                        "path": candidate["path"], "checksum": candidate["checksum"],
+                        "branch": candidate["branch"], "sequence": candidate["sequence"],
+                        "state": candidate["state"],
+                    }
+                    repairs.append({"checkpoint_id": checkpoint_id, "replacement": replacement})
+                issues.append(issue)
+
+        pointer = manifest.get("current_checkpoint") or {}
+        if pointer:
+            target_repair = next((item for item in repairs if item["checkpoint_id"] == pointer.get("checkpoint_id")), None)
+            target = target_repair["replacement"] if target_repair else index.get("items", {}).get(pointer.get("checkpoint_id"), {})
+            for field in ("checksum", "branch", "sequence", "state"):
+                if pointer.get(field) != target.get(field):
+                    issues.append({
+                        "code": "MANIFEST_POINTER_INVALID", "checkpoint_id": pointer.get("checkpoint_id"),
+                        "message": "工程当前指针与检查点记录不一致。", "repairable": False,
+                    })
+                    break
+
+        backup = None
+        if repair and repairs:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_dir = self.root / "backups" / f"health-{stamp}-{uuid4().hex[:8]}"
+            backup_dir.mkdir(parents=True, exist_ok=False)
+            for source in (self.checkpoints.index_path, branches_path, self.root / "manifest.json"):
+                if source.is_file():
+                    shutil.copy2(source, backup_dir / source.name)
+            for item in repairs:
+                index["items"][item["checkpoint_id"]] = item["replacement"]
+            atomic_json(self.checkpoints.index_path, index)
+            for item in repairs:
+                self.checkpoints.validate(item["checkpoint_id"])
+            backup = backup_dir.relative_to(self.root).as_posix()
+            self.events.append(
+                "project_index_repaired", repaired_checkpoints=[item["checkpoint_id"] for item in repairs],
+                backup=backup,
+            )
+
+        healthy = not issues or (repair and len(repairs) == len(issues))
+        return {
+            "project_id": self.project_id,
+            "mode": "repair" if repair else "dry-run",
+            "healthy": healthy,
+            "issues": issues,
+            "repairs": [{"checkpoint_id": item["checkpoint_id"]} for item in repairs],
+            "applied": len(repairs) if repair else 0,
+            "backup": backup,
         }
 
     def progress_snapshots(self) -> list[dict[str, Any]]:

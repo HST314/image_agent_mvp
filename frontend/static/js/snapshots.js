@@ -58,6 +58,25 @@ export function isCreatedBranchReceipt(receipt, { projectId, branchName }) {
     && receipt?.branch === branchName && Boolean(receipt?.checkpoint_id);
 }
 
+function isTransientReadError(error) {
+  return !Number.isInteger(error?.status) || error.status >= 500;
+}
+
+async function reconcileBranch(projectId, branchName, getProject, delay) {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const current = await getProject(projectId, { cache: 'no-store' });
+      return { current, matches: isCreatedBranchView(current, { projectId, branchName }) };
+    } catch (error) {
+      lastError = error;
+      if (attempt > 0 || !isTransientReadError(error)) throw error;
+      await delay(150);
+    }
+  }
+  throw lastError;
+}
+
 /**
  * “创建即切换”的单请求事务。
  *
@@ -66,25 +85,30 @@ export function isCreatedBranchReceipt(receipt, { projectId, branchName }) {
  */
 export async function createSnapshotBranch(
   { projectId, checkpoint, branchName },
-  { branchFrom = api.branchFrom, getProject = api.getProject } = {},
+  { branchFrom = api.branchFrom, getProject = api.getProject,
+    delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) } = {},
 ) {
   let createError;
   try {
     const created = await branchFrom(projectId, {
       checkpoint, name: branchName, mode: 'rerun_stage',
     });
+    if (isCreatedBranchView(created, { projectId, branchName })) {
+      return { view: created, receipt: null, reconciled: false, recoveryRequired: false };
+    }
+    // Compatibility with the short receipt returned by older servers.
     if (isCreatedBranchReceipt(created, { projectId, branchName })) {
       try {
-        const view = await getProject(projectId);
-        return { view, receipt: created, reconciled: false, refreshFailed: false };
+        const { current, matches } = await reconcileBranch(projectId, branchName, getProject, delay);
+        if (matches) {
+          return { view: current, receipt: created, reconciled: true, recoveryRequired: false };
+        }
+        return { view: null, receipt: created, reconciled: false, recoveryRequired: true,
+          refreshError: new Error('新分支已创建，但服务返回的工程仍停留在旧分支。') };
       } catch (refreshError) {
         return { view: null, receipt: created, reconciled: false,
-          refreshFailed: true, refreshError };
+          recoveryRequired: true, refreshError };
       }
-    }
-    // Read compatibility with servers from before the receipt contract.
-    if (isCreatedBranchView(created, { projectId, branchName })) {
-      return { view: created, receipt: null, reconciled: false, refreshFailed: false };
     }
     createError = new Error('创建接口未返回完整的新分支工程视图。');
   } catch (error) {
@@ -92,9 +116,9 @@ export async function createSnapshotBranch(
   }
 
   try {
-    const current = await getProject(projectId);
-    if (isCreatedBranchView(current, { projectId, branchName })) {
-      return { view: current, receipt: null, reconciled: true, refreshFailed: false };
+    const { current, matches } = await reconcileBranch(projectId, branchName, getProject, delay);
+    if (matches) {
+      return { view: current, receipt: null, reconciled: true, recoveryRequired: false };
     }
   } catch {
     // 保留创建请求的原始错误；GET 仅用于确认结果，不覆盖首要故障信息。
@@ -324,8 +348,12 @@ export function renderQualityHistory(container, view, { onChanged } = {}) {
           projectId: view.project_id, checkpoint: item.checkpoint_id,
           branchName: automaticBranchName('self_check_iteration'),
         });
-        toast(`已从第 ${snapshot.round} 轮创建分支。`);
-        onChanged?.(result.view);
+        if (result.recoveryRequired) {
+          toast('新分支已创建，但工程数据不完整。请运行工程健康检查并修复后重试。', 'error');
+        } else {
+          toast(`已从第 ${snapshot.round} 轮创建分支。`);
+          onChanged?.(result.view);
+        }
       } catch (error) { branch.disabled = false; toast(error.message, 'error'); }
     });
     const tune = el('button', { type: 'button', class: 'btn btn--secondary', text: '从此轮进入人工微调' });
@@ -448,14 +476,14 @@ export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
         branchName,
       });
       dialog.close();
-      toast(result.refreshFailed
-        ? `新分支已创建，但界面刷新失败，请手动刷新工程。`
+      toast(result.recoveryRequired
+        ? '新分支已创建，但工程数据不完整。请运行工程健康检查并修复后重试。'
         : result.reconciled
         ? `已核对并切换到从${label}阶段创建的新分支。`
-        : `已重跑${label}阶段并切换到新分支。`);
+        : `已重跑${label}阶段并切换到新分支。`, result.recoveryRequired ? 'error' : undefined);
       if (result.view) {
         try { onBranchCreated?.(result.view); }
-        catch { toast('分支已创建，界面渲染失败，请手动刷新工程。', 'error'); }
+        catch { toast('分支已创建，但界面渲染失败。请返回工程列表后重新打开该工程。', 'error'); }
       }
     } catch (error) {
       branch.disabled = false;

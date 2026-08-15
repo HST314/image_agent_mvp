@@ -53,6 +53,11 @@ def parser() -> argparse.ArgumentParser:
     unknown = commands.add_parser("unknown", help="查询或人工处置付费调用未知态")
     unknown.add_argument("project_id"); unknown.add_argument("--idempotency-key")
     unknown.add_argument("--action", choices=("retry_after_confirmation", "abandon")); unknown.add_argument("--actor")
+    repair = commands.add_parser("repair-project", help="检查工程索引，并按 checksum 修复可唯一确认的悬空引用")
+    repair.add_argument("project_id")
+    mode = repair.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="只读检查（默认）")
+    mode.add_argument("--apply", action="store_true", help="备份控制文件后应用可安全修复项")
     return root
 
 
@@ -111,6 +116,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not args.idempotency_key or not args.actor: raise ValueError("处置未知态必须提供 key 与 actor。")
                 gateway.resolve_unknown(args.idempotency_key, args.action, args.actor)
             print(json.dumps({"items": gateway.unknown_actions()}, ensure_ascii=False))
+        elif args.command == "repair-project":
+            with store.lock():
+                report = store.check_health(repair=bool(args.apply))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report["healthy"] else 2
         elif args.command == "history": print(view.history(store.history()))
         elif args.command == "inspect": print(view.technical(store.manifest()))
         return 0

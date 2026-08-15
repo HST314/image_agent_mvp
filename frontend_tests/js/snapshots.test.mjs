@@ -66,7 +66,7 @@ const projectView = (branch = '任务书-0812-090705') => ({
   progress_snapshots: [],
 });
 
-test('分支提交回执与视图刷新解耦，明确使用 rerun_stage', async () => {
+test('旧版分支回执使用 no-store 对账，且明确使用 rerun_stage', async () => {
   const calls = { create: 0, get: 0 };
   const created = projectView();
   const result = await createSnapshotBranch({
@@ -78,24 +78,47 @@ test('分支提交回执与视图刷新解耦，明确使用 rerun_stage', async
       assert.deepEqual(payload, { checkpoint: 'checkpoint_source', name: '任务书-0812-090705', mode: 'rerun_stage' });
       return { created: true, project_id: 'demo', branch: '任务书-0812-090705', checkpoint_id: 'checkpoint_new' };
     },
-    getProject: async () => { calls.get += 1; return created; },
+    getProject: async (projectId, options) => {
+      calls.get += 1;
+      assert.equal(projectId, 'demo');
+      assert.equal(options.cache, 'no-store');
+      return created;
+    },
   });
 
   assert.equal(result.view, created);
-  assert.equal(result.reconciled, false);
+  assert.equal(result.reconciled, true);
   assert.deepEqual(calls, { create: 1, get: 1 });
 });
 
-test('分支回执已确认后，刷新失败不得改报创建失败', async () => {
+test('完整创建视图直接渲染，不追加 GET', async () => {
+  const created = projectView();
+  let reads = 0;
+  const result = await createSnapshotBranch({
+    projectId: 'demo', checkpoint: 'checkpoint_source', branchName: '任务书-0812-090705',
+  }, {
+    branchFrom: async () => created,
+    getProject: async () => { reads += 1; return created; },
+  });
+  assert.equal(result.view, created);
+  assert.equal(result.reconciled, false);
+  assert.equal(result.recoveryRequired, false);
+  assert.equal(reads, 0);
+});
+
+test('旧版回执后的工程文件缺失给出修复态，且 409 不重试', async () => {
+  const missing = Object.assign(new Error('工程数据不完整'), { status: 409, code: 'PROJECT_FILE_MISSING' });
+  let reads = 0;
   const result = await createSnapshotBranch({
     projectId: 'demo', checkpoint: 'checkpoint_source', branchName: '任务书-0812-090705',
   }, {
     branchFrom: async () => ({ created: true, project_id: 'demo', branch: '任务书-0812-090705', checkpoint_id: 'checkpoint_new' }),
-    getProject: async () => { throw new Error('渲染数据刷新失败'); },
+    getProject: async () => { reads += 1; throw missing; },
   });
-  assert.equal(result.refreshFailed, true);
+  assert.equal(result.recoveryRequired, true);
   assert.equal(result.receipt.created, true);
   assert.equal(result.view, null);
+  assert.equal(reads, 1);
 });
 
 test('T9 创建响应异常：只重新拉取工程对账，确认已创建后不重复 POST', async () => {

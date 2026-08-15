@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import re
 import hashlib
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -46,6 +48,7 @@ BRANCH_NAME_PATTERN = r"^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff._-]{1,6
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 # T10：defer_run 创建时持久化的入站任务卡文件名；jobs 引导路径据此启动首个推进。
 INTAKE_TASK_FILE = "intake_task.json"
+LOGGER = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Image Agent Studio",
@@ -329,7 +332,13 @@ def _translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, ProjectNotFoundError):
         return HTTPException(status_code=404, detail="PROJECT_NOT_FOUND: 工程不存在。")
     if isinstance(exc, FileNotFoundError):
-        return HTTPException(status_code=409, detail={"code":"PROJECT_FILE_MISSING","message":str(exc)})
+        trace_id = f"trace_{uuid4().hex[:16]}"
+        LOGGER.warning("Project file missing trace_id=%s error=%r", trace_id, exc)
+        return HTTPException(status_code=409, detail={
+            "code": "PROJECT_FILE_MISSING",
+            "message": "工程数据不完整，请运行工程健康检查并修复后重试。",
+            "trace_id": trace_id,
+        })
     if isinstance(exc, NotADirectoryError):
         return HTTPException(status_code=409, detail={"code":"PROJECT_PATH_INVALID","message":str(exc)})
     if isinstance(exc, FileExistsError):
@@ -338,10 +347,13 @@ def _translate_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail=str(exc))
     if "正在由另一个进程处理" in str(exc):
         return HTTPException(status_code=423, detail=str(exc))
-    return HTTPException(
-        status_code=503,
-        detail=f"后端能力暂不可用：{exc}。已有进度已保留，可修正配置后恢复或重试。",
-    )
+    trace_id = f"trace_{uuid4().hex[:16]}"
+    LOGGER.exception("Unhandled backend failure trace_id=%s", trace_id, exc_info=exc)
+    return HTTPException(status_code=503, detail={
+        "code": "BACKEND_UNAVAILABLE",
+        "message": "后端能力暂不可用，已有进度已保留，请稍后重试。",
+        "trace_id": trace_id,
+    })
 
 
 SECRET_FIELDS = ("api_key", "apikey", "authorization", "token", "secret")
@@ -668,12 +680,14 @@ async def retry_project(project_id: str, body: AdvanceRequest) -> dict[str, Any]
 async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
     try:
         def execute() -> dict[str, Any]:
-            store = _store(project_id)
+            store = _existing_store(project_id)
+            result: dict[str, Any] = {}
             with store.lock():
-                branch = store.branch_from(body.checkpoint, name=body.name, mode=body.mode)
-                pointer = store.manifest()["current_checkpoint"]
-            return {"created": True, "project_id": store.project_id, "branch": branch,
-                    "checkpoint_id": pointer["checkpoint_id"], "mode": body.mode}
+                def verify_view() -> None:
+                    result["view"] = _project_view(store)
+
+                store.branch_from(body.checkpoint, name=body.name, mode=body.mode, verify=verify_view)
+            return result["view"]
 
         return await asyncio.to_thread(execute)
     except Exception as exc:
