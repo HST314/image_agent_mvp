@@ -39,7 +39,6 @@ export function buildNewProjectTask({
     }],
     deliverable_goal: deliverableGoal,
     usage_context: usageContext,
-    category_ref: { category_id: 'generic_visual_delivery', version: '1.0' },
     known_facts: knownFacts,
     unknowns: outputSpec ? {} : { output_spec: '待确认' },
     asset_inputs: [],

@@ -15,6 +15,10 @@ test('liveStepText：空输入与非数组返回 null', () => {
 
 test('liveStepText：step_started 映射为中文进行中文案，最新一条生效', () => {
   assert.equal(
+    liveStepText([{ type: 'step_started', state: 'category_constraint', sequence: 1 }]),
+    '正在调用广告品类库并匹配约束…',
+  );
+  assert.equal(
     liveStepText([{ type: 'step_started', state: 'intake_clarify', sequence: 2 }]),
     '正在理解任务书，生成澄清问题…',
   );
@@ -67,6 +71,23 @@ test('follower：推送真实步骤文案并按序号推进游标', async () => 
   await flush();
   assert.equal(deps.calls.fetches[1].after, 2); // 游标推进到已见最大序号
   assert.deepEqual(deps.calls.texts, ['正在理解任务书，生成澄清问题…', '正在生成任务书…']);
+  follower.stop();
+  deps.calls.timers.shift()?.();
+  await follower.done;
+});
+
+test('follower：检查点一落盘就推送中间边界，不等待 job 终态', async () => {
+  const deps = fakeDeps([{ items: [
+    { type: 'step_succeeded', state: 'category_constraint', checkpoint_id: 'checkpoint_category', sequence: 3 },
+    { type: 'step_started', state: 'intake_clarify', sequence: 4 },
+  ] }]);
+  const checkpoints = [];
+  const follower = createTimelineFollower({
+    ...deps, onText: deps.onText, onCheckpoint: (event) => checkpoints.push(event.checkpoint_id), intervalMs: 5,
+  });
+  await flush();
+  assert.deepEqual(checkpoints, ['checkpoint_category']);
+  assert.deepEqual(deps.calls.texts, ['正在理解任务书，生成澄清问题…']);
   follower.stop();
   deps.calls.timers.shift()?.();
   await follower.done;

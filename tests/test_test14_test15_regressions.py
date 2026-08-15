@@ -1,5 +1,6 @@
 """Regression coverage for the test14/test15 workflow audit."""
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -49,6 +50,44 @@ def test_zero_model_questions_cannot_waive_category_blockers(tmp_path: Path) -> 
     assert clarified["phase"] == "waiting_clarification"
     assert clarified["question_card"]["questions"]
     assert all(item["blocking"] for item in clarified["question_card"]["questions"])
+
+
+def test_auto_category_checkpoint_is_readable_while_model_is_still_thinking(tmp_path: Path) -> None:
+    workflow, store = runner(tmp_path, offline=False)
+    model_started = threading.Event()
+    release_model = threading.Event()
+    captured: dict = {}
+
+    def slow_model(*_args, **kwargs):
+        captured.update(kwargs)
+        model_started.set()
+        assert release_model.wait(5), "test did not release the model call"
+        return QuestionCard(task_id="wall-task", questions=[])
+
+    workflow.gateway.call = slow_model
+    outcome: dict = {}
+
+    def execute() -> None:
+        try:
+            outcome["result"] = workflow.run({"task_card": cultural_wall_task()}, RunnerOptions())
+        except Exception as exc:  # pragma: no cover - surfaced by assertion below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    assert model_started.wait(5), "clarification model call did not start"
+
+    intermediate = store.resume()
+    assert intermediate["state"] == "category_constraint"
+    assert intermediate["category_constraint_current"]["category_name"] == "文化墙"
+    injected = captured["variables"]["category_constraint"]
+    assert injected["skill"]["prompt_injection"]["production_constraints"]
+
+    release_model.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"]["phase"] == "waiting_clarification"
 
 
 def test_taskbook_markdown_pending_items_conflict_with_empty_structure(tmp_path: Path) -> None:

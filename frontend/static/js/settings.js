@@ -1,29 +1,22 @@
 /* T3 设置页（契约 §5/§8，Q3-B/Q4-A）：运行策略全部字段的中文化 UI 表单，
  * 分「常用 / 高级」两组；字段清单/类型/约束取自后端 GET /settings/schema，
  * 前端不硬编码（表单模型逻辑在 policyform.js，Node 可回归）。
- * 保存契约（Q4-A）：保存即生效，作用于当前工程后续节点；调用
- * POST /api/projects/{id}/policy（confirmed=true），后端自动创建新分支，
- * 保存后由 app.js 刷新顶栏分支标识。 */
+ * 保存契约：保存即更新全局 runtime.yaml；当前打开工程存在时，同时为其创建
+ * 策略修订分支并立即应用。设置页不再依赖先打开某个工程。 */
 
 import { el, toast, stateBlock, sectionPanel } from './dom.js';
-import { getSettingsSchema, revisePolicy } from './api.js';
+import { getGlobalSettingsSchema, reviseGlobalPolicy } from './api.js';
 import { buildPolicyFormModel, buildPolicyPayload } from './policyform.js';
 import { getActor, setActor } from './store.js';
 
 /**
- * 渲染设置页。view 为空（未打开工程）时渲染空态并返回 null。
- * deps.onSaved(projectView)：保存成功并创建新分支后回调（app.js 更新当前
- * 工程视图与顶栏分支标识）。
+ * deps.onSaved(projectView)：当前工程存在时，保存成功并创建新分支后回调；
+ * 未打开工程时 projectView 为 null，但全局默认仍已保存。
  * 返回 { dispose }：切页/离开时中止在途的 schema 拉取，保存响应迟到时不再
  * 改写界面。
  */
 export function renderSettingsPage(container, view, { onSaved } = {}) {
-  if (!view?.project_id) {
-    container.append(stateBlock('empty', '尚未打开工程',
-      '从左侧目录打开一个工程后，这里会以表单展示它的全部运行策略；保存即生效并自动创建新分支。'));
-    return null;
-  }
-  const projectId = view.project_id;
+  const projectId = view?.project_id || null;
   let disposed = false;
   const controller = new AbortController();
 
@@ -31,7 +24,7 @@ export function renderSettingsPage(container, view, { onSaved } = {}) {
   holder.append(stateBlock('loading', '正在读取运行策略…', '字段清单与当前值来自后端设置接口。'));
   container.append(holder);
 
-  getSettingsSchema(projectId, { signal: controller.signal })
+  getGlobalSettingsSchema({ signal: controller.signal })
     .then((schema) => {
       if (disposed) return;
       holder.textContent = '';
@@ -45,7 +38,9 @@ export function renderSettingsPage(container, view, { onSaved } = {}) {
 
   function renderForm(root, model) {
     /* 生效时机说明（Q4-A） */
-    root.append(el('p', { class: 'hint', text: '保存即生效，作用于当前工程的后续节点；系统会自动创建新分支，旧分支与历史保持不变。' }));
+    root.append(el('p', { class: 'hint', text: projectId
+      ? '保存即更新全局默认，并为当前工程创建策略修订分支；旧分支与历史保持不变。'
+      : '保存即更新全局默认，随后新建的工程会直接使用这些参数。' }));
 
     const form = el('form', { class: 'settings-form', novalidate: 'novalidate' });
     form.append(policyGroup('常用', model.common), policyGroup('高级', model.advanced));
@@ -83,11 +78,11 @@ export function renderSettingsPage(container, view, { onSaved } = {}) {
       }
       saveBtn.disabled = true;
       try {
-        const result = await revisePolicy(projectId, { policy, actor, confirmed: true });
+        const result = await reviseGlobalPolicy({ policy, actor, confirmed: true, project_id: projectId });
         if (disposed) return; // 已切页：不再改写界面（后端分支已创建，属正常完成）
         setActor(actor);
-        toast(`已保存并创建新分支 ${result.branch}。`);
-        onSaved?.(result.project);
+        toast(result.branch ? `全局设置已生效，并创建当前工程分支 ${result.branch}。` : '全局设置已保存，新工程将立即使用。');
+        onSaved?.(result.project || null);
       } catch (err) {
         if (disposed) return;
         error.textContent = err.message; // 422 等后端错误已经 api.formatError 中文化

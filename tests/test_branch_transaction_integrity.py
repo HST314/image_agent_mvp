@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+import main_front
 from storage.project_store import ProjectStore, atomic_json
 
 
@@ -28,7 +30,37 @@ def test_branch_verification_failure_rolls_back_every_control_file(tmp_path: Pat
     assert store.manifest() == previous_manifest
     assert "校验失败分支" not in json.loads((store.root / "branches.json").read_text())["branches"]
     assert all(item["branch"] != "校验失败分支" for item in store.checkpoints.list())
+    assert not (store.root / "checkpoints" / "校验失败分支").exists()
     assert not (store.root / "transactions/pending.json").exists()
+
+
+def test_page_projection_failure_after_api_commit_does_not_rollback_branch(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, source = _store(tmp_path)
+    real_view = main_front._project_view
+    attempts = 0
+
+    def transient_view(project_store, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise FileNotFoundError("transient projection read")
+        return real_view(project_store, *args, **kwargs)
+
+    monkeypatch.setattr(main_front, "_project_view", transient_view)
+    client = TestClient(main_front.app, raise_server_exceptions=False)
+    response = client.post(
+        f"/api/projects/{store.project_id}/branches",
+        json={"checkpoint": source, "name": "投影失败分支", "mode": "rerun_stage"},
+    )
+    assert response.status_code == 409
+    assert store.manifest()["current_branch"] == "投影失败分支"
+    assert "投影失败分支" in json.loads((store.root / "branches.json").read_text())["branches"]
+    assert not (store.root / "transactions/pending.json").exists()
+
+    reconciled = client.get(f"/api/projects/{store.project_id}")
+    assert reconciled.status_code == 200
+    assert reconciled.json()["manifest"]["current_branch"] == "投影失败分支"
 
 
 def test_recovery_rejects_manifest_only_commit_when_checkpoint_file_is_missing(tmp_path: Path):

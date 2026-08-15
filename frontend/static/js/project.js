@@ -77,7 +77,22 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
   const refresh = (next) => { if (next) renderProject(next); else openProject(projectId); };
-  const jobRunner = makeJobRunner(jobBox, projectId, refresh, content);
+  let jobRunner;
+  const showIntermediateView = (liveView) => {
+    if (liveView?.snapshot?.state !== 'category_constraint') return;
+    patch({ current: liveView });
+    stepper.textContent = '';
+    renderProgressSteps(stepper, liveView, { onBranchCreated: renderProject });
+    const head = stagePanel.querySelector('.section__head');
+    [...stagePanel.children].forEach((child) => { if (child !== head) child.remove(); });
+    const title = head?.querySelector('h2');
+    const subtitle = head?.querySelector('p');
+    if (title) title.textContent = '品类约束';
+    if (subtitle) subtitle.textContent = '广告品类库已返回；模型正在结合这些约束生成澄清问题。';
+    stagePanel.setAttribute('aria-busy', 'true');
+    renderCategoryConstraint(stagePanel, liveView, { actor, jobRunner });
+  };
+  jobRunner = makeJobRunner(jobBox, projectId, refresh, content, showIntermediateView);
 
   renderStage(stagePanel, view, derived, { projectId, actor, refresh, jobRunner });
 
@@ -247,6 +262,7 @@ function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
   const snapshot = view.snapshot || {};
   const current = snapshot.category_constraint_current || {};
   const skill = current.skill || {};
+  const injection = skill.prompt_injection || {};
   const required = Array.isArray(skill.required_questions) ? skill.required_questions : [];
   panel.append(el('div', { class: 'skill-gate__head' }, [
     el('div', {}, [
@@ -256,6 +272,21 @@ function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
       el('p', { text: `匹配版本 ${current.version || 1} · 约束会进入后续澄清与任务书门禁。` }),
     ]),
   ]));
+  const description = String(injection.category_description || '').trim();
+  if (description) panel.append(el('p', { class: 'skill-call-card__summary', text: description }));
+  const ruleGroups = [
+    ['制作约束', injection.production_constraints],
+    ['视觉规则', injection.visual_rules],
+    ['禁用元素', injection.forbidden_elements],
+    ['验收检查', skill.review_checks],
+  ];
+  for (const [title, values] of ruleGroups) {
+    const items = Array.isArray(values) ? values.filter((item) => String(item || '').trim()) : [];
+    if (!items.length) continue;
+    const list = el('ul', { class: 'inspection-findings' });
+    items.forEach((item) => list.append(el('li', { text: String(item) })));
+    panel.append(el('h4', { text: title }), list);
+  }
   if (required.length) {
     const list = el('ul', { class: 'inspection-findings' });
     required.forEach((item) => list.append(el('li', {
@@ -272,9 +303,10 @@ function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
     return;
   }
   const actorState = skillApprovalActorState(actor);
+  const processing = Boolean(view.active_job);
   const approve = el('button', { type: 'button', class: 'btn btn--primary', text: '确认品类约束并继续' });
   const retry = el('button', { type: 'button', class: 'btn btn--secondary', text: '重新匹配品类' });
-  approve.disabled = retry.disabled = !actorState.ready;
+  approve.disabled = retry.disabled = !actorState.ready || processing;
   approve.addEventListener('click', () => jobRunner.start(
     { category_action: 'approve', actor: actorState.actor },
     { intent: 'category-approve', operation: '确认品类约束' },
@@ -284,7 +316,8 @@ function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
     { intent: 'category-retry', operation: '重新匹配品类约束' },
   ));
   panel.append(el('p', { class: actorState.ready ? 'skill-gate__actor' : 'field-error',
-    role: actorState.ready ? 'status' : 'alert', text: actorState.message }));
+    role: actorState.ready ? 'status' : 'alert',
+    text: processing ? '品类结果已保存，正在完成当前任务…' : actorState.message }));
   panel.append(el('div', { class: 'button-row' }, [retry, approve]));
 }
 
@@ -808,7 +841,7 @@ function renderUnknowns(items, { projectId, refresh }) {
 
 /* ---------- job 运行器 ---------- */
 
-function makeJobRunner(box, projectId, refresh, actionRoot) {
+function makeJobRunner(box, projectId, refresh, actionRoot, onIntermediateView) {
   const runner = createJobRunner({
     projectId,
     renderProgress: (job, handlers) => renderJobProgress(box, job, handlers),
@@ -826,15 +859,29 @@ function makeJobRunner(box, projectId, refresh, actionRoot) {
     track: api.trackJob,
     cancelJob: api.cancelJob,
     onJobRecord: (record) => patch({ job: record }),
+    onIntermediate: async (event, { signal }) => {
+      if (event?.state !== 'category_constraint') return;
+      try {
+        const view = await api.getProject(projectId, { signal, cache: 'no-store' });
+        if (signal.aborted || view?.snapshot?.state !== 'category_constraint') return;
+        onIntermediateView?.(view);
+      } catch (error) {
+        if (!signal.aborted) toast(error.message, 'error');
+      }
+    },
     /* T10（契约 §7）：job 运行期间跟随工程 timeline，把真实步骤文案推到进度行。
      * 游标从视图已载历史尾部起（向前回退 30 条兜底在途 step_started），只读新增
      * 事件；signal 随操作世代中止，job 终态由 jobrunner 调 stop。 */
-    startLiveStatus: (job, { signal, onText }) => {
+    startLiveStatus: (job, { signal, onText, onCheckpoint }) => {
       const historyLen = Array.isArray(state.current?.history) ? state.current.history.length : 0;
       const follower = createTimelineFollower({
         fetchPage: (after, { signal: pageSignal } = {}) => api.getTimeline(projectId, { after, signal: pageSignal }),
         signal,
         onText,
+        onCheckpoint: (event) => {
+          if (Number(event?.sequence) > historyLen) onCheckpoint?.(event);
+        },
+        intervalMs: 500,
         initialAfter: Math.max(0, historyLen - 30),
       });
       return follower.stop;

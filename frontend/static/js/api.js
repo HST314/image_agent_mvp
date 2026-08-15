@@ -125,6 +125,8 @@ export async function* streamTimelineEvents(id, { after = 0, limit = 200, signal
 /* T3：设置页表单数据源（契约 §5——字段清单/类型/约束取自后端，前端不硬编码）。 */
 export const getSettingsSchema = (id, { signal } = {}) =>
   api(`/api/projects/${encodeURIComponent(id)}/settings/schema`, { signal });
+export const getGlobalSettingsSchema = ({ signal } = {}) =>
+  api('/api/settings/schema', { signal, cache: 'no-store' });
 
 /* ---- 推进（同步，仅用于不触发付费模型调用的动作） ---- */
 export const advance = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/advance`, { method: 'POST', body: JSON.stringify(payload) });
@@ -207,6 +209,8 @@ export const finalizeDelivery = (id) =>
   api(`/api/projects/${encodeURIComponent(id)}/delivery/finalize`, { method: 'POST', body: '{}' });
 export const revisePolicy = (id, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/policy`, { method: 'POST', body: JSON.stringify(payload) });
+export const reviseGlobalPolicy = (payload) =>
+  api('/api/settings/policy', { method: 'POST', body: JSON.stringify(payload) });
 export const resolveUnknown = (id, key, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/unknown-actions/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify(payload) });
 export const branchFrom = (id, payload) =>

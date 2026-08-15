@@ -117,18 +117,20 @@ export function jobOperation(payload) {
  * - notify(message, kind?), refresh(op)（世代守卫后的工程刷新）, getProjectId()
  * - postJob(body, {signal}), track(jobId, {signal,onEvent,onDone}), cancelJob(jobId)
  * - onJobRecord(record), getCheckpoint(), schedule(fn, ms)（默认 setTimeout）, refreshDelayMs
- * - startLiveStatus?(job, {signal, onText}) → stop()：T10 可选，job 运行期间把
- *   后端 timeline 的真实步骤文案推到进度行；终态/新操作/切页时停止。
+ * - startLiveStatus?(job, {signal, onText, onCheckpoint}) → stop()：T10 可选，job
+ *   运行期间把后端 timeline 的真实步骤文案和已落盘边界推给界面；终态/新操作/
+ *   切页时停止。onIntermediate(event, {signal}) 可读取并局部呈现中间工程视图。
  */
 export function createJobRunner(deps, registry = viewOperations) {
   const {
     projectId, renderProgress, clearProgress, setBusy, notify = () => {}, refresh,
     postJob, track, cancelJob, onJobRecord, getProjectId, getCheckpoint,
-    schedule = setTimeout, refreshDelayMs = 300, startLiveStatus,
+    schedule = setTimeout, refreshDelayMs = 300, startLiveStatus, onIntermediate,
   } = deps;
   let progress = null;
   let busy = false;
   let liveStop = null;
+  const intermediateSeen = new Set();
   const applyBusy = (flag) => { busy = flag; setBusy?.(flag); };
   const stopLive = () => { liveStop?.(); liveStop = null; };
 
@@ -146,6 +148,12 @@ export function createJobRunner(deps, registry = viewOperations) {
       liveStop = startLiveStatus(job, {
         signal: op.controller.signal,
         onText: (text) => { if (registry.isCurrent(op)) progress?.setLive?.(text); },
+        onCheckpoint: (event) => {
+          const key = String(event?.checkpoint_id || '');
+          if (!key || intermediateSeen.has(key) || !registry.isCurrent(op)) return;
+          intermediateSeen.add(key);
+          onIntermediate?.(event, { signal: op.controller.signal });
+        },
       }) || null;
     }
     track(job.job_id, {

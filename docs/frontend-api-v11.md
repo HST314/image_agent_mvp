@@ -30,6 +30,11 @@ The maximum page size is 500. Negative cursors and invalid limits return 422.
 
 ## Settings
 
+- `GET /api/settings/schema` returns the global `runtime.yaml` defaults without
+  requiring an opened project.
+- `POST /api/settings/policy` atomically updates the global defaults. When
+  `project_id` is supplied it also creates and applies an audited policy branch
+  for that currently opened project.
 - `GET /api/projects/{project_id}/settings/schema` returns the Pydantic-derived
   field schema, nested definitions, current values, production consumer for each
   setting, and its effect scope.

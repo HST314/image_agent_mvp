@@ -7,6 +7,7 @@ import { STATE_LABELS } from './states.js';
 /* 各工作流状态「正在进行」的中文文案（step_started.state → 展示文本）。
  * 键与后端 WorkflowRunner.ORDER 的七个生产状态一一对应。 */
 const LIVE_STEP_TEXT = {
+  category_constraint: '正在调用广告品类库并匹配约束…',
   intake_clarify: '正在理解任务书，生成澄清问题…',
   confirmation_build: '正在生成任务书…',
   initial_candidate_generation: '正在调用品类与艺术风格技能并生成候选图…',
@@ -51,7 +52,7 @@ export function maxSequence(events, after = 0) {
  * 返回 { stop, done }：done 在循环真正退出后兑现，便于测试编排。
  */
 export function createTimelineFollower({
-  fetchPage, onText, signal, intervalMs = 2000, schedule = setTimeout, initialAfter = 0,
+  fetchPage, onText, onCheckpoint, signal, intervalMs = 2000, schedule = setTimeout, initialAfter = 0,
 }) {
   let stopped = false;
   let after = initialAfter;
@@ -66,6 +67,9 @@ export function createTimelineFollower({
         after = maxSequence(items, after);
         const text = liveStepText(items);
         if (text) onText?.(text);
+        for (const event of items) {
+          if (event?.type === 'step_succeeded' && event.checkpoint_id) onCheckpoint?.(event);
+        }
       }
       await sleep();
     }

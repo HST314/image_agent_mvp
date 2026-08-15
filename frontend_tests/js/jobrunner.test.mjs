@@ -301,6 +301,29 @@ test('isTerminalJobStatus 终态集合', () => {
   for (const s of ['queued', 'running', 'cancelling', 'submitting', 'unknown']) assert.equal(isTerminalJobStatus(s), false);
 });
 
+test('运行中检查点即时上屏，同一检查点只触发一次中间视图读取', async () => {
+  const registry = createOperationRegistry();
+  const { calls, deps, settlePost } = fakeDeps('p-live');
+  const boundaries = [];
+  deps.startLiveStatus = (_job, handlers) => {
+    calls.liveHandlers = handlers;
+    return () => {};
+  };
+  deps.onIntermediate = (event, opts) => boundaries.push({ event, signal: opts.signal });
+  const runner = createJobRunner(deps, registry);
+
+  const pending = runner.start({}, { intent: 'bootstrap', operation: '初始化工程' });
+  settlePost(0, { job_id: 'job_live', project_id: 'p-live', status: 'running' });
+  await pending;
+  const event = { type: 'step_succeeded', state: 'category_constraint', checkpoint_id: 'checkpoint_live' };
+  calls.liveHandlers.onCheckpoint(event);
+  calls.liveHandlers.onCheckpoint(event);
+
+  assert.equal(boundaries.length, 1);
+  assert.equal(boundaries[0].event.state, 'category_constraint');
+  assert.equal(boundaries[0].signal.aborted, false);
+});
+
 /* ---- T10 对账：同一键去重命中终态记录 = 后端确认原尝试终结 ----
  * 后端 JOBS.submit 按「工程+幂等键」去重；新建记录必为 queued，故 POST 返回
  * 终态记录只可能是去重命中的旧记录（对账应答）。失败/取消/中断 → 清旧键、

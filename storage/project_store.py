@@ -428,6 +428,12 @@ class ProjectStore:
             target = (self.root / expected_path).resolve()
             if self.root.resolve() in target.parents:
                 target.unlink(missing_ok=True)
+                # 回滚后不保留误导性的空分支目录；仅删除已确认为空的目标父目录。
+                if target.parent != self.root and target.parent.exists():
+                    try:
+                        target.parent.rmdir()
+                    except OSError:
+                        pass
         if expected_id:
             index["items"].pop(expected_id, None)
         for checkpoint_id, item in list(index["items"].items()):
@@ -598,6 +604,8 @@ class ProjectStore:
         atomic_json(self.root / "manifest.json", manifest)
         try:
             self.checkpoints.validate(new_id, expected=transaction)
+            if not self._transaction_complete(transaction, manifest):
+                raise CorruptProjectError("新分支持久化校验失败。")
             if verify:
                 self._lock_state.validating_transaction = True
                 verify()

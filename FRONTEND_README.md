@@ -28,6 +28,8 @@ uvicorn main_front:app --host 127.0.0.1 --port 8000
   `frontend/data/projects`，与附件内原生产工程隔离。
 - `IMAGE_AGENT_MODEL_CONFIG`：生产模型配置路径。默认使用
   `configs/model_config.yaml`。
+- `IMAGE_AGENT_RUNTIME_POLICY`：全局运行策略路径。默认使用
+  `configs/runtime.yaml`；设置页保存后会原子更新该文件。
 
 ## 测试
 
@@ -64,6 +66,16 @@ python3 -m py_compile main_front.py
 `POST /api/projects/{id}/branches` 原子完成“创建并切换”，成功响应直接返回已位于
 新分支的完整工程视图。前端不得再调用 `/branches/switch`，也不得因响应异常而补发
 创建请求；响应丢失时只允许 `GET /api/projects/{id}` 对账当前分支，避免同名分支冲突。
+分支事务只校验 checkpoint、index、manifest 与 branches 等持久化不变量；完整页面
+投影在事务提交后生成，非关键投影读取失败不会回滚健康分支。
+
+## 全局设置与中间结果
+
+- 设置页无需先打开工程，读写 `GET /api/settings/schema` 与
+  `POST /api/settings/policy`；保存后新工程立即读取新的全局默认。
+- 保存时若携带当前工程 ID，后端还会为该工程创建策略修订分支并立即应用，旧分支不变。
+- 自动放行品类约束时，品类 checkpoint 一落盘，前端就通过工程 timeline 拉取并在当前
+  工作区展示完整品类约束；澄清模型继续后台运行，终态后再进入问题界面。
 
 ## 生产基线证据
 

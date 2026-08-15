@@ -14,6 +14,7 @@ test('T11 中文新建表单在提交边界组装任务卡，不依赖原始 JSO
 
   assert.equal(task.project_id, 'campaign-01');
   assert.equal(task.deliverable_goal, '广告 海报');
+  assert.equal(task.category_ref, undefined, '未显式选择品类时必须由广告品类库匹配');
   assert.deepEqual(task.known_facts, { audience: '审核人员', tone: '清晰、精致' });
   assert.deepEqual(task.unknowns, { output_spec: '待确认' });
   assert.equal(task.source_refs[0].excerpt, '广告 海报');

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
 from fastapi.testclient import TestClient
 
 import main_front
@@ -130,3 +131,50 @@ def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(
     assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": original_head}).json()["current_branch"] == "main"
     assert client.get(f"/api/projects/{store.project_id}").json()["runtime_policy"]["watermark"] is False
     assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": policy_branch_head}).json()["current_branch"].startswith("policy-")
+
+
+def test_global_settings_update_runtime_yaml_and_current_project_branch(tmp_path: Path, monkeypatch):
+    projects = tmp_path / "projects"
+    runtime_path = tmp_path / "configs" / "runtime.yaml"
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(
+        yaml.safe_dump(RuntimePolicy(offline_mode=True).snapshot(), allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", projects)
+    monkeypatch.setattr(main_front, "RUNTIME_POLICY_PATH", runtime_path)
+    store, _ = _project(projects, "global-settings-current")
+    client = TestClient(main_front.app)
+
+    schema = client.get("/api/settings/schema")
+    assert schema.status_code == 200
+    assert schema.json()["scope"] == "global_and_current_project_revision"
+
+    policy = RuntimePolicy(
+        offline_mode=True,
+        category_constraint={"release": "manual"},
+        watermark=True,
+    ).snapshot()
+    changed = client.post("/api/settings/policy", json={
+        "policy": policy,
+        "actor": "owner",
+        "confirmed": True,
+        "project_id": store.project_id,
+    })
+    assert changed.status_code == 200, changed.text
+    body = changed.json()
+    assert body["branch"].startswith("policy-")
+    assert body["project"]["runtime_policy"]["category_constraint"]["release"] == "manual"
+    assert RuntimePolicy.from_file(runtime_path).category_constraint.release == "manual"
+
+    task = {
+        "task_id": "task-global-new", "project_id": "global-settings-new",
+        "source_refs": [{"ref_id": "brief", "ref_type": "brief", "excerpt": "文化墙", "source_hash": None}],
+        "deliverable_goal": "设计文化墙", "usage_context": "室内展陈",
+        "known_facts": {}, "unknowns": {}, "asset_inputs": [], "status": "draft",
+    }
+    created = client.post("/api/projects", json={
+        "project_id": "global-settings-new", "task_card": task, "offline": True, "defer_run": True,
+    })
+    assert created.status_code == 201, created.text
+    assert created.json()["runtime_policy"]["category_constraint"]["release"] == "manual"

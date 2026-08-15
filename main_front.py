@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import hashlib
+import threading
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -20,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+import yaml
 
 from agent_core.models import ImageTaskCard
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
@@ -41,6 +43,8 @@ APP_ROOT = Path(__file__).resolve().parent
 FRONTEND_ROOT = APP_ROOT / "frontend"
 PROJECTS_ROOT = Path(os.getenv("IMAGE_AGENT_FRONT_PROJECTS_ROOT", FRONTEND_ROOT / "data" / "projects")).resolve()
 MODEL_CONFIG = Path(os.getenv("IMAGE_AGENT_MODEL_CONFIG", APP_ROOT / "configs" / "model_config.yaml")).resolve()
+RUNTIME_POLICY_PATH = Path(os.getenv("IMAGE_AGENT_RUNTIME_POLICY", APP_ROOT / "configs" / "runtime.yaml")).resolve()
+GLOBAL_POLICY_LOCK = threading.RLock()
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
@@ -126,6 +130,9 @@ class PolicyRevisionRequest(StrictRequest):
     actor: str = Field(min_length=1, max_length=128)
     confirmed: bool
 
+class GlobalPolicyRevisionRequest(PolicyRevisionRequest):
+    project_id: str | None = Field(default=None, min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
+
 class UnknownResolutionRequest(StrictRequest):
     action: Literal["retry_after_confirmation", "abandon"]
     actor: str = Field(min_length=1, max_length=128)
@@ -177,6 +184,37 @@ def _existing_store(project_id: str) -> ProjectStore:
     if not (store.root / "manifest.json").is_file():
         raise ProjectNotFoundError(f"工程不存在：{store.project_id}")
     return store
+
+
+def _global_policy() -> RuntimePolicy:
+    return RuntimePolicy.from_file(RUNTIME_POLICY_PATH)
+
+
+def _write_global_policy(policy: RuntimePolicy) -> None:
+    """Atomically replace the global defaults consumed by every new project."""
+    RUNTIME_POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp = RUNTIME_POLICY_PATH.with_name(f".{RUNTIME_POLICY_PATH.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as stream:
+            yaml.safe_dump(policy.snapshot(), stream, allow_unicode=True, sort_keys=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temp.replace(RUNTIME_POLICY_PATH)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _settings_schema(current: dict[str, Any], *, scope: str, risk: str) -> dict[str, Any]:
+    schema = RuntimePolicy.model_json_schema()
+    properties = {name: schema["properties"][name] for name in RuntimePolicy.CONSUMERS
+                  if name != "skill_invocation"}
+    for name, consumer in RuntimePolicy.CONSUMERS.items():
+        if name == "skill_invocation":
+            continue
+        properties[name]["consumer"] = consumer
+        properties[name]["effect"] = scope
+    return {"schema_version": "1", "scope": scope, "risk": risk,
+            "properties": properties, "$defs": schema.get("$defs", {}), "current": current}
 
 
 def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
@@ -429,7 +467,7 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            policy = RuntimePolicy.from_file(APP_ROOT / "configs/runtime.yaml").model_copy(update={"offline_mode": body.offline})
+            policy = _global_policy().model_copy(update={"offline_mode": body.offline})
             store.create(policy.snapshot())
             if body.defer_run:
                 # T10（契约 §7）：仅持久化工程与入站任务卡，立即返回视图（不做任何
@@ -681,13 +719,11 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
     try:
         def execute() -> dict[str, Any]:
             store = _existing_store(project_id)
-            result: dict[str, Any] = {}
             with store.lock():
-                def verify_view() -> None:
-                    result["view"] = _project_view(store)
-
-                store.branch_from(body.checkpoint, name=body.name, mode=body.mode, verify=verify_view)
-            return result["view"]
+                # 分支事务只验证持久化不变量；页面投影在事务提交后生成，投影层的
+                # 非关键读取失败不得回滚已经健康落盘的分支。
+                store.branch_from(body.checkpoint, name=body.name, mode=body.mode)
+                return _project_view(store)
 
         return await asyncio.to_thread(execute)
     except Exception as exc:
@@ -757,17 +793,55 @@ async def project_settings_schema(project_id: str) -> dict[str, Any]:
     try:
         store = _store(project_id)
         current = json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
-        schema = RuntimePolicy.model_json_schema()
-        properties = {name: schema["properties"][name] for name in RuntimePolicy.CONSUMERS
-                      if name != "skill_invocation"}
-        for name, consumer in RuntimePolicy.CONSUMERS.items():
-            if name == "skill_invocation":
-                continue
-            properties[name]["consumer"] = consumer
-            properties[name]["effect"] = "new_project_or_confirmed_revision"
-        return {"schema_version": "1", "scope": "new_project_or_confirmed_revision",
-                "risk": "修改现有工程会创建审计分支并使后续结果重新确认。",
-                "properties": properties, "$defs": schema.get("$defs", {}), "current": current}
+        return _settings_schema(
+            current,
+            scope="new_project_or_confirmed_revision",
+            risk="修改现有工程会创建审计分支并使后续结果重新确认。",
+        )
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/settings/schema")
+async def global_settings_schema() -> dict[str, Any]:
+    """Expose global defaults without requiring an opened project."""
+    try:
+        return _settings_schema(
+            _global_policy().snapshot(),
+            scope="global_and_current_project_revision",
+            risk="保存会立即更新全局默认；若指定当前工程，还会创建策略修订分支。",
+        )
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/settings/policy")
+async def revise_global_policy(body: GlobalPolicyRevisionRequest) -> dict[str, Any]:
+    """Update global defaults and, when supplied, revise the current project too."""
+    try:
+        if not body.confirmed:
+            raise PermissionError("全局配置修订需要人工确认。")
+        policy = RuntimePolicy.model_validate(body.policy)
+        store = _existing_store(body.project_id) if body.project_id else None
+
+        def execute() -> dict[str, Any]:
+            with GLOBAL_POLICY_LOCK:
+                previous = _global_policy()
+                branch = None
+                try:
+                    _write_global_policy(policy)
+                    if store is not None:
+                        with store.lock():
+                            branch = store.revise_policy(
+                                policy.snapshot(), confirmed=body.confirmed, actor=body.actor,
+                            )
+                except Exception:
+                    _write_global_policy(previous)
+                    raise
+            project = _project_view(store) if store is not None else None
+            return {"scope": "global", "policy": policy.snapshot(), "branch": branch, "project": project}
+
+        return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc
 

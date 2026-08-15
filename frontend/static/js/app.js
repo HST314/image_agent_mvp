@@ -85,12 +85,12 @@ function renderPage(view) {
   } else if (view === 'settings') {
     activePage = renderSettingsPage(content, state.current, {
       onSaved(projectView) {
-        /* Q4-A：保存即生效并创建新分支——更新当前工程视图与顶栏分支标识，
-         * 然后重渲染设置页（表单当前值取自新分支的策略快照）。保存结果接管
-         * 当前视图世代，使更早发出的刷新 GET 即使迟到也不能覆盖新分支。 */
+        /* 保存全局默认；存在当前工程时，同步接管后端返回的策略修订分支。 */
         viewOperations.begin();
-        patch({ current: projectView });
-        setTopContext({ projectId: projectView.project_id, branch: projectView.manifest?.current_branch });
+        if (projectView) {
+          patch({ current: projectView });
+          setTopContext({ projectId: projectView.project_id, branch: projectView.manifest?.current_branch });
+        }
         if (state.view === 'settings') renderPage('settings');
       },
     });
