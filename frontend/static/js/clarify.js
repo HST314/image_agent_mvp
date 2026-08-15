@@ -63,17 +63,34 @@ export function buildClarificationSubmission(card, answersByQuestion) {
   };
 }
 
-export function renderClarify(container, view, { projectId, jobRunner }) {
+export function renderClarify(container, view, { projectId, jobRunner, onOpenSettings = () => {} }) {
   const card = view.snapshot?.question_card || { questions: [] };
   const questions = card.questions || [];
+  const budgetReview = view.snapshot?.phase === 'waiting_clarification_review';
+  const capabilities = Array.isArray(view.capabilities) ? view.capabilities : [];
   const storedDraft = loadDraft(projectId, DRAFT_NAME)?.value || {};
   const draft = normalizeClarificationDraft(card, storedDraft);
 
   const head = el('div', { class: 'section__head' });
   const headText = el('div');
-  headText.append(el('h2', { text: '补充关键信息' }), el('p', { text: '这些答案会写回生产任务卡后再继续；可直接选择推荐项，也可以输入自己的答案。' }));
+  headText.append(
+    el('h2', { text: budgetReview ? '人工补充剩余阻塞项' : '补充关键信息' }),
+    el('p', { text: budgetReview
+      ? '自动提问预算已用完；补充下列信息后系统会重新检查是否可以生成任务书。'
+      : '这些答案会写回生产任务卡后再继续；可直接选择推荐项，也可以输入自己的答案。' }),
+  );
   head.append(headText, el('span', { class: 'badge badge--warning', text: `${questions.length} 项待回答` }));
   container.append(head);
+
+  if (budgetReview) {
+    const review = el('div', { class: 'clarification-review', role: 'status' });
+    review.append(
+      el('strong', { text: '流程已安全暂停，已填写内容不会丢失。' }),
+      el('span', { text: view.snapshot?.clarification_review_reason
+        || '仍有阻塞信息需要人工补充，不能直接跳过进入任务书。' }),
+    );
+    container.append(review);
+  }
 
   const restored = Object.values(draft).some((answer) => answer.selected_option_id || answer.free_text);
   if (restored) container.append(el('p', { class: 'hint', text: '已恢复上次未提交的草稿。' }));
@@ -166,7 +183,8 @@ export function renderClarify(container, view, { projectId, jobRunner }) {
     return message;
   }
 
-  const submit = el('button', { type: 'submit', class: 'btn btn--primary', text: '提交答案并继续' });
+  const submit = el('button', { type: 'submit', class: 'btn btn--primary',
+    text: budgetReview ? '补充剩余项并继续' : '提交答案并继续' });
   form.append(submit);
 
   form.addEventListener('submit', async (event) => {
@@ -195,10 +213,40 @@ export function renderClarify(container, view, { projectId, jobRunner }) {
     } catch (error) {
       toast(error.message, 'error');
       submit.disabled = false;
-      submit.textContent = '提交答案并继续';
+      submit.textContent = budgetReview ? '补充剩余项并继续' : '提交答案并继续';
       form.removeAttribute('aria-busy');
     }
   });
 
   container.append(form);
+
+  if (budgetReview) {
+    const actions = el('div', { class: 'clarification-recovery',
+      'aria-label': '澄清恢复操作' });
+    if (capabilities.includes('apply_clarification_safe_defaults')) {
+      const defaults = el('button', { type: 'button', class: 'btn btn--secondary',
+        text: '采用允许的安全默认' });
+      defaults.addEventListener('click', () => jobRunner.start(
+        { clarification_action: 'apply_safe_defaults' },
+        { intent: 'clarification-safe-defaults', operation: '应用澄清安全默认值' },
+      ));
+      actions.append(defaults);
+    }
+    if (capabilities.includes('adjust_clarification_budget')) {
+      const settings = el('button', { type: 'button', class: 'btn btn--secondary',
+        text: '去设置调整问题预算' });
+      settings.addEventListener('click', onOpenSettings);
+      actions.append(settings);
+    }
+    if (capabilities.includes('continue_clarification_after_budget_change')) {
+      const continueButton = el('button', { type: 'button', class: 'btn btn--primary',
+        text: '按新预算继续提问' });
+      continueButton.addEventListener('click', () => jobRunner.start(
+        { clarification_action: 'continue_after_budget_change' },
+        { intent: 'clarification-budget-continue', operation: '按新预算继续澄清' },
+      ));
+      actions.append(continueButton);
+    }
+    if (actions.children.length) container.append(actions);
+  }
 }

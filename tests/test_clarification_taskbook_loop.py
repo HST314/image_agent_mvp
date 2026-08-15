@@ -82,13 +82,16 @@ def test_answer_is_persisted_structurally_and_reanalysed(tmp_path):
     assert result["task_specification"] is None and result["task_approval"] is None
 
 
-def test_budget_exhaustion_with_blocker_cannot_advance(tmp_path):
+def test_budget_exhaustion_with_blocker_waits_for_recoverable_review(tmp_path):
     runner = _runner(tmp_path)
     blocker = {"blocking": True, "has_safe_default": False, "impact": "影响输出"}
     state = {"state": "intake_clarify", "task_card": _task(unknowns={"name": blocker}),
              "clarification_asked_count": runner.policy.clarification_total_budget}
-    with pytest.raises(ValueError, match="预算已耗尽"):
-        runner.run(state, RunnerOptions(), only_state="intake_clarify")
+    result = runner.run(state, RunnerOptions(), only_state="intake_clarify")
+    assert result["phase"] == "waiting_clarification_review"
+    assert result["waiting"] is True
+    assert result["clarification_blocking_fields"] == ["name"]
+    assert "increase_budget" in result["clarification_recovery_actions"]
 
 
 def test_confirmation_build_is_a_reasoning_model_boundary(tmp_path):

@@ -29,6 +29,9 @@ export const CAPABILITY_ACTIONS = {
   approve_category_constraint: { id: 'approve_category_constraint', label: '确认品类约束', kind: 'job' },
   retry_category_constraint: { id: 'retry_category_constraint', label: '重新匹配品类', kind: 'job' },
   answer_clarification: { id: 'answer_clarification', label: '提交答案并继续', kind: 'job' },
+  apply_clarification_safe_defaults: { id: 'apply_clarification_safe_defaults', label: '采用允许的安全默认', kind: 'job' },
+  adjust_clarification_budget: { id: 'adjust_clarification_budget', label: '调整澄清预算', kind: 'ui' },
+  continue_clarification_after_budget_change: { id: 'continue_clarification_after_budget_change', label: '按新预算继续', kind: 'job' },
   approve_skill_invocations: { id: 'approve_skill_invocations', label: '确认技能调用并继续', kind: 'job' },
   retry_skill_invocations: { id: 'retry_skill_invocations', label: '换一版技能调用结果', kind: 'job' },
   select_master: { id: 'select_master', label: '确认当前主图', kind: 'job' },
@@ -101,6 +104,9 @@ export function deriveView(view) {
   if (stateId === 'category_constraint') return { stage: 'category', actions: capabilities,
     waiting: phase === 'waiting_category_approval', processing: Boolean(view?.active_job) };
   if (phase === 'waiting_clarification') return { stage: 'clarify', actions: capabilities, waiting: true };
+  if (phase === 'waiting_clarification_review') {
+    return { stage: 'clarify', actions: capabilities, waiting: true, budgetReview: true };
+  }
   if (stateId === 'confirmation_build' && phase === 'waiting_human_approval') {
     return { stage: 'taskbook', actions: capabilities, waiting: true };
   }

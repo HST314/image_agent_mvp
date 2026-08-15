@@ -574,11 +574,15 @@ class ProjectStore:
             "category_constraint": {
                 "category_constraint_current", "category_constraint_history", "category_constraint_approval",
                 "question_card", "clarification_transcript", "previous_fingerprints",
-                "clarification_asked_count", "clarification_remaining_budget",
+                "clarification_asked_fields", "clarification_asked_count", "clarification_remaining_budget",
+                "clarification_blocking_fields", "clarification_safe_default_fields",
+                "clarification_recovery_actions", "clarification_review_reason",
             },
             "intake_clarify": {
                 "question_card", "clarification_transcript", "previous_fingerprints",
-                "clarification_asked_count", "clarification_remaining_budget",
+                "clarification_asked_fields", "clarification_asked_count", "clarification_remaining_budget",
+                "clarification_blocking_fields", "clarification_safe_default_fields",
+                "clarification_recovery_actions", "clarification_review_reason",
             },
             "confirmation_build": {"task_specification", "task_markdown", "task_revision",
                                    "task_revision_history", "task_approval", "readiness"},

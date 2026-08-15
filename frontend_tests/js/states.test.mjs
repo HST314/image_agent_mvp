@@ -9,7 +9,9 @@ import {
 // 后端 v1.7.3 事实表：main_front._capabilities 的全部可能输出。
 const BACKEND_CAPABILITIES = [
   'retry', 'approve_category_constraint', 'retry_category_constraint',
-  'answer_clarification', 'select_master', 'review_calibration',
+  'answer_clarification', 'apply_clarification_safe_defaults',
+  'adjust_clarification_budget', 'continue_clarification_after_budget_change',
+  'select_master', 'review_calibration',
   'enter_human_tune',
   'approve_skill_invocations', 'retry_skill_invocations', 'resume_quality_inspection',
   'submit_human_tune', 'start_clarification', 'build_taskbook', 'prepare_style_direction',
@@ -38,6 +40,17 @@ const view = (snapshot, manifest = {}, capabilities = []) => ({ snapshot, manife
 test('waiting_clarification → clarify 舞台', () => {
   const v = view({ state: 'intake_clarify', phase: 'waiting_clarification' }, {}, ['answer_clarification']);
   assert.equal(deriveView(v).stage, 'clarify');
+});
+
+test('waiting_clarification_review → 可恢复的 clarify 舞台', () => {
+  const v = view(
+    { state: 'intake_clarify', phase: 'waiting_clarification_review' },
+    {},
+    ['answer_clarification', 'adjust_clarification_budget'],
+  );
+  const result = deriveView(v);
+  assert.equal(result.stage, 'clarify');
+  assert.equal(result.budgetReview, true);
 });
 
 test('confirmation_build + waiting_human_approval → taskbook 舞台', () => {

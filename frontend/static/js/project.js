@@ -155,7 +155,11 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'clarify') {
-    renderClarify(panel, view, { projectId, jobRunner });
+    renderClarify(panel, view, {
+      projectId,
+      jobRunner,
+      onOpenSettings: () => document.querySelector('[data-view="settings"]')?.click(),
+    });
     return;
   }
   if (stage === 'taskbook') {

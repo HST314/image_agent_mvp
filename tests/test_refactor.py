@@ -57,11 +57,14 @@ def test_05_clarification_zero_budget_dedup_over_ten_and_repair():
     unknown={f"x{i}":{"impact":"影响","blocking":True,"has_safe_default":False} for i in range(12)}
     unknown["output_spec"]={"impact":"影响构图","blocking":True,"has_safe_default":False,"evidence":"未说明"}
     card=generate_question_card(task(unknown), max_auto_questions=20); assert len(card.questions)<=3
-    seen={q.semantic_fingerprint for q in card.questions}; assert not generate_question_card(task(unknown), previous_fingerprints=seen).questions
+    seen={q.semantic_fingerprint for q in card.questions}
+    next_card=generate_question_card(task(unknown), previous_fingerprints=seen)
+    assert next_card.questions and not seen.intersection(q.semantic_fingerprint for q in next_card.questions)
     class Broken:
         n=0
         def complete(self,prompt): self.n+=1; return "bad" if self.n==1 else '{"questions":[]}'
-    errors=[]; assert generate_question_card(task(unknown), Broken(), error_recorder=errors.append).questions==[] and len(errors)==1
+    errors=[]; repaired=generate_question_card(task(unknown), Broken(), error_recorder=errors.append)
+    assert repaired.questions and len(errors)==1
 
 def test_06_specific_mutually_exclusive_options():
     card=generate_question_card(task({"output_spec":{"impact":"改变构图","blocking":True,"has_safe_default":False}}))

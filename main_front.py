@@ -102,6 +102,7 @@ class AdvanceRequest(StrictRequest):
     task_approved: bool = False
     skill_action: Literal["approve", "retry"] | None = None
     category_action: Literal["approve", "retry"] | None = None
+    clarification_action: Literal["apply_safe_defaults", "continue_after_budget_change"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=128)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
@@ -251,6 +252,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         actor=body.actor,
         skill_action=body.skill_action,
         category_action=body.category_action,
+        clarification_action=body.clarification_action,
     )
 
 
@@ -297,6 +299,10 @@ def _job_operation(body: AdvanceRequest) -> str:
         return "重新匹配品类约束"
     if body.category_action == "approve":
         return "确认品类约束"
+    if body.clarification_action == "apply_safe_defaults":
+        return "应用澄清安全默认值"
+    if body.clarification_action == "continue_after_budget_change":
+        return "按新预算继续澄清"
     if body.skill_action == "retry":
         return "重新调用两库"
     if body.skill_action == "approve":
@@ -331,6 +337,13 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
         return ["approve_category_constraint", "retry_category_constraint"]
     if phase == "waiting_clarification":
         return ["answer_clarification"]
+    if phase == "waiting_clarification_review":
+        actions = ["answer_clarification", "adjust_clarification_budget"]
+        if snapshot.get("clarification_safe_default_fields"):
+            actions.append("apply_clarification_safe_defaults")
+        if int(snapshot.get("clarification_remaining_budget") or 0) > 0:
+            actions.append("continue_clarification_after_budget_change")
+        return actions
     if phase == "waiting_skill_approval":
         return ["approve_skill_invocations", "retry_skill_invocations"]
     if phase == "waiting_master_selection":

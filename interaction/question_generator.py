@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from typing import Any, Literal
 from agent_core.models import ImageTaskCard, QuestionCard, QuestionItem, QuestionOption
@@ -40,6 +41,42 @@ FIELD_DECISIONS: dict[str, tuple[str, list[tuple[str, str]]]] = {
 def _fingerprint(field: str, question: str) -> str:
     normalized = "".join((field + question).casefold().split())
     return hashlib.sha256(normalized.encode()).hexdigest()[:20]
+
+
+def _field_fingerprint(field: str) -> str:
+    """Deduplicate clarification questions by their canonical task-card field."""
+
+    return _fingerprint(field, "")
+
+
+def _alias_key(value: Any) -> str:
+    """Normalize display aliases without exposing them as persistence keys."""
+
+    text = "".join(str(value or "").casefold().split())
+    return re.sub(r"[，。！？；：、,.!?;:（）()\[\]【】]", "", text)
+
+
+def _field_aliases(task: ImageTaskCard) -> dict[str, set[str]]:
+    aliases: dict[str, set[str]] = {}
+    for field, details in task.unknowns.items():
+        values = [field]
+        if isinstance(details, dict):
+            values.extend([details.get("label"), details.get("question")])
+        for value in values:
+            key = _alias_key(value)
+            if key:
+                aliases.setdefault(key, set()).add(str(field))
+    return aliases
+
+
+def resolve_unknown_field(task: ImageTaskCard, value: Any) -> str | None:
+    """Resolve an internal id, label or question to one unambiguous internal id."""
+
+    raw = str(value or "").strip()
+    if raw in task.unknowns:
+        return raw
+    matches = _field_aliases(task).get(_alias_key(raw), set())
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _candidate(
@@ -85,10 +122,7 @@ def _candidate(
         ]
     else:
         question, choices = decision
-    fingerprint_field = field if field in FIELD_DECISIONS else safe_label
-    fp = str(
-        details.get("semantic_fingerprint") or _fingerprint(fingerprint_field, question)
-    )
+    fp = _field_fingerprint(field)
     return QuestionItem(
         question_id=f"{task.task_id}_q{index}",
         field=field,
@@ -145,9 +179,20 @@ def generate_question_card(
                 payload = json.loads(_extract(raw))
                 items = payload.get("questions", [])
                 questions = [
-                    _normalize(task, item, i) for i, item in enumerate(items, 1)
+                    question
+                    for i, item in enumerate(items, 1)
+                    if (question := _normalize(task, item, i)) is not None
                 ]
                 eligible = _eligible_unique(questions, seen)
+                # Invalid/ambiguous model fields are discarded. Fill the card
+                # deterministically so a malformed alias cannot waive a blocker.
+                if len(eligible) < min(per_round, remaining):
+                    local = [
+                        _candidate(task, field, value, i)
+                        for i, (field, value) in enumerate(task.unknowns.items(), 1)
+                    ]
+                    occupied = seen | {question.semantic_fingerprint for question in eligible}
+                    eligible.extend(_eligible_unique([q for q in local if q], occupied))
                 return QuestionCard(
                     task_id=task.task_id,
                     questions=eligible[: min(per_round, remaining)],
@@ -198,8 +243,17 @@ def _eligible_unique(items: list[QuestionItem], seen: set[str]) -> list[Question
     return accepted
 
 
-def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> QuestionItem:
+def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> QuestionItem | None:
+    if not isinstance(item, dict):
+        return None
     item = dict(item)
+
+    # The task card owns field identity. Model-authored display labels may be
+    # accepted only when they resolve to exactly one current unknown field.
+    canonical_field = resolve_unknown_field(task, item.get("field"))
+    if canonical_field is None:
+        return None
+    item["field"] = canonical_field
 
     # 1. 规范化 options 列表及其内部字段
     options_list = item.get("options")
@@ -263,16 +317,13 @@ def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> Questio
 
     # 4. 规范化基础文本字段
     item["question_id"] = str(item.get("question_id") or f"{task.task_id}_q{index}")
-    item["field"] = str(item.get("field") or "unknown_field")
+    item["field"] = canonical_field
     item["question"] = str(item.get("question") or "请确认该项要求：")
     item["impact"] = str(item.get("impact") or "会影响画面最终效果。")
     item["evidence"] = str(item.get("evidence") or "")
 
     # 5. 生成指纹
-    item["semantic_fingerprint"] = str(
-        item.get("semantic_fingerprint")
-        or _fingerprint(item["field"], item["question"])
-    )
+    item["semantic_fingerprint"] = _field_fingerprint(canonical_field)
 
     return QuestionItem.model_validate(item)
 
@@ -283,7 +334,7 @@ def _prompt(task: ImageTaskCard, limit: int, seen: set[str]) -> str:
         "严禁包含任何前言、Markdown 外的解释。"
         "允许 0 问，最多 %d 问。\n"
         "每个问题必须包含以下字段（注意类型）：\n"
-        "- field: 字符串，缺失的字段名\n"
+        "- field: 字符串，必须原样使用任务卡 unknowns 中的内部字段 ID；不得改成中文标题或问题文案\n"
         "- question: 字符串，向用户提问的中文问题\n"
         '- options: 列表，每个选项格式为 {"option_id": "A", "label": "标题", "description": "说明", "requires_free_text": false}，option_id 必须是字母字符串如 "A", "B"；“其他/自定义”必须设 requires_free_text=true\n'
         '- recommended_option_id: 字符串，推荐的 option_id，如 "A"\n'

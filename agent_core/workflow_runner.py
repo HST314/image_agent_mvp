@@ -24,7 +24,7 @@ from interaction.confirmation_builder import (
     specification_value,
     update_specification_from_markdown,
 )
-from interaction.question_generator import generate_question_card
+from interaction.question_generator import generate_question_card, resolve_unknown_field
 from model_router.clients import build_text_client, build_vlm_client
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRoute, ModelRouter
@@ -56,6 +56,7 @@ class RunnerOptions:
     actor: str | None = None
     skill_action: Literal["approve", "retry"] | None = None
     category_action: Literal["approve", "retry"] | None = None
+    clarification_action: Literal["apply_safe_defaults", "continue_after_budget_change"] | None = None
 
 
 class WorkflowRunner:
@@ -101,7 +102,8 @@ class WorkflowRunner:
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
         phase = snapshot.get("phase")
-        if phase in {"waiting_category_approval", "waiting_human_approval", "waiting_clarification", "waiting_master_selection",
+        if phase in {"waiting_category_approval", "waiting_human_approval", "waiting_clarification",
+                     "waiting_clarification_review", "waiting_master_selection",
                      "waiting_skill_approval", "skill_approved_pending_render"}:
             return str(snapshot.get("state"))
         if phase in {"additional_rounds_approved", "waiting_reinspection"}:
@@ -177,22 +179,58 @@ class WorkflowRunner:
         return CategorySkillLoader(generic_index).load_for_task(task), 0
 
     @staticmethod
-    def _category_unknowns(task: ImageTaskCard, skill: Any) -> dict[str, Any]:
-        """Turn approved category requirements into deterministic clarification blockers."""
-        known_text = json.dumps({
-            "deliverable_goal": task.deliverable_goal,
-            "usage_context": task.usage_context,
-            "known_facts": task.known_facts,
-        }, ensure_ascii=False)
+    def _has_fact_value(value: Any) -> bool:
+        return not isinstance(value, dict) and str(value or "").strip().casefold() not in {
+            "", "unknown", "pending", "待确认", "待补充", "未提供",
+        }
+
+    @classmethod
+    def _apply_category_unknowns(cls, task: ImageTaskCard, skill: Any) -> ImageTaskCard:
+        """Inject category requirements and reconcile answers to internal ids."""
+
         unknowns = dict(task.unknowns)
+        known_facts = dict(task.known_facts)
+        alias_owners: dict[str, set[str]] = {}
+        for item in skill.required_questions:
+            field = str(item.field)
+            existing = unknowns.get(field)
+            aliases = {field, str(item.question or "")}
+            if isinstance(existing, dict):
+                aliases.update(str(existing.get(key) or "") for key in ("label", "question"))
+            for alias in aliases:
+                key = "".join(alias.casefold().split())
+                if key:
+                    alias_owners.setdefault(key, set()).add(field)
         for item in skill.required_questions:
             if str(item.field) == "asset_rules" and not task.asset_inputs:
                 continue
-            if str(item.field) in task.known_facts:
-                continue
-            if item.question and item.question in known_text:
-                continue
             field = str(item.field)
+            existing = unknowns.get(field)
+            aliases = {field, str(item.question or "")}
+            if isinstance(existing, dict):
+                aliases.update(str(existing.get(key) or "") for key in ("label", "question"))
+            normalized_aliases = {
+                key for alias in aliases
+                if (key := "".join(alias.casefold().split()))
+                and alias_owners.get(key) == {field}
+            }
+            answer = next((
+                value for key, value in known_facts.items()
+                if "".join(str(key).casefold().split()) in normalized_aliases
+                and cls._has_fact_value(value)
+            ), None)
+            if answer is not None:
+                known_facts[field] = answer
+                for unknown_key, details in list(unknowns.items()):
+                    candidate_aliases = {str(unknown_key)}
+                    if isinstance(details, dict):
+                        candidate_aliases.update(
+                            str(details.get(key) or "") for key in ("label", "question")
+                        )
+                    if any("".join(alias.casefold().split()) in normalized_aliases
+                           for alias in candidate_aliases if alias):
+                        unknowns.pop(unknown_key, None)
+                continue
             unknowns.setdefault(field, {
                 "question": item.question,
                 "label": item.question,
@@ -200,12 +238,13 @@ class WorkflowRunner:
                 "has_safe_default": not bool(item.blocks_generation),
                 "impact": "该品类的制作、交付或验收依赖此信息。",
                 "evidence": f"广告品类库：{skill.display_name or skill.category_id}",
+                "default_handling": item.default_handling,
                 "options": [
                     {"label": "现在补充（请注明）", "description": f"提供“{item.question}”的可执行内容"},
                     {"label": "采用明确默认（请注明）", "description": "写明经人工确认的保守默认值"},
                 ],
             })
-        return unknowns
+        return task.model_copy(update={"known_facts": known_facts, "unknowns": unknowns})
 
     def _category_constraint(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         """Match, version and optionally approve category constraints before clarification."""
@@ -222,9 +261,9 @@ class WorkflowRunner:
                 raise ValueError("品类约束放行需要操作者身份。")
             history[-1] = {**history[-1], "decision": "approved", "decided_by": actor}
             current = history[-1]
-            task = task.model_copy(update={"unknowns": self._category_unknowns(
+            task = self._apply_category_unknowns(
                 task, CategorySkill.model_validate(current["skill"]),
-            )})
+            )
             self.store.events.append("category_constraint_approved", actor=actor,
                                      version_id=current["version_id"])
             return {"category_constraint_current": current, "category_constraint_history": history,
@@ -258,7 +297,7 @@ class WorkflowRunner:
             return {"category_constraint_current": version, "category_constraint_history": history,
                     "category_constraint_approval": None, "waiting": True,
                     "phase": "waiting_category_approval"}
-        task = task.model_copy(update={"unknowns": self._category_unknowns(task, skill)})
+        task = self._apply_category_unknowns(task, skill)
         return {"category_constraint_current": version, "category_constraint_history": history,
                 "category_constraint_approval": {"version_id": version["version_id"], "actor": "system:auto"},
                 "task_card": task.model_dump(mode="json"), "waiting": False,
@@ -277,44 +316,156 @@ class WorkflowRunner:
             current = following
         data["domain_state"] = current.value
 
+    @staticmethod
+    def _clarification_asked_fields(task: ImageTaskCard, data: dict[str, Any]) -> set[str]:
+        fields = {str(field) for field in data.get("clarification_asked_fields", []) if field}
+        cards = [item.get("question_card", {}) for item in data.get("clarification_transcript", [])]
+        if data.get("phase") == "waiting_clarification":
+            cards.append(data.get("question_card") or {})
+        for card in cards:
+            for question in card.get("questions", []) if isinstance(card, dict) else []:
+                raw_field = question.get("field") if isinstance(question, dict) else None
+                canonical = resolve_unknown_field(task, raw_field)
+                if canonical:
+                    fields.add(canonical)
+                elif raw_field and (str(raw_field) in task.known_facts
+                                    or str(raw_field).startswith("library_required_input_")):
+                    fields.add(str(raw_field))
+        return fields
+
+    @classmethod
+    def _apply_safe_defaults(cls, task: ImageTaskCard) -> tuple[ImageTaskCard, list[str]]:
+        facts = dict(task.known_facts)
+        unknowns = dict(task.unknowns)
+        applied: list[str] = []
+        for field, details in list(unknowns.items()):
+            if not isinstance(details, dict) or not bool(details.get("has_safe_default")):
+                continue
+            value = details.get("default_value")
+            handling = str(details.get("default_handling") or "")
+            if not value and not any(marker in handling for marker in ("保持未确认", "不得", "禁止")):
+                value = handling
+            value = value or "采用经人工确认的保守默认值"
+            if not cls._has_fact_value(value):
+                continue
+            facts[field] = str(value)
+            unknowns.pop(field, None)
+            applied.append(field)
+        return task.model_copy(update={"known_facts": facts, "unknowns": unknowns}), applied
+
+    def _clarification_review_result(
+        self, task: ImageTaskCard, *, transcript: list[dict[str, Any]],
+        fingerprints: set[str], asked_fields: set[str], asked_count: int,
+        invalidated: dict[str, Any],
+    ) -> dict[str, Any]:
+        blockers = self._blocking_unknowns(task)
+        safe_defaults = [
+            field for field, details in task.unknowns.items()
+            if isinstance(details, dict) and bool(details.get("has_safe_default"))
+        ]
+        # Manual supplementation is intentionally outside the automatic budget.
+        # It remains bounded to three fields per card and never skips a blocker.
+        card = generate_question_card(
+            task, previous_fingerprints=set(), already_asked=0,
+            total_budget=3, max_auto_questions=3,
+        )
+        recovery_actions = ["supplement_remaining", "increase_budget"]
+        if safe_defaults:
+            recovery_actions.insert(1, "apply_safe_defaults")
+        asked = max(len(asked_fields), asked_count)
+        return {
+            **invalidated,
+            "question_card": card.model_dump(mode="json"),
+            "waiting": True,
+            "phase": "waiting_clarification_review",
+            "task_card": task.model_dump(mode="json"),
+            "clarification_transcript": transcript,
+            "previous_fingerprints": sorted(fingerprints),
+            "clarification_asked_fields": sorted(asked_fields),
+            "clarification_asked_count": asked,
+            "clarification_remaining_budget": max(
+                0, self.policy.clarification_total_budget - asked
+            ),
+            "clarification_blocking_fields": blockers,
+            "clarification_safe_default_fields": safe_defaults,
+            "clarification_recovery_actions": recovery_actions,
+            "clarification_review_reason": "自动澄清预算已耗尽，仍有阻塞项需要人工处理。",
+        }
+
     def _clarify(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
+        asked_fields = self._clarification_asked_fields(task, data)
         category = (data.get("category_constraint_current") or {}).get("skill")
         if category:
             from agent_core.models import CategorySkill
-            task = task.model_copy(update={
-                "unknowns": self._category_unknowns(task, CategorySkill.model_validate(category)),
-            })
+            task = self._apply_category_unknowns(task, CategorySkill.model_validate(category))
         fingerprints = set(data.get("previous_fingerprints", []))
-        already_asked = int(data.get("clarification_asked_count", 0))
+        legacy_count = int(data.get("clarification_asked_count", 0))
+        already_asked = len(asked_fields) if asked_fields else legacy_count
         transcript = list(data.get("clarification_transcript", []))
         invalidated: dict[str, Any] = {}
-        if data.get("phase") == "waiting_clarification":
+        phase = data.get("phase")
+        if phase in {"waiting_clarification", "waiting_clarification_review"}:
             answers = options.get("clarification_answers")
-            if not answers: return {"waiting": True, "phase": "waiting_clarification"}
-            card = QuestionCard.model_validate(data["question_card"])
-            record, resolved = self._answer_record(task, card, answers)
-            facts = {**task.known_facts, **resolved}
-            task = task.model_copy(update={"known_facts": facts,
-                "unknowns": {k:v for k,v in task.unknowns.items() if k not in resolved}})
-            transcript.append({"question_card": card.model_dump(mode="json"),
-                               "answer_record": record.model_dump(mode="json")})
-            invalidated = {"task_specification": None, "task_markdown": None,
-                           "task_revision": None, "task_approval": None}
+            action = options.get("clarification_action")
+            if answers:
+                card = QuestionCard.model_validate(data["question_card"])
+                record, resolved = self._answer_record(task, card, answers)
+                facts = {**task.known_facts, **resolved}
+                task = task.model_copy(update={
+                    "known_facts": facts,
+                    "unknowns": {key: value for key, value in task.unknowns.items()
+                                 if key not in resolved},
+                })
+                transcript.append({"question_card": card.model_dump(mode="json"),
+                                   "answer_record": record.model_dump(mode="json")})
+                invalidated = {"task_specification": None, "task_markdown": None,
+                               "task_revision": None, "task_approval": None}
+            elif phase == "waiting_clarification":
+                return {"waiting": True, "phase": "waiting_clarification"}
+            elif action == "apply_safe_defaults":
+                task, applied = self._apply_safe_defaults(task)
+                if applied:
+                    self.store.events.append("clarification_safe_defaults_applied", fields=applied)
+                invalidated = {"task_specification": None, "task_markdown": None,
+                               "task_revision": None, "task_approval": None}
+            elif action != "continue_after_budget_change":
+                return self._clarification_review_result(
+                    task, transcript=transcript, fingerprints=fingerprints,
+                    asked_fields=asked_fields, asked_count=already_asked,
+                    invalidated=invalidated,
+                )
+
         remaining = max(0, self.policy.clarification_total_budget - already_asked)
         if remaining == 0 and self._blocking_unknowns(task):
-            raise ValueError("澄清问题预算已耗尽且仍有阻塞项；须人工补充或调整预算后恢复。")
+            return self._clarification_review_result(
+                task, transcript=transcript, fingerprints=fingerprints,
+                asked_fields=asked_fields, asked_count=already_asked,
+                invalidated=invalidated,
+            )
         if self.offline_mode:
-            card = generate_question_card(task, previous_fingerprints=fingerprints, already_asked=already_asked,
-                                          total_budget=self.policy.clarification_total_budget,
-                                          max_auto_questions=self.policy.max_auto_questions)
+            card = generate_question_card(
+                task, previous_fingerprints=fingerprints, already_asked=already_asked,
+                total_budget=self.policy.clarification_total_budget,
+                max_auto_questions=self.policy.max_auto_questions,
+            )
         else:
-            card = self.gateway.call("intake_clarify", ModelRole.REASONING_LLM,
-                lambda route: generate_question_card(task, self._text(route), previous_fingerprints=fingerprints, already_asked=already_asked, error_recorder=lambda e: self.store.events.append(**{"event_type": "model_parse_failed", **e})),
-                messages=[{"role":"user","content":"结合已批准的广告品类约束与完整多轮问答重新分析；品类阻塞项未闭合时必须提问，只有完整时才能返回 0 问。"}],
-                variables={"task":task.model_dump(mode="json"), "clarification_transcript":transcript,
+            card = self.gateway.call(
+                "intake_clarify", ModelRole.REASONING_LLM,
+                lambda route: generate_question_card(
+                    task, self._text(route), previous_fingerprints=fingerprints,
+                    already_asked=already_asked,
+                    error_recorder=lambda error: self.store.events.append(
+                        **{"event_type": "model_parse_failed", **error}
+                    ),
+                ),
+                messages=[{"role": "user", "content": "结合已批准的广告品类约束与完整多轮问答重新分析；品类阻塞项未闭合时必须提问，只有完整时才能返回 0 问。"}],
+                variables={"task": task.model_dump(mode="json"),
+                           "clarification_transcript": transcript,
                            "category_constraint": data.get("category_constraint_current")},
-                template_id="clarification", template_version="2", input_refs=[r.ref_id for r in task.source_refs])
+                template_id="clarification", template_version="2",
+                input_refs=[ref.ref_id for ref in task.source_refs],
+            )
         # The model cannot waive deterministic category blockers. If it returns
         # zero questions, synthesize the next bounded question card locally.
         if not card.questions and self._blocking_unknowns(task):
@@ -324,18 +475,52 @@ class WorkflowRunner:
                 max_auto_questions=self.policy.max_auto_questions,
             )
         if card.questions:
-            fingerprints.update(q.semantic_fingerprint for q in card.questions)
-            asked = already_asked + len(card.questions)
-            return {**invalidated, "question_card": card.model_dump(mode="json"), "waiting": True, "phase": "waiting_clarification",
-                    "task_card": task.model_dump(mode="json"), "clarification_transcript": transcript,
-                    "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": asked,
-                    "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - asked)}
+            fingerprints.update(question.semantic_fingerprint for question in card.questions)
+            asked_fields.update(question.field for question in card.questions)
+            asked = len(asked_fields) if asked_fields else already_asked + len(card.questions)
+            return {
+                **invalidated,
+                "question_card": card.model_dump(mode="json"),
+                "waiting": True,
+                "phase": "waiting_clarification",
+                "task_card": task.model_dump(mode="json"),
+                "clarification_transcript": transcript,
+                "previous_fingerprints": sorted(fingerprints),
+                "clarification_asked_fields": sorted(asked_fields),
+                "clarification_asked_count": asked,
+                "clarification_remaining_budget": max(
+                    0, self.policy.clarification_total_budget - asked
+                ),
+                "clarification_blocking_fields": None,
+                "clarification_safe_default_fields": None,
+                "clarification_recovery_actions": None,
+                "clarification_review_reason": None,
+            }
         if self._blocking_unknowns(task):
-            raise ValueError("模型未继续提问，但任务仍含阻塞未知项；禁止生成任务书。")
-        return {**invalidated, "question_card": card.model_dump(mode="json"), "waiting": False, "phase": "ready_to_draft",
-                "task_card": task.model_dump(mode="json"), "clarification_transcript": transcript,
-                "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
-                "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
+            return self._clarification_review_result(
+                task, transcript=transcript, fingerprints=fingerprints,
+                asked_fields=asked_fields, asked_count=already_asked,
+                invalidated=invalidated,
+            )
+        asked = len(asked_fields) if asked_fields else already_asked
+        return {
+            **invalidated,
+            "question_card": card.model_dump(mode="json"),
+            "waiting": False,
+            "phase": "ready_to_draft",
+            "task_card": task.model_dump(mode="json"),
+            "clarification_transcript": transcript,
+            "previous_fingerprints": sorted(fingerprints),
+            "clarification_asked_fields": sorted(asked_fields),
+            "clarification_asked_count": asked,
+            "clarification_remaining_budget": max(
+                0, self.policy.clarification_total_budget - asked
+            ),
+            "clarification_blocking_fields": None,
+            "clarification_safe_default_fields": None,
+            "clarification_recovery_actions": None,
+            "clarification_review_reason": None,
+        }
 
     def _confirmation(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
@@ -435,7 +620,14 @@ class WorkflowRunner:
                 value = free_text or (option.description if option else "")
                 if not value:
                     raise ValueError(f"问题“{question.question}”缺少有效回答。")
-                resolved[question.field] = value
+                canonical_field = resolve_unknown_field(task, question.field)
+                if canonical_field is None and not task.unknowns:
+                    # Compatibility for old checkpoints that omitted the
+                    # structured unknown entry but retained a valid question.
+                    canonical_field = question.field
+                if canonical_field is None:
+                    raise ValueError(f"问题字段无法对应当前任务卡：{question.question}")
+                resolved[canonical_field] = value
             answers.append(answer)
         if len(answers) != len(card.questions) or {a.question_id for a in answers} != set(by_id):
             raise ValueError("必须逐项提交当前问题卡的结构化回答。")
