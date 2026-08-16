@@ -1,6 +1,7 @@
 max_auto_questions: 3
 stream_model_output: false
 clarification_total_budget: 10
+question_preference: proactive
 category_constraint:
   release: manual
 style_direction:

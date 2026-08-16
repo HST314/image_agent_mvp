@@ -457,6 +457,37 @@ class WorkflowRunner:
             "clarification_review_reason": "自动澄清预算已耗尽，仍有阻塞项需要人工处理。",
         }
 
+    @staticmethod
+    def _register_proactive_unknowns(task: ImageTaskCard, card: QuestionCard) -> ImageTaskCard:
+        """积极追问模式：把模型提出的新字段登记为任务卡未知项。
+
+        登记为非阻塞 + 安全默认：不阻塞任务书生成（跳过/预算耗尽时可恢复），
+        经结构化回答通道作答后写入已知事实，随任务书注入后续阶段提示词。
+        """
+        unknowns = dict(task.unknowns)
+        changed = False
+        for question in card.questions:
+            field = str(question.field)
+            if field in unknowns or field in task.known_facts:
+                continue
+            unknowns[field] = {
+                "question": question.question,
+                "label": question.question,
+                "blocking": False,
+                "has_safe_default": True,
+                "handling_strategy": "safe_default",
+                "default_value": "按任务书整体语境合理处理",
+                "impact": question.impact,
+                "evidence": question.evidence or "需求澄清主动追问",
+                "proactive": True,
+                "options": [
+                    {"label": option.label, "description": option.description}
+                    for option in question.options
+                ],
+            }
+            changed = True
+        return task.model_copy(update={"unknowns": unknowns}) if changed else task
+
     def _clarify(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
         asked_fields = self._clarification_asked_fields(task, data)
@@ -513,8 +544,10 @@ class WorkflowRunner:
                 task, previous_fingerprints=fingerprints, already_asked=already_asked,
                 total_budget=self.policy.clarification_total_budget,
                 max_auto_questions=self.policy.max_auto_questions,
+                question_preference=self.policy.question_preference,
             )
         else:
+            preference = self.policy.question_preference
             card = self.gateway.call(
                 "intake_clarify", ModelRole.REASONING_LLM,
                 lambda route: generate_question_card(
@@ -523,8 +556,13 @@ class WorkflowRunner:
                     error_recorder=lambda error: self.store.events.append(
                         **{"event_type": "model_parse_failed", **error}
                     ),
+                    question_preference=preference,
                 ),
                 messages=[{"role": "user", "content": (
+                    "以自动化平面设计 Agent 需求澄清模块的身份审视任务卡与完整问答；"
+                    "除阻塞项外，主动追问对创作任务书有价值且仍缺失的信息；"
+                    "没有有价值的问题时才返回 0 问。"
+                    if preference == "proactive" else
                     "结合完整多轮问答重新分析；只有信息完整时才能返回 0 问。"
                     if category_current.get("disabled") else
                     "结合已批准的广告品类约束与完整多轮问答重新分析；品类阻塞项未闭合时必须提问，只有完整时才能返回 0 问。"
@@ -542,8 +580,11 @@ class WorkflowRunner:
                 task, previous_fingerprints=fingerprints, already_asked=already_asked,
                 total_budget=self.policy.clarification_total_budget,
                 max_auto_questions=self.policy.max_auto_questions,
+                question_preference=self.policy.question_preference,
             )
         if card.questions:
+            if self.policy.question_preference == "proactive":
+                task = self._register_proactive_unknowns(task, card)
             fingerprints.update(question.semantic_fingerprint for question in card.questions)
             asked_fields.update(question.field for question in card.questions)
             asked = len(asked_fields) if asked_fields else already_asked + len(card.questions)

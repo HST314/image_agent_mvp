@@ -131,6 +131,7 @@ const FIELD_LABELS = {
   /* 运行策略字段（T3 设置页 422 校验路径 loc 中文化，契约 §5/§8/§11） */
   max_auto_questions: '自动提问上限',
   clarification_total_budget: '澄清问题总预算',
+  question_preference: '提问偏好',
   termination: '终止方式',
   fixed_rounds: '固定自检轮次',
   max_rounds: '最大自检轮次',
@@ -165,6 +166,7 @@ export function fieldLabel(key, fallback = '其他信息') {
 const POLICY_KEY_LABELS = {
   max_auto_questions: '自动提问上限',
   clarification_total_budget: '澄清问题总预算',
+  question_preference: '提问偏好',
   'self_check.termination': '自检终止方式',
   'self_check.fixed_rounds': '固定自检轮次',
   'self_check.max_rounds': '最大自检轮次',
@@ -187,6 +189,7 @@ const POLICY_KEY_LABELS = {
 };
 
 const POLICY_ENUM_LABELS = {
+  question_preference: { proactive: '全程积极全面追问', blocking_only: '只问阻断交付的关键问题' },
   'self_check.termination': { fix: '固定轮次', solo: '按质量判定' },
   'self_check.release': { auto: '自动放行', manual: '人工确认放行' },
   'category_constraint.release': { auto: '自动放行', manual: '人工确认后继续', off: '不使用数据库' },
@@ -199,6 +202,7 @@ const POLICY_ENUM_LABELS = {
 const POLICY_KEY_HELP = {
   max_auto_questions: 'Agent 自动向你追问澄清问题的最多次数',
   clarification_total_budget: '整个澄清阶段允许的问题总量',
+  question_preference: '积极追问会主动补全对出图有价值的信息并写入任务书；关键问题模式只在不问就无法交付时提问',
   'self_check.termination': '固定轮次：固定执行指定轮数；按质量判定：达标即停',
   'self_check.fixed_rounds': '终止方式为「固定轮次」时生效',
   'self_check.max_rounds': '自检最多进行的轮数',
@@ -238,6 +242,23 @@ export function policyOptionLabel(path, value) {
   const label = POLICY_ENUM_LABELS[String(path ?? '')]?.[text];
   if (label) return label;
   return hasCJK(text) ? text : '未设置';
+}
+
+/* ---------- 模型设置（设置页「模型」标签页） ---------- */
+
+const MODEL_STATE_LABELS = {
+  intake_clarify: '需求澄清',
+  confirmation_build: '任务书生成',
+  initial_candidate_generation: '候选图生成',
+  self_check_inspection: '质检审查',
+  self_check_rework: '质检重绘',
+  human_prompt_rework: '人工重绘',
+};
+
+/** 工作流阶段 → 中文名；未收录的英文阶段名兜底，不原样上屏（§11）。 */
+export function modelStateLabel(state) {
+  const text = String(state ?? '');
+  return MODEL_STATE_LABELS[text] || (hasCJK(text) ? text : '其他阶段');
 }
 
 function policyValueText(key, value) {

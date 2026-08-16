@@ -40,6 +40,9 @@ class RuntimePolicy(BaseModel):
     max_auto_questions: int = Field(3, ge=0, le=10)
     stream_model_output: Literal[False] = False  # true is rejected until the streaming job phase is installed
     clarification_total_budget: int = Field(10, ge=0, le=100)
+    # 提问偏好：proactive=全程积极全面追问（允许模型提出任务卡未知项之外的新问题，
+    # 答案写入任务卡已知事实，随任务书注入后续阶段）；blocking_only=只问阻断交付的关键问题。
+    question_preference: Literal["proactive", "blocking_only"] = "proactive"
     category_constraint: SkillInvocationPolicyConfig = Field(default_factory=SkillInvocationPolicyConfig)
     style_direction: SkillInvocationPolicyConfig = Field(default_factory=SkillInvocationPolicyConfig)
     # Kept as a read-compatible legacy field. New workflow code uses the two
@@ -61,6 +64,7 @@ class RuntimePolicy(BaseModel):
         "max_auto_questions": "interaction.question_generator",
         "stream_model_output": "model_router.clients",
         "clarification_total_budget": "agent_core.workflow_runner",
+        "question_preference": "interaction.question_generator(clarify prompt mode)",
         "category_constraint": "agent_core.workflow_runner(category constraint gate)",
         "style_direction": "agent_core.workflow_runner(style direction gate)",
         "skill_invocation": "legacy persisted-policy compatibility decoder",

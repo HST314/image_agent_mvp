@@ -43,6 +43,7 @@ APP_ROOT = Path(__file__).resolve().parent
 FRONTEND_ROOT = APP_ROOT / "frontend"
 PROJECTS_ROOT = Path(os.getenv("IMAGE_AGENT_FRONT_PROJECTS_ROOT", FRONTEND_ROOT / "data" / "projects")).resolve()
 MODEL_CONFIG = Path(os.getenv("IMAGE_AGENT_MODEL_CONFIG", APP_ROOT / "configs" / "model_config.yaml")).resolve()
+MODEL_LIBRARY = Path(os.getenv("IMAGE_AGENT_MODEL_LIBRARY", APP_ROOT / "configs" / "model_library.yaml")).resolve()
 RUNTIME_POLICY_PATH = Path(os.getenv("IMAGE_AGENT_RUNTIME_POLICY", APP_ROOT / "configs" / "runtime.yaml")).resolve()
 GLOBAL_POLICY_LOCK = threading.RLock()
 MAX_REQUEST_BYTES = 512 * 1024
@@ -138,6 +139,14 @@ class GlobalPolicyRevisionRequest(PolicyRevisionRequest):
 class UnknownResolutionRequest(StrictRequest):
     action: Literal["retry_after_confirmation", "abandon"]
     actor: str = Field(min_length=1, max_length=128)
+
+
+class ModelBindingsUpdateRequest(StrictRequest):
+    """设置页「模型」标签页保存：阶段 → 模型库条目 id；后端强制能力匹配。"""
+
+    bindings: dict[str, str]
+    actor: str = Field(min_length=1, max_length=128)
+    confirmed: bool
 
 
 @app.middleware("http")
@@ -908,6 +917,43 @@ async def revise_project_policy(project_id: str, body: PolicyRevisionRequest) ->
             with store.lock():
                 branch = store.revise_policy(policy.snapshot(), confirmed=body.confirmed, actor=body.actor)
             return {"branch": branch, "project": _project_view(store)}
+        return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+def _model_settings_view() -> dict[str, Any]:
+    from model_router.library import load_config, load_library, settings_view
+
+    return settings_view(load_library(MODEL_LIBRARY), load_config(MODEL_CONFIG))
+
+
+@app.get("/api/settings/models")
+async def get_model_settings() -> dict[str, Any]:
+    """模型库备选池 + 各阶段当前绑定（设置页「模型」标签页数据源）。"""
+    try:
+        return await asyncio.to_thread(_model_settings_view)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/settings/models")
+async def update_model_settings(body: ModelBindingsUpdateRequest) -> dict[str, Any]:
+    """保存各阶段模型绑定：仅接受模型库中与阶段能力匹配的条目，原子改写后热加载生效。"""
+    try:
+        if not body.confirmed:
+            raise PermissionError("模型设置修订需要人工确认。")
+
+        def execute() -> dict[str, Any]:
+            from model_router.library import apply_bindings, load_config, load_library, write_model_config
+
+            with GLOBAL_POLICY_LOCK:
+                config = load_config(MODEL_CONFIG)
+                updated = apply_bindings(load_library(MODEL_LIBRARY), config, dict(body.bindings))
+                write_model_config(MODEL_CONFIG, updated)
+            LOGGER.info("model bindings updated by %s: %s", body.actor, sorted(body.bindings))
+            return _model_settings_view()
+
         return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc

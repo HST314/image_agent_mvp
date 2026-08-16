@@ -1,27 +1,41 @@
 /* T3 设置页表单模型（契约 §5/§8，Q3-B）：后端 GET /settings/schema 返回的
  * JSON Schema → 中文化表单模型。纯函数、不触碰 DOM/网络，可在 Node 下回归。
  *
- * 三条不可偏离（Q3-B）：全字段、中文化、分「常用 / 高级」两组。
+ * 三条不可偏离（Q3-B）：全字段、中文化、按功能分标签页。
  * - 字段清单/类型/约束全部来自后端 schema，前端不硬编码字段清单；
  * - 中文名与说明小字经 copy.js 唯一映射层（契约 §8 基线 + §11 兜底）；
- * - 分组按契约 §8 基线顺序；schema 新增字段自动落入高级组末尾，标签走
- *   中文兜底（「其他策略项」），英文键名绝不上屏。 */
+ * - 分组按功能标签页基线顺序；schema 新增字段自动落入「系统与高级」末尾，
+ *   标签走中文兜底（「其他策略项」），英文键名绝不上屏。 */
 
 import { policyKeyLabel, policyKeyHelp, policyOptionLabel } from './copy.js';
 
-/* 契约 §8 分组基线：常用组 / 高级组的字段路径与排列顺序。 */
-const COMMON_PATHS = [
-  'max_auto_questions', 'clarification_total_budget',
-  'category_constraint.release', 'style_direction.release',
-  'self_check.termination', 'self_check.fixed_rounds', 'self_check.max_rounds',
-  'self_check.stop_early_on_pass', 'self_check.release',
-  'candidate_concurrency', 'default_output_size', 'watermark', 'offline_mode',
+/* 功能标签页基线：相关设置聚类到同一页；paths 决定字段归属与排列顺序。
+ * 「模型」标签页内容由 /api/settings/models 单独驱动（modelsettings.js），不在此列。 */
+const TAB_GROUPS = [
+  {
+    id: 'clarify', title: '提问与澄清',
+    paths: ['question_preference', 'max_auto_questions', 'clarification_total_budget'],
+  },
+  {
+    id: 'libraries', title: '数据库与放行',
+    paths: ['category_constraint.release', 'style_direction.release'],
+  },
+  {
+    id: 'render', title: '候选与出图',
+    paths: ['candidate_concurrency', 'default_output_size', 'watermark', 'response_format', 'image_api_base_url'],
+  },
+  {
+    id: 'selfcheck', title: '质量自检',
+    paths: ['self_check.termination', 'self_check.fixed_rounds', 'self_check.max_rounds',
+      'self_check.stop_early_on_pass', 'self_check.release'],
+  },
+  {
+    id: 'system', title: '系统与高级',
+    paths: ['offline_mode', 'model_timeout_seconds', 'max_render_retries',
+      'allow_skill_degradation', 'style_library_root', 'stream_model_output'],
+  },
 ];
-const ADVANCED_PATHS = [
-  'model_timeout_seconds', 'image_api_base_url', 'response_format',
-  'max_render_retries', 'allow_skill_degradation', 'style_library_root',
-  'stream_model_output',
-];
+const FALLBACK_TAB = 'system';
 
 /** 解析 JSON Schema 的 $ref（#/$defs/X 一层），非 $ref 原样返回。 */
 function resolveRef(node, defs) {
@@ -73,7 +87,7 @@ function currentValue(current, path, node, kind) {
 
 /**
  * 后端 settings/schema 响应 → 表单模型：
- * { common: [field], advanced: [field], all: [field] }，field =
+ * { tabs: [{ id, title, fields: [field] }], all: [field] }，field =
  * { path, label, help, kind, value, disabled, options?, min?, max?, integer?, pattern? }。
  * options: [{ value, label(中文) }]；fixed 字段 disabled 且 value 恒为 const。
  */
@@ -102,16 +116,19 @@ export function buildPolicyFormModel(schema = {}) {
     if (kind === 'text' && node?.pattern) field.pattern = node.pattern;
     fields.push(field);
   }
-  const orderOf = (list) => (field) => {
-    const idx = list.indexOf(field.path);
-    return idx < 0 ? list.length : idx;
+  const homeOf = (path) => TAB_GROUPS.find((group) => group.paths.includes(path))?.id || FALLBACK_TAB;
+  const orderOf = (field) => {
+    const group = TAB_GROUPS.find((item) => item.id === homeOf(field.path));
+    const idx = group.paths.indexOf(field.path);
+    // 组内未收录字段（schema 新增）排在组末尾，保持 schema 原顺序。
+    return idx < 0 ? group.paths.length + fields.indexOf(field) / (fields.length + 1) : idx;
   };
-  const bySchemaOrder = (a, b) => fields.indexOf(a) - fields.indexOf(b);
-  const common = fields.filter((f) => COMMON_PATHS.includes(f.path)).sort((a, b) => orderOf(COMMON_PATHS)(a) - orderOf(COMMON_PATHS)(b));
-  const advanced = fields
-    .filter((f) => !COMMON_PATHS.includes(f.path))
-    .sort((a, b) => (orderOf(ADVANCED_PATHS)(a) - orderOf(ADVANCED_PATHS)(b)) || bySchemaOrder(a, b));
-  return { common, advanced, all: [...common, ...advanced] };
+  const tabs = TAB_GROUPS.map((group) => ({
+    id: group.id,
+    title: group.title,
+    fields: fields.filter((f) => homeOf(f.path) === group.id).sort((a, b) => orderOf(a) - orderOf(b)),
+  })).filter((group) => group.fields.length > 0);
+  return { tabs, all: tabs.flatMap((group) => group.fields) };
 }
 
 /**

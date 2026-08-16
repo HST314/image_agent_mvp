@@ -1,5 +1,5 @@
 /* T3 设置页表单模型回归（契约 §5/§8，Q3-B 三条不可偏离：全字段、中文化、
- * 常用/高级两组）。schema 形态对齐后端 RuntimePolicy.model_json_schema() +
+ * 按功能分标签页）。schema 形态对齐后端 RuntimePolicy.model_json_schema() +
  * main_front.py 的 settings/schema 响应（properties/$defs/current）。 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,6 +12,7 @@ function fakeSchema(overrides = {}) {
       max_auto_questions: { type: 'integer', minimum: 0, maximum: 10, default: 3 },
       stream_model_output: { const: false, type: 'boolean', default: false },
       clarification_total_budget: { type: 'integer', minimum: 0, maximum: 100, default: 10 },
+      question_preference: { enum: ['proactive', 'blocking_only'], type: 'string', default: 'proactive' },
       category_constraint: { $ref: '#/$defs/SkillInvocationPolicyConfig' },
       style_direction: { $ref: '#/$defs/SkillInvocationPolicyConfig' },
       self_check: { $ref: '#/$defs/SelfCheckPolicyConfig' },
@@ -70,22 +71,18 @@ test('拍平：无 $ref 时原样返回；空 properties 安全', () => {
 
 /* ---------- buildPolicyFormModel ---------- */
 
-test('模型：全字段、常用/高级两组且顺序符合契约 §8 基线', () => {
+test('模型：全字段、按功能分标签页且顺序符合基线', () => {
   const model = buildPolicyFormModel(fakeSchema());
-  assert.equal(model.all.length, 20, '策略对象展开后，共 20 个表单字段');
-  assert.deepEqual(
-    model.common.map((f) => f.path),
-    ['max_auto_questions', 'clarification_total_budget', 'category_constraint.release',
-      'style_direction.release',
-      'self_check.termination', 'self_check.fixed_rounds',
-      'self_check.max_rounds', 'self_check.stop_early_on_pass', 'self_check.release',
-      'candidate_concurrency', 'default_output_size', 'watermark', 'offline_mode'],
-  );
-  assert.deepEqual(
-    model.advanced.map((f) => f.path),
-    ['model_timeout_seconds', 'image_api_base_url', 'response_format', 'max_render_retries',
-      'allow_skill_degradation', 'style_library_root', 'stream_model_output'],
-  );
+  assert.equal(model.all.length, 21, '策略对象展开后，共 21 个表单字段');
+  const byTab = Object.fromEntries(model.tabs.map((tab) => [tab.id, tab.fields.map((f) => f.path)]));
+  assert.deepEqual(byTab.clarify, ['question_preference', 'max_auto_questions', 'clarification_total_budget']);
+  assert.deepEqual(byTab.libraries, ['category_constraint.release', 'style_direction.release']);
+  assert.deepEqual(byTab.render, ['candidate_concurrency', 'default_output_size', 'watermark', 'response_format', 'image_api_base_url']);
+  assert.deepEqual(byTab.selfcheck, ['self_check.termination', 'self_check.fixed_rounds',
+    'self_check.max_rounds', 'self_check.stop_early_on_pass', 'self_check.release']);
+  assert.deepEqual(byTab.system, ['offline_mode', 'model_timeout_seconds', 'max_render_retries',
+    'allow_skill_degradation', 'style_library_root', 'stream_model_output']);
+  assert.deepEqual(model.tabs.map((tab) => tab.title), ['提问与澄清', '数据库与放行', '候选与出图', '质量自检', '系统与高级']);
 });
 
 test('模型：中文名与说明小字来自映射层，英文键名不上屏', () => {
@@ -94,14 +91,18 @@ test('模型：中文名与说明小字来自映射层，英文键名不上屏',
   assert.equal(field.label, '自检终止方式');
   assert.ok(field.help.includes('固定轮次'));
   assert.deepEqual(field.options.map((o) => o.label), ['固定轮次', '按质量判定']);
+  const preference = model.all.find((f) => f.path === 'question_preference');
+  assert.equal(preference.label, '提问偏好');
+  assert.deepEqual(preference.options.map((o) => o.label), ['全程积极全面追问', '只问阻断交付的关键问题']);
 });
 
-test('模型：schema 新增未知字段落入高级组末尾且中文兜底', () => {
+test('模型：schema 新增未知字段落入「系统与高级」末尾且中文兜底', () => {
   const model = buildPolicyFormModel(fakeSchema({ brand_new_option: { type: 'integer', default: 1 } }));
-  const extra = model.advanced[model.advanced.length - 1];
+  const system = model.tabs.find((tab) => tab.id === 'system');
+  const extra = system.fields[system.fields.length - 1];
   assert.equal(extra.path, 'brand_new_option');
   assert.equal(extra.label, '其他策略项', '未收录英文键必须中文兜底（§11）');
-  assert.equal(model.common.some((f) => f.path === 'brand_new_option'), false);
+  assert.equal(model.tabs.some((tab) => tab.id !== 'system' && tab.fields.some((f) => f.path === 'brand_new_option')), false);
 });
 
 test('模型：控件类型与约束——enum/boolean/number/fixed/text', () => {
@@ -140,6 +141,7 @@ test('负载：点路径还原嵌套、类型收敛、fixed 恒为常量', () =>
   const values = {
     max_auto_questions: '4',
     clarification_total_budget: '12',
+    question_preference: 'blocking_only',
     'category_constraint.release': 'manual',
     'style_direction.release': 'auto',
     'self_check.termination': 'fix',
@@ -159,6 +161,7 @@ test('负载：点路径还原嵌套、类型收敛、fixed 恒为常量', () =>
   };
   const policy = buildPolicyPayload(model.all, values);
   assert.equal(policy.max_auto_questions, 4, '数字字符串收敛为 Number');
+  assert.equal(policy.question_preference, 'blocking_only', '枚举原样传递');
   assert.equal(policy.model_timeout_seconds, 120.5, '浮点保留');
   assert.deepEqual(policy.self_check, {
     termination: 'fix', fixed_rounds: 2, max_rounds: 8, stop_early_on_pass: true, release: 'auto',

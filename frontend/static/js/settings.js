@@ -1,12 +1,14 @@
 /* T3 设置页（契约 §5/§8，Q3-B/Q4-A）：运行策略全部字段的中文化 UI 表单，
- * 分「常用 / 高级」两组；字段清单/类型/约束取自后端 GET /settings/schema，
- * 前端不硬编码（表单模型逻辑在 policyform.js，Node 可回归）。
+ * 按功能分标签页（提问与澄清/数据库与放行/候选与出图/质量自检/模型/系统与高级）；
+ * 字段清单/类型/约束取自后端 GET /settings/schema，前端不硬编码
+ * （表单模型逻辑在 policyform.js，Node 可回归）。
  * 保存契约：保存即更新全局 runtime.yaml；当前打开工程存在时，同时为其创建
  * 策略修订分支并立即应用。设置页不再依赖先打开某个工程。 */
 
 import { el, toast, stateBlock, sectionPanel } from './dom.js';
 import { getGlobalSettingsSchema, reviseGlobalPolicy } from './api.js';
 import { buildPolicyFormModel, buildPolicyPayload } from './policyform.js';
+import { renderModelSettings } from './modelsettings.js';
 import { getActor, setActor } from './store.js';
 
 /**
@@ -43,7 +45,51 @@ export function renderSettingsPage(container, view, { onSaved } = {}) {
       : '保存即更新全局默认，随后新建的工程会直接使用这些参数。' }));
 
     const form = el('form', { class: 'settings-form', novalidate: 'novalidate' });
-    form.append(policyGroup('常用', model.common), policyGroup('高级', model.advanced));
+
+    /* 功能标签页：策略字段页来自 schema 表单模型；「模型」页由模型库接口驱动。 */
+    const tabs = [...model.tabs.map((tab) => ({ id: tab.id, title: tab.title })), { id: 'models', title: '模型' }];
+    const tabBar = el('div', { class: 'settings-tabs', role: 'tablist', 'aria-label': '设置分组' });
+    const panels = el('div', { class: 'settings-panels' });
+    const panelById = {};
+    for (const tab of model.tabs) {
+      const panel = sectionPanel(tab.title, '');
+      panel.querySelector('.section__head')?.remove();
+      const grid = el('div', { class: 'form-grid' });
+      for (const field of tab.fields) grid.append(policyField(field));
+      panel.append(grid);
+      panelById[tab.id] = panel;
+      panels.append(panel);
+    }
+    const modelsPanel = sectionPanel('模型', '');
+    modelsPanel.querySelector('.section__head')?.remove();
+    renderModelSettings(modelsPanel, {
+      signal: controller.signal,
+      getActor: () => actorInput.value,
+    });
+    panelById.models = modelsPanel;
+    panels.append(modelsPanel);
+
+    const activate = (id) => {
+      tabBar.querySelectorAll('.settings-tab').forEach((btn) => {
+        const on = btn.dataset.tab === id;
+        btn.classList.toggle('is-active', on);
+        btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      for (const [panelId, panel] of Object.entries(panelById)) {
+        panel.hidden = panelId !== id;
+      }
+    };
+    tabs.forEach((tab, index) => {
+      const btn = el('button', {
+        type: 'button', class: 'settings-tab', role: 'tab',
+        text: tab.title, dataset: { tab: tab.id },
+        'aria-selected': index === 0 ? 'true' : 'false',
+      });
+      btn.addEventListener('click', () => activate(tab.id));
+      tabBar.append(btn);
+    });
+    activate(tabs[0].id);
+    form.append(tabBar, panels);
 
     /* 保存区：确认人身份（修订契约必填）+ 错误提示 + 保存按钮 */
     const savePanel = sectionPanel('保存', '');
@@ -99,15 +145,6 @@ export function renderSettingsPage(container, view, { onSaved } = {}) {
       controller.abort();
     },
   };
-}
-
-/* 一组策略字段（常用 / 高级）：组标题 + 字段网格。 */
-function policyGroup(title, fields) {
-  const panel = sectionPanel(title, title === '常用' ? '日常创作最常调整的策略项' : '面向联调与运维的策略项，通常保持默认');
-  const grid = el('div', { class: 'form-grid' });
-  for (const field of fields) grid.append(policyField(field));
-  panel.append(grid);
-  return panel;
 }
 
 /* 单个字段控件：enum→下拉框，boolean→开关行，number→数字输入，text→文本输入，

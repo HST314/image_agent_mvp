@@ -24,6 +24,8 @@ EXPECTED_JS = {
     "createflow.js", "createform.js",
     # T2 状态页 / T3 设置页
     "statuspage.js", "eventlog.js", "policyform.js",
+    # 设置页「模型」标签页（模型库备选 + 阶段绑定）
+    "modelsettings.js",
     # T9 进度卡只读快照与历史分支
     "snapshots.js",
     # 分支查看/切换界面（顶栏分支徽章入口）

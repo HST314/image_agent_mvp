@@ -79,6 +79,30 @@ def resolve_unknown_field(task: ImageTaskCard, value: Any) -> str | None:
     return next(iter(matches)) if len(matches) == 1 else None
 
 
+_PROACTIVE_FIELD_RE = re.compile(r"[^0-9A-Za-z_㐀-鿿]+")
+
+
+def _proactive_field_id(task: ImageTaskCard, value: Any) -> str | None:
+    """积极追问模式：接纳模型提出的新字段（任务卡未知项之外）。
+
+    新字段 id 由模型输出清洗而来（仅保留中英文、数字与下划线）；已知事实中
+    已有答案的字段不再追问；清洗后为空或与既有字段歧义时丢弃。
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    cleaned = _PROACTIVE_FIELD_RE.sub("_", raw).strip("_")
+    if not cleaned:
+        return None
+    # 已知事实已覆盖的信息不再提问（含别名命中，如模型把已知事实换个说法）。
+    if cleaned in task.known_facts or _alias_key(cleaned) in {
+        _alias_key(key) for key in task.known_facts
+    }:
+        return None
+    return cleaned
+
+
 def _candidate(
     task: ImageTaskCard, field: str, value: Any, index: int
 ) -> QuestionItem | None:
@@ -163,6 +187,7 @@ def generate_question_card(
     total_budget: int = 10,
     already_asked: int = 0,
     error_recorder: Callable[[dict[str, Any]], None] | None = None,
+    question_preference: str = "blocking_only",
 ) -> QuestionCard:
     per_round = min(
         3, max(0, max_auto_questions if mode == "auto" else int(question_count or 0))
@@ -172,7 +197,8 @@ def generate_question_card(
     if previous_context:
         seen.update(token for token in previous_context.split() if len(token) == 20)
     if client is not None:
-        prompt = _prompt(task, min(per_round, remaining), seen)
+        proactive = question_preference == "proactive"
+        prompt = _prompt(task, min(per_round, remaining), seen, preference=question_preference)
         raw = client.complete(prompt)
         for attempt in range(2):
             try:
@@ -181,7 +207,7 @@ def generate_question_card(
                 questions = [
                     question
                     for i, item in enumerate(items, 1)
-                    if (question := _normalize(task, item, i)) is not None
+                    if (question := _normalize(task, item, i, allow_new_fields=proactive)) is not None
                 ]
                 eligible = _eligible_unique(questions, seen)
                 # Invalid/ambiguous model fields are discarded. Fill the card
@@ -243,7 +269,7 @@ def _eligible_unique(items: list[QuestionItem], seen: set[str]) -> list[Question
     return accepted
 
 
-def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> QuestionItem | None:
+def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int, *, allow_new_fields: bool = False) -> QuestionItem | None:
     if not isinstance(item, dict):
         return None
     item = dict(item)
@@ -251,6 +277,10 @@ def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> Questio
     # The task card owns field identity. Model-authored display labels may be
     # accepted only when they resolve to exactly one current unknown field.
     canonical_field = resolve_unknown_field(task, item.get("field"))
+    if canonical_field is None and allow_new_fields:
+        # 积极追问：模型可基于需求简报提出新的信息字段；字段在澄清阶段登记进
+        # 任务卡未知项（非阻塞、带安全默认），回答后写入已知事实并随任务书下沉。
+        canonical_field = _proactive_field_id(task, item.get("field"))
     if canonical_field is None:
         return None
     item["field"] = canonical_field
@@ -328,13 +358,36 @@ def _normalize(task: ImageTaskCard, item: dict[str, Any], index: int) -> Questio
     return QuestionItem.model_validate(item)
 
 
-def _prompt(task: ImageTaskCard, limit: int, seen: set[str]) -> str:
+_PROACTIVE_ROLE = (
+    "【角色设定】你是一个自动化平面设计 Agent 的需求澄清模块。当前任务：审阅平面设计"
+    "生图任务的任务卡并提出澄清问题，为后续撰写高质量创作任务书、生成候选图提供全面"
+    "高质量的信息支持。如果你认为当前任务卡信息不够全面，请主动提出对画面产出有价值"
+    "的问题（例如：成品尺寸与比例、画面文案内容、品牌与配色要求、风格倾向、数量与批"
+    "次、交付格式、目标受众、使用场景细节等）。已获得的有价值信息会写入任务书并注入"
+    "后续所有阶段的运行时提示词，因此请尽量把影响出图质量的关键信息问清楚；没有有价"
+    "值的问题时才返回 0 问。\n"
+)
+
+_PROACTIVE_FIELD_RULE = (
+    "- field: 字符串。若问题针对任务卡 unknowns 中已有字段，必须原样使用该内部字段 ID；"
+    "若是你主动提出的新问题，使用简洁的中文短语或 snake_case 英文作为字段名"
+    "（不得使用 known_facts 中已有答案的字段，不得与 unknowns 既有字段重复）\n"
+)
+
+_BLOCKING_FIELD_RULE = (
+    "- field: 字符串，必须原样使用任务卡 unknowns 中的内部字段 ID；不得改成中文标题或问题文案\n"
+)
+
+
+def _prompt(task: ImageTaskCard, limit: int, seen: set[str], *, preference: str = "blocking_only") -> str:
+    proactive = preference == "proactive"
     return (
-        '只输出一个 JSON 对象，结构为 {"questions": [...]}\n'
+        ("%s" % _PROACTIVE_ROLE if proactive else "")
+        + '只输出一个 JSON 对象，结构为 {"questions": [...]}\n'
         "严禁包含任何前言、Markdown 外的解释。"
         "允许 0 问，最多 %d 问。\n"
         "每个问题必须包含以下字段（注意类型）：\n"
-        "- field: 字符串，必须原样使用任务卡 unknowns 中的内部字段 ID；不得改成中文标题或问题文案\n"
+        "%s"
         "- question: 字符串，向用户提问的中文问题\n"
         '- options: 列表，每个选项格式为 {"option_id": "A", "label": "标题", "description": "说明", "requires_free_text": false}，option_id 必须是字母字符串如 "A", "B"；“其他/自定义”必须设 requires_free_text=true\n'
         '- recommended_option_id: 字符串，推荐的 option_id，如 "A"\n'
@@ -347,6 +400,7 @@ def _prompt(task: ImageTaskCard, limit: int, seen: set[str]) -> str:
         "已问指纹：%s\n任务卡：%s"
     ) % (
         limit,
+        _PROACTIVE_FIELD_RULE if proactive else _BLOCKING_FIELD_RULE,
         sorted(seen),
         json.dumps(task.model_dump(mode="json"), ensure_ascii=False),
     )

@@ -132,6 +132,12 @@ export const getSettingsSchema = (id, { signal } = {}) =>
 export const getGlobalSettingsSchema = ({ signal } = {}) =>
   api('/api/settings/schema', { signal, cache: 'no-store' });
 
+/* 设置页「模型」标签页：模型库备选池 + 各阶段绑定读取/保存。 */
+export const getModelSettings = ({ signal } = {}) =>
+  api('/api/settings/models', { signal, cache: 'no-store' });
+export const saveModelBindings = (payload) =>
+  api('/api/settings/models', { method: 'POST', body: JSON.stringify(payload) });
+
 /* ---- 推进（同步，仅用于不触发付费模型调用的动作） ---- */
 export const advance = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/advance`, { method: 'POST', body: JSON.stringify(payload) });
 export const retryProject = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify(payload) });
