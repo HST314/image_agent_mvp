@@ -3,9 +3,9 @@ stream_model_output: false
 clarification_total_budget: 10
 question_preference: proactive
 category_constraint:
-  release: manual
+  release: 'off'
 style_direction:
-  release: manual
+  release: 'off'
 skill_invocation:
   release: auto
 self_check:

@@ -13,17 +13,29 @@ text_models:
     model: deepseek-v4-flash-260425
     description: 文本推理模型，用于需求澄清与任务书撰写
     parameters: {}
+  - id: deepseek-v4-flash-ga-260731
+    label: DeepSeek V4 Flash 正式版
+    provider: ark
+    model: deepseek-v4-flash-ga-260731
+    description: 文本推理模型，用于需求澄清与任务书撰写
+    parameters: {}
 vlm_models:
   - id: doubao-seed-evolving
     label: 豆包 Seed Evolving（视觉理解）
     provider: ark
     model: doubao-seed-evolving
-    description: 视觉语言模型，用于质检审查
+    description: 多模态模型，作为视觉语言模型，用于质检审查
     parameters: {}
 image_models:
   - id: doubao-seedream-5-0-260128
-    label: 豆包 Seedream 5.0（260128）
+    label: 豆包 Seedream 5.0 Lite
     provider: ark
     model: doubao-seedream-5-0-260128
-    description: 文生图模型，用于候选图生成与重绘
+    description: 文生图模型，用于候选图快速生成与重绘
+    parameters: {}
+  - id: doubao-seedream-5-0-pro-260628
+    label: 豆包 Seedream 5.0 Pro
+    provider: ark
+    model: doubao-seedream-5-0-pro-260628
+    description: 文生图模型，用于高质量候选图生成与重绘
     parameters: {}
