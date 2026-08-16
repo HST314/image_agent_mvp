@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
 from agent_core.batch import CandidateBatchError, CandidateBatchGenerator
 from agent_core.models import (ImageTaskCard, ModelRole, QuestionAnswer,
@@ -37,7 +38,6 @@ from storage.provider_assets import ProviderImageAdapter
 from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
 from model_router.executor import ModelExecutor
-from skills.resource_loader import load_with_policy
 from skills.errors import ResourceError
 from calibrator.structured_inspection import parse_with_one_repair, InspectionOutputError
 from agent_core.delivery import build_delivery, persist_delivery
@@ -167,31 +167,43 @@ class WorkflowRunner:
             target = self.next_state(data)
 
     def _load_category_skill(self, task: ImageTaskCard, *, excluded: set[str] | None = None):
-        """Resolve the category library before clarification, with safe generic fallback."""
+        """Resolve the category library and honor the runtime degradation gate."""
         from skills.category_library_adapter import CategoryLibraryAdapter
         from skills.category_loader import CategorySkillLoader
 
         lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
         generic_index = Path(__file__).parent.parent / "skills/category_skills/index.json"
-        # An explicit task-card category is authoritative. Advertising-library
-        # inference is only used when no category has been selected yet.
-        if task.category_ref is not None:
-            return CategorySkillLoader(generic_index).load_for_task(task), 0
         try:
+            # An explicit task-card category is authoritative. Advertising-library
+            # inference is only used when no category has been selected yet.
+            if task.category_ref is not None:
+                return CategorySkillLoader(generic_index).load_for_task(task), 0
             match = CategoryLibraryAdapter(lib_path).load_for_task(
                 task,
                 exclude_category_ids=excluded or set(),
                 allow_unmatched=bool(excluded),
             )
+            if match:
+                return match.skill, match.score
+            return CategorySkillLoader(generic_index).load_for_task(task), 0
+        except ResourceError as exc:
+            error = exc
         except (FileNotFoundError, UnicodeError, json.JSONDecodeError) as exc:
-            from uuid import uuid4
-            raise ResourceError(
+            error = ResourceError(
                 "RESOURCE_MISSING" if isinstance(exc, FileNotFoundError) else "RESOURCE_CORRUPT",
                 str(lib_path), f"trace_{uuid4().hex}",
-            ) from exc
-        if match:
-            return match.skill, match.score
-        return CategorySkillLoader(generic_index).load_for_task(task), 0
+            )
+        if not self.policy.allow_skill_degradation:
+            raise error
+
+        fallback_task = task.model_copy(update={"category_ref": None})
+        fallback = CategorySkillLoader(generic_index).load_for_task(fallback_task)
+        degraded = ResourceError(
+            error.code, error.resource, error.trace_id,
+            degradation="fallback", detail=error.detail,
+        )
+        self.store.events.append("resource_degraded", **degraded.as_dict())
+        return fallback, 0
 
     @staticmethod
     def _has_fact_value(value: Any) -> bool:
@@ -553,6 +565,8 @@ class WorkflowRunner:
                 lambda route: generate_question_card(
                     task, self._text(route), previous_fingerprints=fingerprints,
                     already_asked=already_asked,
+                    total_budget=self.policy.clarification_total_budget,
+                    max_auto_questions=self.policy.max_auto_questions,
                     error_recorder=lambda error: self.store.events.append(
                         **{"event_type": "model_parse_failed", **error}
                     ),
@@ -953,16 +967,8 @@ class WorkflowRunner:
         selected_styles: list[Any] = []
         style_root: Path | None = None
         if not style_off:
-            from skills.style_library import StyleExtractor, StyleLibrary, select_five
-            style_root = Path(self.policy.style_library_root)
-            if not style_root.is_absolute():
-                configured = Path.cwd() / style_root
-                if configured.exists():
-                    style_root = configured
-                else:
-                    from skills.builtin_style_library import ensure_builtin_style_library
-                    style_root = ensure_builtin_style_library(self.store.root / "runtime" / "style-library-v1")
-            library = StyleLibrary(style_root)
+            from skills.style_library import StyleExtractor, select_five
+            library, style_root = self._runtime_style_library()
             records = library.records()
             extractor = StyleExtractor(style_root, self._extract_style, model_id="offline-style-vlm" if self.offline_mode else "runtime-style-vlm")
             def extraction_for(record):
@@ -1143,6 +1149,42 @@ class WorkflowRunner:
             "category_constraint_current": category_version,
         }
 
+    def _runtime_style_library(self):
+        """Load the configured style library or an explicitly allowed fallback."""
+        from skills.builtin_style_library import ensure_builtin_style_library
+        from skills.style_library import StyleLibrary, StyleLibraryError
+
+        configured_value = self.policy.style_library_root
+        configured = Path(configured_value)
+        if not configured.is_absolute():
+            configured = Path.cwd() / configured
+        builtin_default = configured_value == RuntimePolicy.model_fields["style_library_root"].default
+
+        if builtin_default and not configured.exists():
+            builtin = ensure_builtin_style_library(
+                self.store.root / "runtime" / "style-library-v1"
+            )
+            return StyleLibrary(builtin), builtin
+
+        try:
+            return StyleLibrary(configured), configured
+        except StyleLibraryError as exc:
+            error = ResourceError(
+                "RESOURCE_MISSING" if not configured.exists() else "RESOURCE_CORRUPT",
+                str(configured), f"trace_{uuid4().hex}", detail=str(exc),
+            )
+            if not self.policy.allow_skill_degradation:
+                raise error from exc
+            builtin = ensure_builtin_style_library(
+                self.store.root / "runtime" / "style-library-v1"
+            )
+            degraded = ResourceError(
+                error.code, error.resource, error.trace_id,
+                degradation="fallback", detail=error.detail,
+            )
+            self.store.events.append("resource_degraded", **degraded.as_dict())
+            return StyleLibrary(builtin), builtin
+
     def _style_release(self) -> str:
         """Prefer the new style gate while honoring persisted legacy manual gates."""
         if self.policy.style_direction.release == "auto" and self.policy.skill_invocation.release == "manual":
@@ -1293,16 +1335,6 @@ class WorkflowRunner:
         self.store.events.append("master_selected", selection=selection, asset=master)
         return {"master_asset": master, "selected_master": selection,
                 "waiting": False, "phase": "master_selected"}
-
-    @staticmethod
-    def _fallback_style_cards():
-        """Minimal policy-approved directions used only when explicit degradation is enabled."""
-        from agent_core.models import SkillStatus, StyleCard, VisualLanguage
-        compositions = ("centered", "diagonal", "grid", "asymmetric", "panoramic")
-        return [StyleCard(style_id=f"degraded-{index}", version="1", style_name=f"安全方向 {index}",
-                          composition=composition, visual_language=VisualLanguage(materiality=["neutral"]),
-                          risk_notes=["外部风格资源不可用，需人工复核"], status=SkillStatus.APPROVED)
-                for index, composition in enumerate(compositions, 1)]
 
     def _self_check(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])

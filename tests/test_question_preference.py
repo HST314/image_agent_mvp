@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_core.models import ImageTaskCard, SourceRef
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from configs.runtime_policy import RuntimePolicy
@@ -44,6 +46,27 @@ class _ProactiveModel:
             "evidence": "简报未提供画面文案。",
             "missing": True, "has_safe_default": False, "blocking": True,
         }]}, ensure_ascii=False)
+
+
+class _ManyQuestionsModel:
+    def __init__(self) -> None:
+        self.prompt = ""
+
+    def complete(self, prompt: str) -> str:
+        self.prompt = prompt
+        questions = [{
+            "field": f"主动字段_{index}",
+            "question": f"请确认第 {index} 项创作要求？",
+            "options": [
+                {"option_id": "A", "label": "方案 A", "description": "按建议处理"},
+                {"option_id": "B", "label": "方案 B", "description": "采用另一方案"},
+            ],
+            "recommended_option_id": "A",
+            "impact": "影响出图质量。",
+            "evidence": "当前任务信息未覆盖。",
+            "missing": True, "has_safe_default": False, "blocking": True,
+        } for index in range(1, 9)]
+        return json.dumps({"questions": questions}, ensure_ascii=False)
 
 
 def test_default_preference_is_proactive() -> None:
@@ -128,3 +151,34 @@ def test_clarify_runner_proactive_roundtrip(tmp_path: Path, monkeypatch) -> None
     assert followup["phase"] == "ready_to_draft"
     assert followup["task_card"]["known_facts"]["画面文案"] == "春季新品 5 折起"
     assert followup["task_card"]["unknowns"] == {}
+
+
+@pytest.mark.parametrize(
+    ("max_auto_questions", "total_budget", "expected"),
+    [(5, 7, 5), (5, 4, 4)],
+)
+def test_online_clarify_uses_runtime_question_limits(
+    tmp_path: Path, monkeypatch, max_auto_questions: int,
+    total_budget: int, expected: int,
+) -> None:
+    store = ProjectStore(tmp_path / "projects", f"limits-{total_budget}")
+    store.create(RuntimePolicy(
+        offline_mode=False,
+        max_auto_questions=max_auto_questions,
+        clarification_total_budget=total_budget,
+    ).snapshot())
+    runner = WorkflowRunner(store, CONFIG, offline_mode=False)
+    model = _ManyQuestionsModel()
+    monkeypatch.setattr(WorkflowRunner, "_text", lambda self, route: model)
+    monkeypatch.setattr(
+        runner.gateway, "call",
+        lambda state, role, invoke, **kwargs: invoke(object()),
+    )
+
+    result = runner.run(
+        {"task_card": _task().model_dump(mode="json")},
+        RunnerOptions(), only_state="intake_clarify",
+    )
+
+    assert len(result["question_card"]["questions"]) == expected
+    assert f"最多 {expected} 问" in model.prompt

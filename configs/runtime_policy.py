@@ -77,7 +77,7 @@ class RuntimePolicy(BaseModel):
         "response_format": "render_clients.payload_mapper",
         "watermark": "render_clients.payload_mapper",
         "offline_mode": "model_router.gateway",
-        "allow_skill_degradation": "skills.resource_loader",
+        "allow_skill_degradation": "agent_core.workflow_runner(resource fallback gates)",
         "style_library_root": "skills.style_library",
     }
 

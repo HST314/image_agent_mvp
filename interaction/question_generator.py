@@ -171,7 +171,7 @@ def select_clarification_fields(task: ImageTaskCard, count: int = 3) -> list[str
         field
         for field, value in task.unknowns.items()
         if _candidate(task, field, value, 1) is not None
-    ][: min(3, count)]
+    ][: max(0, count)]
 
 
 def generate_question_card(
@@ -189,8 +189,8 @@ def generate_question_card(
     error_recorder: Callable[[dict[str, Any]], None] | None = None,
     question_preference: str = "blocking_only",
 ) -> QuestionCard:
-    per_round = min(
-        3, max(0, max_auto_questions if mode == "auto" else int(question_count or 0))
+    per_round = max(
+        0, max_auto_questions if mode == "auto" else int(question_count or 0)
     )
     remaining = max(0, total_budget - already_asked)
     seen = set(previous_fingerprints or ())

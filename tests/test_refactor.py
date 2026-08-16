@@ -56,7 +56,7 @@ def test_05_clarification_zero_budget_dedup_over_ten_and_repair():
     assert generate_question_card(task()).questions==[]
     unknown={f"x{i}":{"impact":"影响","blocking":True,"has_safe_default":False} for i in range(12)}
     unknown["output_spec"]={"impact":"影响构图","blocking":True,"has_safe_default":False,"evidence":"未说明"}
-    card=generate_question_card(task(unknown), max_auto_questions=20); assert len(card.questions)<=3
+    card=generate_question_card(task(unknown), max_auto_questions=10); assert len(card.questions)==10
     seen={q.semantic_fingerprint for q in card.questions}
     next_card=generate_question_card(task(unknown), previous_fingerprints=seen)
     assert next_card.questions and not seen.intersection(q.semantic_fingerprint for q in next_card.questions)

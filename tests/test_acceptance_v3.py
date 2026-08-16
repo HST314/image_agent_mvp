@@ -48,6 +48,61 @@ def test_t04_production_candidate_path_returns_structured_resource_error(tmp_pat
     assert caught.value.trace_id.startswith("trace_")
 
 
+def test_runtime_skill_degradation_switch_controls_category_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("skills.category_library_adapter.CategoryLibraryAdapter.__init__",
+                        Mock(side_effect=FileNotFoundError("missing")))
+
+    blocked_store = ProjectStore(tmp_path, "category-blocked")
+    blocked_store.create(RuntimePolicy(
+        offline_mode=True, allow_skill_degradation=False,
+    ).snapshot())
+    blocked = WorkflowRunner(blocked_store, Path("configs/model_config.yaml"), offline_mode=True)
+    with pytest.raises(ResourceError):
+        blocked._load_category_skill(_task().model_copy(update={"category_ref": None}))
+
+    fallback_store = ProjectStore(tmp_path, "category-fallback")
+    fallback_store.create(RuntimePolicy(
+        offline_mode=True, allow_skill_degradation=True,
+    ).snapshot())
+    fallback = WorkflowRunner(fallback_store, Path("configs/model_config.yaml"), offline_mode=True)
+    skill, score = fallback._load_category_skill(
+        _task().model_copy(update={"category_ref": None})
+    )
+    assert skill.category_id and score == 0
+    assert any(
+        event["type"] == "resource_degraded" and event["degradation"] == "fallback"
+        for event in fallback_store.history()
+    )
+
+
+def test_runtime_skill_degradation_switch_controls_style_fallback(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-style-library"
+
+    blocked_store = ProjectStore(tmp_path, "style-blocked")
+    blocked_store.create(RuntimePolicy(
+        offline_mode=True, allow_skill_degradation=False,
+        style_library_root=str(missing),
+    ).snapshot())
+    blocked = WorkflowRunner(blocked_store, Path("configs/model_config.yaml"), offline_mode=True)
+    with pytest.raises(ResourceError):
+        blocked._runtime_style_library()
+
+    fallback_store = ProjectStore(tmp_path, "style-fallback")
+    fallback_store.create(RuntimePolicy(
+        offline_mode=True, allow_skill_degradation=True,
+        style_library_root=str(missing),
+    ).snapshot())
+    fallback = WorkflowRunner(fallback_store, Path("configs/model_config.yaml"), offline_mode=True)
+    library, root = fallback._runtime_style_library()
+    assert root != missing and len(library.records()) >= 5
+    assert any(
+        event["type"] == "resource_degraded" and event["resource"] == str(missing)
+        for event in fallback_store.history()
+    )
+
+
 def test_t07_paid_image_sdk_receives_timeout_zero_retry_and_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
     sdk = Mock(); sdk.images.generate.return_value.data = [Mock(url="https://asset")]
     sdk.images.generate.return_value.model_dump.return_value = {}
