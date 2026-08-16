@@ -215,7 +215,9 @@ class CheckpointStore:
         return self.root / "checkpoints/index.json"
 
     def _index(self) -> dict[str, Any]:
-        return json.loads(self.index_path.read_text()) if self.index_path.exists() else {"format_version": FORMAT_VERSION, "items": {}}
+        # 写侧 atomic_json 永远按 UTF-8 落盘；读侧必须显式指定同一编码，
+        # 否则在中文 Windows（默认 GBK）上含中文分支名的索引会被读成乱码。
+        return json.loads(self.index_path.read_text(encoding="utf-8")) if self.index_path.exists() else {"format_version": FORMAT_VERSION, "items": {}}
 
     def prepare(self, branch: str, sequence: int, state: str, data: dict[str, Any]) -> dict[str, Any]:
         if not BRANCH_NAME.fullmatch(branch):
@@ -443,66 +445,80 @@ class ProjectStore:
         pointer = manifest.get("current_checkpoint") or {}
         if pointer.get("branch") != intent.get("branch") or pointer.get("sequence") != intent.get("sequence"):
             return
-        candidates = [
-            item for item in self.checkpoints.list()
-            if item["branch"] == intent.get("branch") and item["sequence"] < int(intent.get("sequence", 0))
-        ]
-        if intent.get("kind") == "branch" and intent.get("from_checkpoint"):
-            try:
-                source = self.checkpoints.validate(intent["from_checkpoint"])
-                candidates = [{
-                    "checkpoint_id": intent["from_checkpoint"], "checksum": source["checksum"],
-                    "branch": source["branch"], "sequence": source["sequence"], "state": source["state"],
-                }]
-            except (OSError, ValueError, json.JSONDecodeError):
-                candidates = []
-        if candidates:
-            target = max(candidates, key=lambda item: item["sequence"])
-            envelope = self.checkpoints.validate(target["checkpoint_id"])
-            manifest.update(
-                current_branch=envelope["branch"],
-                current_checkpoint={
-                    "checkpoint_id": target["checkpoint_id"], "checksum": envelope["checksum"],
-                    "branch": envelope["branch"], "sequence": envelope["sequence"], "state": envelope["state"],
-                },
-                updated_at=_now(),
-            )
-        else:
+        # 回退指针计算依赖检查点索引；索引不可读（如乱码索引）时不得中断回滚，
+        # 退回到无指针的安全初始态，由工程健康检查/修复兜底。
+        try:
+            candidates = [
+                item for item in self.checkpoints.list()
+                if item["branch"] == intent.get("branch") and item["sequence"] < int(intent.get("sequence", 0))
+            ]
+            if intent.get("kind") == "branch" and intent.get("from_checkpoint"):
+                try:
+                    source = self.checkpoints.validate(intent["from_checkpoint"])
+                    candidates = [{
+                        "checkpoint_id": intent["from_checkpoint"], "checksum": source["checksum"],
+                        "branch": source["branch"], "sequence": source["sequence"], "state": source["state"],
+                    }]
+                except (OSError, ValueError, json.JSONDecodeError):
+                    candidates = []
+            if candidates:
+                target = max(candidates, key=lambda item: item["sequence"])
+                envelope = self.checkpoints.validate(target["checkpoint_id"])
+                manifest.update(
+                    current_branch=envelope["branch"],
+                    current_checkpoint={
+                        "checkpoint_id": target["checkpoint_id"], "checksum": envelope["checksum"],
+                        "branch": envelope["branch"], "sequence": envelope["sequence"], "state": envelope["state"],
+                    },
+                    updated_at=_now(),
+                )
+            else:
+                manifest.update(current_branch="main", current_checkpoint=None, updated_at=_now())
+        except (OSError, ValueError, json.JSONDecodeError):
             manifest.update(current_branch="main", current_checkpoint=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
 
     def _rollback_transaction(self, intent: dict[str, Any], manifest: dict[str, Any]) -> None:
         # Roll back every observable part, including a file written before its
         # index update. The intent contains the deterministic target up front.
-        index = self.checkpoints._index()
-        expected_id = intent.get("checkpoint_id")
-        expected_path = intent.get("path")
-        if expected_path:
-            target = (self.root / expected_path).resolve()
-            if self.root.resolve() in target.parents:
-                target.unlink(missing_ok=True)
-                # 回滚后不保留误导性的空分支目录；仅删除已确认为空的目标父目录。
-                if target.parent != self.root and target.parent.exists():
-                    try:
-                        target.parent.rmdir()
-                    except OSError:
-                        pass
-        if expected_id:
-            index["items"].pop(expected_id, None)
-        for checkpoint_id, item in list(index["items"].items()):
-            if item["branch"] == intent["branch"] and item["sequence"] == intent["sequence"]:
-                target = (self.root / item["path"]).resolve()
+        # 回滚不得被控制文件的读取失败中断：索引不可读时仅跳过依赖它的清理，
+        # 事务意图中已记录的路径/ID 仍做尽力清理，且 pending.json 一定被清除，
+        # 避免半回滚死锁态（残留的乱码索引可再由工程健康检查定向修复）。
+        try:
+            index = self.checkpoints._index()
+        except (OSError, ValueError, json.JSONDecodeError):
+            index = None
+        try:
+            expected_id = intent.get("checkpoint_id")
+            expected_path = intent.get("path")
+            if expected_path:
+                target = (self.root / expected_path).resolve()
                 if self.root.resolve() in target.parents:
                     target.unlink(missing_ok=True)
-                del index["items"][checkpoint_id]
-        atomic_json(self.checkpoints.index_path, index)
-        if intent.get("kind") == "branch":
-            branches_path = self.root / "branches.json"
-            branches = json.loads(branches_path.read_text(encoding="utf-8"))
-            branches["branches"].pop(intent["branch"], None)
-            atomic_json(branches_path, branches)
-        self._restore_manifest_after_rollback(intent, manifest)
-        (self.root / "transactions/pending.json").unlink(missing_ok=True)
+                    # 回滚后不保留误导性的空分支目录；仅删除已确认为空的目标父目录。
+                    if target.parent != self.root and target.parent.exists():
+                        try:
+                            target.parent.rmdir()
+                        except OSError:
+                            pass
+            if index is not None:
+                if expected_id:
+                    index["items"].pop(expected_id, None)
+                for checkpoint_id, item in list(index["items"].items()):
+                    if item["branch"] == intent["branch"] and item["sequence"] == intent["sequence"]:
+                        target = (self.root / item["path"]).resolve()
+                        if self.root.resolve() in target.parents:
+                            target.unlink(missing_ok=True)
+                        del index["items"][checkpoint_id]
+                atomic_json(self.checkpoints.index_path, index)
+            if intent.get("kind") == "branch":
+                branches_path = self.root / "branches.json"
+                branches = json.loads(branches_path.read_text(encoding="utf-8"))
+                branches["branches"].pop(intent["branch"], None)
+                atomic_json(branches_path, branches)
+            self._restore_manifest_after_rollback(intent, manifest)
+        finally:
+            (self.root / "transactions/pending.json").unlink(missing_ok=True)
 
     def _recover_transaction(self) -> None:
         # Recovery is a write operation.  If a legacy/direct caller reaches a
@@ -517,7 +533,10 @@ class ProjectStore:
         pending = self.root / "transactions/pending.json"
         if not pending.exists():
             return
-        intent = json.loads(pending.read_text(encoding="utf-8"))
+        try:
+            intent = json.loads(pending.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CorruptProjectError("工程事务记录无法读取。") from exc
         manifest = self.manifest()
         if self._transaction_complete(intent, manifest):
             checkpoint_id = intent.get("checkpoint_id")

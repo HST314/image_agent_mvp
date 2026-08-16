@@ -111,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"branch": store.revise_policy(policy.snapshot(), confirmed=args.confirm, actor=args.actor)}, ensure_ascii=False))
         elif args.command == "unknown":
             gateway = WorkflowRunner(store, Path(__file__).parent / "configs/model_config.yaml",
-                                     offline_mode=RuntimePolicy.model_validate(json.loads((store.root / "runtime_policy.json").read_text())["policy"]).offline_mode).gateway
+                                     offline_mode=RuntimePolicy.model_validate(json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]).offline_mode).gateway
             if args.action:
                 if not args.idempotency_key or not args.actor: raise ValueError("处置未知态必须提供 key 与 actor。")
                 gateway.resolve_unknown(args.idempotency_key, args.action, args.actor)
