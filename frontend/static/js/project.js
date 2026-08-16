@@ -157,7 +157,7 @@ function stageSubtitle(derived) {
   if (derived.stage === 'taskbook') return '请通读任务目标与约束；确认后开始生成候选图';
   if (derived.stage === 'category') return '先确认广告品类库匹配及必需输入，再进入需求澄清';
   if (derived.stage === 'skill_approval') return '确认五种艺术风格后才会生成五张主图；不合适可换一版';
-  if (derived.stage === 'gallery') return '对比五个视觉方向，放大查看细节后选择一个作为主图';
+  if (derived.stage === 'gallery') return '对比各候选方向，放大查看细节后选择一个作为主图';
   if (derived.stage === 'disposition') return '自动质检达到配置上限；最高分不会冒充通过，请选择分流方式';
   if (derived.stage === 'final') return '确认后冻结交付并生成说明；此后任何修改都将创建新修订';
   if (derived.stage === 'completed') return '最终图片与设计说明已冻结；确认完成后保存到工程交付目录';
@@ -399,6 +399,19 @@ function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
     return;
   }
   const current = snapshot.category_constraint_current || {};
+  if (current.disabled) {
+    // 「不使用数据库」：阶段界面保留，仅提示并自动进入下一阶段（无需人工点击）。
+    panel.append(el('div', { class: 'skill-gate__head' }, [
+      el('div', {}, [
+        el('span', { class: 'badge badge--info', text: '未使用数据库' }),
+        el('h3', { text: '广告品类约束' }),
+        el('p', { text: '当前设置不使用该数据库内容。需求澄清与任务书将只依据你填写的需求内容。' }),
+      ]),
+    ]));
+    const action = capabilityStartButton(view.capabilities || [], Boolean(view.active_job), jobRunner);
+    if (action) panel.append(action);
+    return;
+  }
   const skill = current.skill || {};
   const injection = skill.prompt_injection || {};
   const required = Array.isArray(skill.required_questions) ? skill.required_questions : [];
@@ -461,7 +474,7 @@ function renderSelectedMasterContext(panel, view, derived, jobRunner) {
   const snapshot = view.snapshot || {};
   const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
   if (candidates.length) {
-    const grid = el('div', { class: 'snapshot-gallery', role: 'list', 'aria-label': '已生成的五张候选图' });
+    const grid = el('div', { class: 'snapshot-gallery', role: 'list', 'aria-label': '已生成的候选图' });
     candidates.forEach((asset, index) => {
       const selected = snapshot.selected_master?.candidate_id === (asset.id || `candidate-${index + 1}`);
       const figure = el('figure', { class: selected ? 'is-selected' : '', role: 'listitem' });
@@ -493,7 +506,7 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
     const audit = el('details', { class: 'skill-gate__history' });
     audit.append(el('summary', { text: `查看 ${history.length} 个技能调用审计版本` }));
     const versions = el('div', { class: 'skill-gate__versions' });
-    const decisionLabel = { pending: '等待确认', rejected: '已否决', approved: '已批准', auto_approved: '自动放行' };
+    const decisionLabel = { pending: '等待确认', rejected: '已否决', approved: '已批准', auto_approved: '自动放行', library_disabled: '未使用数据库' };
     history.forEach((version) => {
       const item = el('details', { class: 'skill-gate__version' });
       item.append(el('summary', {

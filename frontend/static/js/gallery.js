@@ -8,16 +8,17 @@ import { mechanismLabel, candidateLabel } from './copy.js';
 export const SLOT_COUNT = 5;
 
 /**
- * 纯函数：由后端候选与风格选择构建五个稳定槽位。
+ * 纯函数：由后端候选与风格选择构建稳定槽位。
+ * 槽位数默认 5（风格库模式）；「不使用数据库」模式由渲染方案数（candidate_concurrency）决定。
  * candidates 项：{id, candidate_index, uri, sha256, style_id, style_name, ...}
  * styleSelections 项：{style_id, mechanism, reason, task_fit, risk}
  * 缺失的槽位标记为 missing，由后端幂等补偿生成（T08）。
  */
-export function buildSlots(candidates = [], styleSelections = []) {
+export function buildSlots(candidates = [], styleSelections = [], slotCount = SLOT_COUNT) {
   const byIndex = new Map();
   for (const item of candidates || []) {
     const index = Number.isInteger(item?.candidate_index) ? item.candidate_index : null;
-    if (index !== null && index >= 0 && index < SLOT_COUNT) byIndex.set(index, item);
+    if (index !== null && index >= 0 && index < slotCount) byIndex.set(index, item);
   }
   // 兼容旧检查点没有 candidate_index 的情况：按 id "candidate-N" 推断。
   for (const item of candidates || []) {
@@ -25,13 +26,13 @@ export function buildSlots(candidates = [], styleSelections = []) {
       const match = /^candidate-(\d+)$/.exec(String(item?.id || ''));
       if (match) {
         const index = Number(match[1]) - 1;
-        if (index >= 0 && index < SLOT_COUNT && !byIndex.has(index)) byIndex.set(index, item);
+        if (index >= 0 && index < slotCount && !byIndex.has(index)) byIndex.set(index, item);
       }
     }
   }
   const stylesById = new Map((styleSelections || []).map((s) => [s.style_id, s]));
   const slots = [];
-  for (let index = 0; index < SLOT_COUNT; index += 1) {
+  for (let index = 0; index < slotCount; index += 1) {
     const asset = byIndex.get(index) || null;
     const style = asset ? (stylesById.get(asset.style_id) || null) : (styleSelections?.[index] || null);
     slots.push({
@@ -158,15 +159,19 @@ export function openZoomDialog(slot, projectId) {
   dialog.showModal();
 }
 
-/** 画廊舞台：五槽 + 选择确认栏。 */
+/** 画廊舞台：候选槽 + 选择确认栏。 */
 export function renderGalleryStage(container, view, { projectId, selectedId, onSelect, onCompensate }) {
   const snapshot = view.snapshot || {};
-  const slots = buildSlots(snapshot.candidates, snapshot.style_selections);
+  // 槽位数与后端渲染方案数一致：风格库模式 5 个；「不使用数据库」模式为 candidate_concurrency 个。
+  const slotCount = Array.isArray(snapshot.render_plans) && snapshot.render_plans.length
+    ? snapshot.render_plans.length
+    : SLOT_COUNT;
+  const slots = buildSlots(snapshot.candidates, snapshot.style_selections, slotCount);
   const head = el('div', { class: 'section__head' });
   const headText = el('div');
-  headText.append(el('h2', { text: '选择一张当前主图' }), el('p', { text: '五个方向共享任务书与硬约束，仅艺术机制不同；缺失槽位可单独补齐。' }));
-  head.append(headText, el('span', { class: 'badge', text: `${slots.filter((s) => s.status === 'ready').length}/${SLOT_COUNT} 已生成` }));
-  const grid = el('div', { class: 'gallery-grid', role: 'listbox', 'aria-label': '五个候选方向' });
+  headText.append(el('h2', { text: '选择一张当前主图' }), el('p', { text: `${slotCount} 个方向共享任务书与硬约束，仅艺术机制不同；缺失槽位可单独补齐。` }));
+  head.append(headText, el('span', { class: 'badge', text: `${slots.filter((s) => s.status === 'ready').length}/${slotCount} 已生成` }));
+  const grid = el('div', { class: 'gallery-grid', role: 'listbox', 'aria-label': `${slotCount} 个候选方向` });
   let currentSelectedId = selectedId;
   const selectSlot = (slot) => {
     currentSelectedId = slot.asset.id || `candidate-${slot.index + 1}`;

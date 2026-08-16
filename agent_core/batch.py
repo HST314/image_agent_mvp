@@ -49,13 +49,16 @@ class CandidateBatchGenerator:
 
     def generate(self, input_hash: str, *, cache_scope: dict[str, Any] | None = None,
                  expected_assets: list[dict[str, Any]] | None = None) -> dict[str, list[Any]]:
-        if expected_assets is not None and len(expected_assets) != 5:
-            raise ValueError("候选缓存校验必须提供五个方案的 provenance。")
+        # 候选数量由渲染方案（expected_assets）决定：风格库模式固定 5 个风格方案，
+        # 「不使用数据库」模式为 candidate_concurrency 个自由方案。
+        count = len(expected_assets) if expected_assets is not None else 5
+        if count < 1:
+            raise ValueError("候选缓存校验必须提供至少一个方案的 provenance。")
         successes: list[Any] = []; failures: list[Any] = []
         with self.store.lock():
             events = self.store.events.read_all()
             pending: list[tuple[int, str]] = []
-            for index in range(5):
+            for index in range(count):
                 key = self._idempotency_key(input_hash, index, cache_scope)
                 expected = expected_assets[index] if expected_assets is not None else None
                 candidates = [e.get("asset") for e in reversed(events)

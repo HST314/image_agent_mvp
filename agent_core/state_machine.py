@@ -22,11 +22,12 @@ class RecoverableWorkflow:
 
     @staticmethod
     def select_master(candidates: list[dict[str, Any]], selected_id: str) -> dict[str, Any]:
-        if len(candidates) != 5:
-            raise ValueError("必须先获得 5 个候选方向才能选择主图。")
+        # 风格库模式固定 5 张；「不使用数据库」模式为 candidate_concurrency 张。
+        if not candidates:
+            raise ValueError("必须先获得候选方向才能选择主图。")
         matches = [item for item in candidates if item.get("id") == selected_id]
         if len(matches) != 1:
-            raise ValueError("请选择 5 张候选图中的 1 张。")
+            raise ValueError(f"请选择 {len(candidates)} 张候选图中的 1 张。")
         return matches[0]
 
     @staticmethod

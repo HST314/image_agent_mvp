@@ -26,9 +26,12 @@ class SelfCheckPolicyConfig(BaseModel):
 
 
 class SkillInvocationPolicyConfig(BaseModel):
-    """Release policy shared by one explicit library boundary."""
+    """Release policy shared by one explicit library boundary.
+
+    off = 不使用数据库：跳过该库的加载与提示词注入，阶段界面仍保留并自动通过。
+    """
     model_config = ConfigDict(extra="forbid", frozen=True)
-    release: Literal["auto", "manual"] = "auto"
+    release: Literal["auto", "manual", "off"] = "auto"
 
 
 class RuntimePolicy(BaseModel):

@@ -82,6 +82,51 @@ class RenderPromptComposer:
         prompt_version.style_idea_id = style_idea_card.idea_id if style_idea_card is not None else None
         return prompt_version
 
+    def compose_free(
+        self,
+        doc: TaskConfirmationDoc,
+        category_skill: CategorySkill,
+        *,
+        slot: int,
+        count: int,
+        style_id: str,
+        deliverable_goal: str,
+        usage_context: str,
+    ) -> PromptVersion:
+        """Compose one render prompt without any style-library injection.
+
+        艺术风格库设置为「不使用数据库」时使用：提示词由已批准任务书直接合成，
+        风格段只携带候选位序号与差异化要求，由生成模型自由发挥。
+        """
+
+        require_approved_confirmation(doc, "prompt_compose")
+        variables = {
+            "deliverable_goal": deliverable_goal,
+            "usage_context": usage_context,
+            "taskbook_markdown": doc.markdown_body or doc.summary,
+            "confirmed_facts": self._facts(doc),
+            "default_handling_for_unknowns": self._unknowns(doc),
+            "category_skill_injection": self._skill_injection(category_skill),
+            "style_card_injection": (
+                f"本次未使用艺术风格库。本候选为第 {slot + 1}/{count} 个自由方向："
+                "在严格满足任务书与禁止项的前提下，由生成模型自行选择构图、材质、"
+                "光影与色彩处理，并与其他候选方向保持差异化。"
+            ),
+            "locked_elements": self._list(self._locked_fact_fields(doc)),
+            "negative_constraints": self._list(self._negative_constraints(doc, category_skill, None)),
+            "asset_usage_rules": self._list(["仅遵循已验证的素材使用规则。"]),
+            "render_stage": "primary",
+        }
+        prompt_text = self._render_template(variables)
+        return create_prompt_version(
+            prompt_text=prompt_text,
+            task_id=doc.task_id,
+            confirmation_doc_id=doc.confirmation_doc_id,
+            style_id=style_id,
+            category_id=category_skill.category_id,
+            variables=variables,
+        )
+
     def _render_template(self, variables: dict[str, str]) -> str:
         """Render the markdown template with simple exact placeholders."""
 
@@ -109,6 +154,11 @@ class RenderPromptComposer:
     def _skill_injection(skill: CategorySkill) -> str:
         """Serialize category skill injection fields."""
 
+        injection = skill.prompt_injection
+        if not any([injection.category_description, injection.production_constraints,
+                    injection.visual_rules, skill.review_checks]):
+            # 品类库「不使用数据库」：空壳技能不注入任何品类内容。
+            return "本次未使用广告品类库。"
         payload: dict[str, Any] = {
             "description": skill.prompt_injection.category_description,
             "production_constraints": skill.prompt_injection.production_constraints,
@@ -143,7 +193,7 @@ class RenderPromptComposer:
     def _negative_constraints(
         doc: TaskConfirmationDoc,
         skill: CategorySkill,
-        style_card: StyleCard,
+        style_card: StyleCard | None,
     ) -> list[str]:
         """Merge negative constraints without duplicates."""
 
@@ -151,7 +201,7 @@ class RenderPromptComposer:
         for item in [
             *doc.forbidden_items,
             *skill.prompt_injection.forbidden_elements,
-            *style_card.negative_elements,
+            *(style_card.negative_elements if style_card is not None else []),
         ]:
             if item not in merged:
                 merged.append(item)

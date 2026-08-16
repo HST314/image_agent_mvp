@@ -636,8 +636,10 @@ class ProjectStore:
         elif state == "initial_candidate_generation":
             data["phase"] = "ready_for_style_direction"
         elif state == "master_candidate_selection":
-            if len(data.get("candidates") or []) != 5:
-                raise ValueError("主图选择重跑需要保留完整的 5 张候选图。")
+            # 风格库模式固定 5 张；「不使用数据库」模式候选数等于渲染方案数（candidate_concurrency）。
+            expected = len(data.get("render_plans") or []) or 5
+            if len(data.get("candidates") or []) != expected:
+                raise ValueError(f"主图选择重跑需要保留完整的 {expected} 张候选图。")
             data.update(phase="waiting_master_selection", waiting=True)
         elif state == "self_check_iteration":
             if not (data.get("master_asset") or data.get("asset")):

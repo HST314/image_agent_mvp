@@ -211,8 +211,11 @@ export function skillInvocationView(snapshot = {}) {
       forbiddenElements: asTextList(category.forbidden_elements),
       reviewChecks: asTextList(category.review_checks),
       available: Object.keys(category).length > 0,
+      // 「不使用数据库」标记：该库已按设置跳过，界面只显示提示文本。
+      disabled: Boolean(category.disabled),
     },
     styles,
+    styleDisabled: Boolean(invocation.style_library?.disabled),
     hasPersistedStyleDetails: Array.isArray(persistedStyles),
   };
 }
@@ -256,26 +259,32 @@ export function renderSkillInvocations(container, projectId, snapshot, { mode = 
     el('span', { class: 'skill-call-card__index', text: '01', 'aria-hidden': 'true' }),
     el('div', {}, [
       el('h3', { id: titleIds.category, text: '广告品类库' }),
-      el('p', { text: model.category.name ? `已匹配：${model.category.name}` : '本次调用获得的品类设计约束' }),
+      el('p', { text: model.category.disabled ? '未使用' : (model.category.name ? `已匹配：${model.category.name}` : '本次调用获得的品类设计约束') }),
     ]),
   ]));
-  if (model.category.description) categoryCard.append(el('p', { class: 'skill-call-card__summary', text: model.category.description }));
-  let hasCategoryContent = Boolean(model.category.description);
-  hasCategoryContent = appendRuleGroup(categoryCard, '制作约束', model.category.productionConstraints) || hasCategoryContent;
-  hasCategoryContent = appendRuleGroup(categoryCard, '视觉规则', model.category.visualRules) || hasCategoryContent;
-  hasCategoryContent = appendRuleGroup(categoryCard, '禁用元素', model.category.forbiddenElements) || hasCategoryContent;
-  hasCategoryContent = appendRuleGroup(categoryCard, '验收检查', model.category.reviewChecks) || hasCategoryContent;
-  if (!hasCategoryContent) categoryCard.append(el('p', { class: 'skill-call-card__empty', text: '该旧快照未保存广告品类库调用详情；新生成的检查点会完整记录。' }));
+  if (model.category.disabled) {
+    categoryCard.append(el('p', { class: 'skill-call-card__empty', text: '当前设置不使用该数据库内容。' }));
+  } else {
+    if (model.category.description) categoryCard.append(el('p', { class: 'skill-call-card__summary', text: model.category.description }));
+    let hasCategoryContent = Boolean(model.category.description);
+    hasCategoryContent = appendRuleGroup(categoryCard, '制作约束', model.category.productionConstraints) || hasCategoryContent;
+    hasCategoryContent = appendRuleGroup(categoryCard, '视觉规则', model.category.visualRules) || hasCategoryContent;
+    hasCategoryContent = appendRuleGroup(categoryCard, '禁用元素', model.category.forbiddenElements) || hasCategoryContent;
+    hasCategoryContent = appendRuleGroup(categoryCard, '验收检查', model.category.reviewChecks) || hasCategoryContent;
+    if (!hasCategoryContent) categoryCard.append(el('p', { class: 'skill-call-card__empty', text: '该旧快照未保存广告品类库调用详情；新生成的检查点会完整记录。' }));
+  }
 
   const styleCard = el('section', { class: 'skill-call-card skill-call-card--styles', 'aria-labelledby': titleIds.style });
   styleCard.append(el('div', { class: 'skill-call-card__head' }, [
     el('span', { class: 'skill-call-card__index', text: showCategory ? '02' : '01', 'aria-hidden': 'true' }),
     el('div', {}, [
       el('h3', { id: titleIds.style, text: '艺术风格库' }),
-      el('p', { text: `已选择 ${model.styles.length}/5 张风格参考图，并提取可迁移的视觉机制` }),
+      el('p', { text: model.styleDisabled ? '未使用' : `已选择 ${model.styles.length}/5 张风格参考图，并提取可迁移的视觉机制` }),
     ]),
   ]));
-  if (model.styles.length) {
+  if (model.styleDisabled) {
+    styleCard.append(el('p', { class: 'skill-call-card__empty', text: '当前设置不使用该数据库内容；候选图按任务书直接生成。' }));
+  } else if (model.styles.length) {
     const gallery = el('div', { class: 'skill-reference-grid', role: 'list', 'aria-label': '五张已选择的艺术风格参考图' });
     model.styles.forEach((style, index) => {
       const figure = el('figure', { class: 'skill-reference', role: 'listitem' });
@@ -411,6 +420,7 @@ function renderSnapshotContent(container, projectId, item) {
       skill_invocations: { category_library: {
         category_id: current.category_id,
         category_name: current.category_name,
+        disabled: Boolean(current.disabled),
         description: skill.prompt_injection?.category_description,
         production_constraints: skill.prompt_injection?.production_constraints || [],
         visual_rules: skill.prompt_injection?.visual_rules || [],

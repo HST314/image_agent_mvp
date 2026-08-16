@@ -71,6 +71,27 @@ class StyleRenderPlanner:
             raise ValueError("hard task constraints differ between slots")
         return plans
 
+    def plan_free(self, *, confirmation: TaskConfirmationDoc, category: CategorySkill,
+                  count: int, deliverable_goal: str, usage_context: str,
+                  task_revision_hash: str, config_hash: str) -> list[RenderPlanItem]:
+        """艺术风格库「不使用数据库」：按 candidate_concurrency 直接由任务书合成候选提示词。"""
+
+        if count < 1:
+            raise ValueError("自由候选数量必须为正整数。")
+        plans: list[RenderPlanItem] = []
+        for slot in range(count):
+            style_id = f"free-{slot + 1}"
+            prompt = self.composer.compose_free(
+                confirmation, category, slot=slot, count=count, style_id=style_id,
+                deliverable_goal=deliverable_goal, usage_context=usage_context,
+            )
+            provenance = {"task_revision_hash": task_revision_hash, "category_id": category.category_id,
+                          "style_id": style_id, "extraction_key": "free",
+                          "prompt_version_id": prompt.prompt_version_id, "config_hash": config_hash}
+            plans.append(RenderPlanItem(slot, style_id, "free",
+                                        prompt.prompt_version_id, prompt.prompt_text, provenance))
+        return plans
+
     @staticmethod
     def render(plans: list[RenderPlanItem], invoke: Callable[[dict[str, Any]], Any]) -> list[Any]:
         results = []

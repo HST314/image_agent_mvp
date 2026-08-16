@@ -326,6 +326,22 @@ class WorkflowRunner:
         if action == "retry" and not actor:
             raise ValueError("品类约束换版需要操作者身份。")
 
+        if self.policy.category_constraint.release == "off":
+            # 不使用数据库：跳过品类库匹配与未知项注入，阶段自动通过（界面仅留痕展示）。
+            version_number = len(history) + 1
+            version = {
+                "version_id": f"category-constraint-v{version_number}", "version": version_number,
+                "category_id": None, "category_name": None, "score": 0,
+                "decision": "library_disabled", "disabled": True, "skill": None,
+                "constraint_hash": content_hash({"category_library": "off"}),
+            }
+            history.append(version)
+            self.store.events.append("category_constraint_matched", version_id=version["version_id"],
+                                     category_id=None, score=0, release="off")
+            return {"category_constraint_current": version, "category_constraint_history": history,
+                    "category_constraint_approval": {"version_id": version["version_id"], "actor": "system:off"},
+                    "waiting": False, "phase": "category_approved"}
+
         excluded = {str(current.get("category_id"))} if action == "retry" and current.get("category_id") else set()
         skill, score = self._load_category_skill(task, excluded=excluded)
         if action == "retry" and history:
@@ -444,7 +460,8 @@ class WorkflowRunner:
     def _clarify(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
         asked_fields = self._clarification_asked_fields(task, data)
-        category = (data.get("category_constraint_current") or {}).get("skill")
+        category_current = data.get("category_constraint_current") or {}
+        category = category_current.get("skill")
         if category:
             task = self._apply_category_unknowns(task, self._category_skill_with_current_policies(category))
         fingerprints = set(data.get("previous_fingerprints", []))
@@ -507,7 +524,11 @@ class WorkflowRunner:
                         **{"event_type": "model_parse_failed", **error}
                     ),
                 ),
-                messages=[{"role": "user", "content": "结合已批准的广告品类约束与完整多轮问答重新分析；品类阻塞项未闭合时必须提问，只有完整时才能返回 0 问。"}],
+                messages=[{"role": "user", "content": (
+                    "结合完整多轮问答重新分析；只有信息完整时才能返回 0 问。"
+                    if category_current.get("disabled") else
+                    "结合已批准的广告品类约束与完整多轮问答重新分析；品类阻塞项未闭合时必须提问，只有完整时才能返回 0 问。"
+                )}],
                 variables={"task": task.model_dump(mode="json"),
                            "clarification_transcript": transcript,
                            "category_constraint": data.get("category_constraint_current")},
@@ -856,9 +877,15 @@ class WorkflowRunner:
 
         # New projects freeze this before clarification. Legacy checkpoints are
         # lazily upgraded here so historical branches remain executable.
-        from agent_core.models import CategorySkill
+        from agent_core.models import AppliesWhen, CategorySkill, PromptInjection, SkillStatus
         category_version = data.get("category_constraint_current") or {}
-        if category_version.get("skill"):
+        if category_version.get("disabled"):
+            # 品类库「不使用数据库」：空壳品类技能，渲染提示词不注入任何品类内容。
+            category_skill = CategorySkill(
+                category_id="category_library_off", version="1", display_name=None,
+                applies_when=AppliesWhen(), required_questions=[],
+                prompt_injection=PromptInjection(), review_checks=[], status=SkillStatus.APPROVED)
+        elif category_version.get("skill"):
             approval = data.get("category_constraint_approval") or {}
             if (not str(category_version.get("version_id", "")).startswith("category-constraint-legacy")
                     and approval.get("version_id") != category_version.get("version_id")):
@@ -878,36 +905,40 @@ class WorkflowRunner:
         # 2. 唯一风格入口：图片只在 VLM 提取边界出现，渲染侧只收到文字。
         from agent_core.models import ConfirmedFact, RiskLevel, SignStatus, TaskConfirmationDoc, UnknownHandling
         from agent_core.style_pipeline import StyleRenderPlanner
-        from skills.style_library import StyleExtractor, StyleLibrary, select_five
 
         if not data.get("task_approval") or data["task_approval"].get("revision_hash") != data.get("task_revision", {}).get("revision_hash"):
             raise ValueError("任务书修改后必须重新人工确认，才能进入付费步骤。")
-        style_root = Path(self.policy.style_library_root)
-        if not style_root.is_absolute():
-            configured = Path.cwd() / style_root
-            if configured.exists():
-                style_root = configured
-            else:
-                from skills.builtin_style_library import ensure_builtin_style_library
-                style_root = ensure_builtin_style_library(self.store.root / "runtime" / "style-library-v1")
-        library = StyleLibrary(style_root)
-        records = library.records()
-        extractor = StyleExtractor(style_root, self._extract_style, model_id="offline-style-vlm" if self.offline_mode else "runtime-style-vlm")
-        def extraction_for(record):
-            try:
-                return library.extraction(record)
-            except Exception:
-                return extractor.extract(record)
+        style_off = self._style_release() == "off"
+        selected_styles: list[Any] = []
+        style_root: Path | None = None
+        if not style_off:
+            from skills.style_library import StyleExtractor, StyleLibrary, select_five
+            style_root = Path(self.policy.style_library_root)
+            if not style_root.is_absolute():
+                configured = Path.cwd() / style_root
+                if configured.exists():
+                    style_root = configured
+                else:
+                    from skills.builtin_style_library import ensure_builtin_style_library
+                    style_root = ensure_builtin_style_library(self.store.root / "runtime" / "style-library-v1")
+            library = StyleLibrary(style_root)
+            records = library.records()
+            extractor = StyleExtractor(style_root, self._extract_style, model_id="offline-style-vlm" if self.offline_mode else "runtime-style-vlm")
+            def extraction_for(record):
+                try:
+                    return library.extraction(record)
+                except Exception:
+                    return extractor.extract(record)
+            retrieval_text = specification_to_markdown(spec)
+            if avoidance_context:
+                retrieval_text += "\n\n重试检索上下文：" + avoidance_context["instruction"]
+            selected_styles = select_five(
+                records,
+                extraction_for,
+                retrieval_text,
+                exclude_style_ids=avoidance_context["excluded_style_ids"] if avoidance_context else (),
+            )
         task_markdown = specification_to_markdown(spec)
-        retrieval_text = task_markdown
-        if avoidance_context:
-            retrieval_text += "\n\n重试检索上下文：" + avoidance_context["instruction"]
-        selected_styles = select_five(
-            records,
-            extraction_for,
-            retrieval_text,
-            exclude_style_ids=avoidance_context["excluded_style_ids"] if avoidance_context else (),
-        )
         confirmed_facts = [
             ConfirmedFact(field=fact.label, value=fact.value, source_ref=fact.provenance)
             for fact in spec.facts if fact.status in {"confirmed", "extracted"}
@@ -931,10 +962,20 @@ class WorkflowRunner:
                                   forbidden_items=forbidden_items,
                                   markdown_body=task_markdown, sign_status=SignStatus.APPROVED,
                                   signed_by=data["task_approval"]["actor"])
-        plans = StyleRenderPlanner().plan(confirmation=doc, category=category_skill, styles=selected_styles,
-            deliverable_goal=specification_value(spec, "deliverable_goal", task_card.deliverable_goal),
-            usage_context=specification_value(spec, "usage_context", task_card.usage_context),
-            task_revision_hash=data["task_revision"]["revision_hash"], config_hash=self.policy.sha256())
+        if style_off:
+            # 艺术风格库「不使用数据库」：候选数由 candidate_concurrency 控制，
+            # 提示词由已批准任务书直接合成，由生成模型自由发挥。
+            candidate_count = self.policy.candidate_concurrency
+            plans = StyleRenderPlanner().plan_free(confirmation=doc, category=category_skill,
+                count=candidate_count,
+                deliverable_goal=specification_value(spec, "deliverable_goal", task_card.deliverable_goal),
+                usage_context=specification_value(spec, "usage_context", task_card.usage_context),
+                task_revision_hash=data["task_revision"]["revision_hash"], config_hash=self.policy.sha256())
+        else:
+            plans = StyleRenderPlanner().plan(confirmation=doc, category=category_skill, styles=selected_styles,
+                deliverable_goal=specification_value(spec, "deliverable_goal", task_card.deliverable_goal),
+                usage_context=specification_value(spec, "usage_context", task_card.usage_context),
+                task_revision_hash=data["task_revision"]["revision_hash"], config_hash=self.policy.sha256())
 
         # 保存本次技能调用的可读结果。风格原图仅作为工程内只读展示资产持久化，
         # 不进入生图 payload；最终渲染边界仍由 assert_reference_isolated 兜底。
@@ -971,8 +1012,10 @@ class WorkflowRunner:
                     "color": extraction.color,
                 },
             })
-        skill_invocations = {
-            "category_library": {
+        category_section = (
+            {"source": "广告品类库", "disabled": True}
+            if category_version.get("disabled") else
+            {
                 "source": "广告品类库",
                 "category_id": category_skill.category_id,
                 "category_name": category_skill.display_name or "通用视觉交付",
@@ -982,29 +1025,46 @@ class WorkflowRunner:
                 "visual_rules": category_skill.prompt_injection.visual_rules,
                 "forbidden_elements": category_skill.prompt_injection.forbidden_elements,
                 "review_checks": category_skill.review_checks,
-            },
-            "style_library": {
-                "source": "艺术风格库",
-                "selections": style_invocations,
-            },
+            }
+        )
+        skill_invocations = {
+            "category_library": category_section,
+            "style_library": (
+                {"source": "艺术风格库", "disabled": True, "selections": []}
+                if style_off else
+                {"source": "艺术风格库", "selections": style_invocations}
+            ),
             "avoidance_context": avoidance_context,
         }
 
-        # 3. 终端输出这 5 张文本卡片给用户
-        self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
-        for i, selected in enumerate(selected_styles, 1):
-            self.output(f"\n【方向 {i}：{selected.style.title}】")
-            self.output(f"  • 主导机制：{selected.mechanism}")
-            self.output(f"  • 推荐理由：{selected.reason}")
-            self.output(f"  • 主要风险：{selected.risk}")
-        self.output("\n=================================================================")
-        self.output("保持主体内容、品牌色彩与空间条件一致；技能调用结果已准备完成。\n")
+        if style_off:
+            self.output(f"\n===== 艺术风格库当前设置为不使用数据库：按任务书直接生成 {candidate_count} 张候选图 =====\n")
+        else:
+            # 3. 终端输出这 5 张文本卡片给用户
+            self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
+            for i, selected in enumerate(selected_styles, 1):
+                self.output(f"\n【方向 {i}：{selected.style.title}】")
+                self.output(f"  • 主导机制：{selected.mechanism}")
+                self.output(f"  • 推荐理由：{selected.reason}")
+                self.output(f"  • 主要风险：{selected.risk}")
+            self.output("\n=================================================================")
+            self.output("保持主体内容、品牌色彩与空间条件一致；技能调用结果已准备完成。\n")
 
-        style_selections = [
-            {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
-             "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}
-            for item in selected_styles
-        ]
+        if style_off:
+            style_selections = [
+                {"style_id": plan.style_id, "extraction_key": plan.extraction_key,
+                 "reason": "未使用艺术风格库，按任务书直接合成提示词，由生成模型自由发挥。",
+                 "task_fit": "与已批准任务书一致。",
+                 "mechanism": "自由生成（不使用艺术风格库）",
+                 "risk": "无风格库约束，需在候选图中人工选择。"}
+                for plan in plans
+            ]
+        else:
+            style_selections = [
+                {"style_id": item.style.style_id, "extraction_key": item.extraction.extraction_key,
+                 "reason": item.reason, "task_fit": item.task_fit, "mechanism": item.mechanism, "risk": item.risk}
+                for item in selected_styles
+            ]
         render_plans = [
             {"slot": plan.slot, "style_id": plan.style_id, "extraction_key": plan.extraction_key,
              "prompt_version_id": plan.prompt_version_id, "prompt_text": plan.prompt_text,
@@ -1018,7 +1078,7 @@ class WorkflowRunner:
         version = {
             "version_id": f"skill-invocation-v{version_number}",
             "version": version_number,
-            "decision": "auto_approved" if self._style_release() == "auto" else "pending",
+            "decision": {"auto": "auto_approved", "off": "library_disabled"}.get(self._style_release(), "pending"),
             "skill_invocations": skill_invocations,
             "style_selections": style_selections,
             "render_plans": render_plans,
@@ -1049,10 +1109,14 @@ class WorkflowRunner:
         return self.policy.style_direction.release
 
     def _render_candidates(self, data: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
-        """Cross the paid five-render boundary only after the skill gate is released."""
+        """Cross the paid render boundary only after the skill gate is released."""
         spec = TaskSpecification.model_validate(data["task_specification"])
         plans = list(prepared.get("render_plans") or [])
-        if len(plans) != 5 or len({plan.get("style_id") for plan in plans}) != 5:
+        style_disabled = bool((prepared.get("skill_invocations") or {}).get("style_library", {}).get("disabled"))
+        expected_count = self.policy.candidate_concurrency if style_disabled else 5
+        if len(plans) != expected_count or len({plan.get("style_id") for plan in plans}) != expected_count:
+            if style_disabled:
+                raise ValueError(f"不使用艺术风格库时，候选方案必须为 candidate_concurrency 配置的 {expected_count} 个不同方案。")
             raise ValueError("技能调用结果必须包含五个不同且可生成的风格方案。")
         revision_hash = data.get("task_revision", {}).get("revision_hash")
         for plan in plans:

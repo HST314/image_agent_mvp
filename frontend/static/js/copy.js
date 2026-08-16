@@ -189,8 +189,8 @@ const POLICY_KEY_LABELS = {
 const POLICY_ENUM_LABELS = {
   'self_check.termination': { fix: '固定轮次', solo: '按质量判定' },
   'self_check.release': { auto: '自动放行', manual: '人工确认放行' },
-  'category_constraint.release': { auto: '自动放行', manual: '人工确认后继续' },
-  'style_direction.release': { auto: '自动放行', manual: '人工确认后继续' },
+  'category_constraint.release': { auto: '自动放行', manual: '人工确认后继续', off: '不使用数据库' },
+  'style_direction.release': { auto: '自动放行', manual: '人工确认后继续', off: '不使用数据库' },
   'skill_invocation.release': { auto: '后台自动继续', manual: '人工确认后继续' },
   response_format: { url: 'URL 链接', b64_json: 'Base64 数据' },
 };
@@ -204,8 +204,8 @@ const POLICY_KEY_HELP = {
   'self_check.max_rounds': '自检最多进行的轮数',
   'self_check.stop_early_on_pass': '自检达标即提前结束',
   'self_check.release': '自检通过后自动放行，或需人工确认后放行',
-  'category_constraint.release': '控制广告品类库匹配后是否需要人工确认',
-  'style_direction.release': '控制五种艺术风格筛选后是否需要人工确认',
+  'category_constraint.release': '控制广告品类库的使用方式；不使用数据库时跳过品类匹配与内容注入，由模型按需求自行提问',
+  'style_direction.release': '控制艺术风格库的使用方式；不使用数据库时按任务书直接生成候选图，数量为候选图并发数',
   'skill_invocation.release': '旧工程兼容字段；新工程使用品类约束与艺术风格两个独立开关',
   candidate_concurrency: '同时生成的候选图数量（1–5）',
   default_output_size: '如 1K / 2K / 4K，或具体像素（如 2560x1440）',
