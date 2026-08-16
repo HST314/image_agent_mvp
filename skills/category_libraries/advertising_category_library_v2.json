@@ -87,7 +87,19 @@
                   "材料性能要求",
                   "交期",
                   "交付范围"
-                ]
+                ],
+                "input_policies": {
+                  "观看距离或使用方式": {
+                    "strategy": "safe_default",
+                    "default_value": "按大厅常规观看距离（约3-10米）确定字号与视觉层级"
+                  },
+                  "客户预算口径": {
+                    "strategy": "out_of_scope"
+                  },
+                  "是否开具增值税专用发票": {
+                    "strategy": "out_of_scope"
+                  }
+                }
               },
               "production": {
                 "routes": [

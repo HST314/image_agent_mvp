@@ -19,6 +19,7 @@ from agent_core.unified_workflow import (DomainState, classify_error, freeze_del
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
 from interaction.confirmation_builder import (
     build_confirmation_doc,
+    revise_confirmation_markdown,
     specification_from_task,
     specification_to_markdown,
     specification_value,
@@ -57,6 +58,7 @@ class RunnerOptions:
     skill_action: Literal["approve", "retry"] | None = None
     category_action: Literal["approve", "retry"] | None = None
     clarification_action: Literal["apply_safe_defaults", "continue_after_budget_change"] | None = None
+    taskbook_action: Literal["apply_scope_boundaries", "regenerate"] | None = None
 
 
 class WorkflowRunner:
@@ -103,7 +105,7 @@ class WorkflowRunner:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
         phase = snapshot.get("phase")
         if phase in {"waiting_category_approval", "waiting_human_approval", "waiting_clarification",
-                     "waiting_clarification_review", "waiting_master_selection",
+                     "waiting_clarification_review", "waiting_taskbook_revision", "waiting_master_selection",
                      "waiting_skill_approval", "skill_approved_pending_render"}:
             return str(snapshot.get("state"))
         if phase in {"additional_rounds_approved", "waiting_reinspection"}:
@@ -184,6 +186,27 @@ class WorkflowRunner:
             "", "unknown", "pending", "待确认", "待补充", "未提供",
         }
 
+    @staticmethod
+    def _category_skill_with_current_policies(category: Any) -> Any:
+        """Validate the frozen category skill, backfilling未知项策略 for legacy payloads.
+
+        冻结约束保证问题集与阻塞判定不变；旧检查点的技能缺少显式策略契约时，
+        按当前品类库同类别记录回填策略元数据，使旧检查点直接可恢复。
+        """
+        from agent_core.models import CategorySkill
+        from skills.category_library_adapter import CategoryLibraryAdapter
+
+        skill = CategorySkill.model_validate(category)
+        legacy = any(question.handling_strategy is None and not question.blocks_generation
+                     for question in skill.required_questions)
+        if not legacy:
+            return skill
+        lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
+        try:
+            return CategoryLibraryAdapter(lib_path).refresh_skill_policies(skill)
+        except (OSError, json.JSONDecodeError):
+            return skill
+
     @classmethod
     def _apply_category_unknowns(cls, task: ImageTaskCard, skill: Any) -> ImageTaskCard:
         """Inject category requirements and reconcile answers to internal ids."""
@@ -231,11 +254,13 @@ class WorkflowRunner:
                            for alias in candidate_aliases if alias):
                         unknowns.pop(unknown_key, None)
                 continue
-            unknowns.setdefault(field, {
+            strategy = item.resolved_strategy()
+            entry = {
                 "question": item.question,
                 "label": item.question,
-                "blocking": bool(item.blocks_generation),
-                "has_safe_default": not bool(item.blocks_generation),
+                "blocking": strategy == "blocking",
+                "has_safe_default": strategy == "safe_default",
+                "handling_strategy": strategy,
                 "impact": "该品类的制作、交付或验收依赖此信息。",
                 "evidence": f"广告品类库：{skill.display_name or skill.category_id}",
                 "default_handling": item.default_handling,
@@ -243,7 +268,18 @@ class WorkflowRunner:
                     {"label": "现在补充（请注明）", "description": f"提供“{item.question}”的可执行内容"},
                     {"label": "采用明确默认（请注明）", "description": "写明经人工确认的保守默认值"},
                 ],
-            })
+            }
+            if strategy == "safe_default":
+                entry["default_value"] = item.default_value
+            if strategy == "out_of_scope":
+                entry["scope_note"] = item.default_handling or "本轮交付不包含该项，按范围边界处理。"
+            existing = unknowns.get(field)
+            if isinstance(existing, dict):
+                # 未解决的旧条目随品类约束刷新策略元数据（迁移“非阻塞即安全默认”
+                # 时代的检查点）；人工写入的额外键保留。
+                unknowns[field] = {**existing, **entry}
+            else:
+                unknowns.setdefault(field, entry)
         return task.model_copy(update={"known_facts": known_facts, "unknowns": unknowns})
 
     def _category_constraint(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
@@ -397,8 +433,7 @@ class WorkflowRunner:
         asked_fields = self._clarification_asked_fields(task, data)
         category = (data.get("category_constraint_current") or {}).get("skill")
         if category:
-            from agent_core.models import CategorySkill
-            task = self._apply_category_unknowns(task, CategorySkill.model_validate(category))
+            task = self._apply_category_unknowns(task, self._category_skill_with_current_policies(category))
         fingerprints = set(data.get("previous_fingerprints", []))
         legacy_count = int(data.get("clarification_asked_count", 0))
         already_asked = len(asked_fields) if asked_fields else legacy_count
@@ -522,11 +557,140 @@ class WorkflowRunner:
             "clarification_review_reason": None,
         }
 
+    def _apply_scope_boundaries(self, task: ImageTaskCard, fields: list[str]) -> tuple[ImageTaskCard, list[str]]:
+        """Resolve non-blocking revision fields as explicit defaults or scope boundaries."""
+
+        facts = dict(task.known_facts)
+        unknowns = dict(task.unknowns)
+        applied: list[str] = []
+        for field in fields:
+            details = unknowns.get(field)
+            if not isinstance(details, dict):
+                continue
+            if bool(details.get("blocking")) and not bool(details.get("has_safe_default")):
+                # 真阻塞项必须人工回答，边界动作不得跳过。
+                continue
+            strategy = details.get("handling_strategy")
+            if strategy == "safe_default" or (strategy is None and details.get("has_safe_default")):
+                value = str(details.get("default_value") or "").strip()
+                handling = str(details.get("default_handling") or "")
+                if not value and not any(marker in handling for marker in ("保持未确认", "不得", "禁止")):
+                    value = handling.strip()
+                if not value:
+                    continue
+                facts[field] = value
+            else:
+                facts[field] = str(
+                    details.get("scope_note") or details.get("default_handling")
+                    or "本轮交付不包含该项，按范围边界处理，不进入生成假设。"
+                )
+            unknowns.pop(field, None)
+            applied.append(field)
+        return task.model_copy(update={"known_facts": facts, "unknowns": unknowns}), applied
+
+    def _taskbook_revision_result(
+        self, task: ImageTaskCard, data: dict[str, Any], *, invalidated: dict[str, Any],
+        fields: list[str], reason: str, draft_markdown: str | None = None,
+    ) -> dict[str, Any]:
+        """Recoverable waiting state: the task book needs a human decision, not a dead end."""
+
+        card = generate_question_card(
+            task, previous_fingerprints=set(), already_asked=0, total_budget=3, max_auto_questions=3,
+        )
+        question_card = card if card.questions else None
+        canonical_fields = [resolve_unknown_field(task, field) or str(field) for field in fields]
+        scope_fields = [
+            field for field in canonical_fields
+            if isinstance(task.unknowns.get(field), dict)
+            and not (bool(task.unknowns[field].get("blocking"))
+                     and not bool(task.unknowns[field].get("has_safe_default")))
+        ]
+        actions: list[str] = []
+        if question_card is not None:
+            actions.append("answer_taskbook_revision")
+        if scope_fields:
+            actions.append("apply_taskbook_scope_boundaries")
+        actions.append("regenerate_taskbook")
+        if draft_markdown or data.get("task_markdown"):
+            actions.append("edit_taskbook")
+        return {
+            **invalidated,
+            "task_card": task.model_dump(mode="json"),
+            "question_card": (question_card.model_dump(mode="json") if question_card is not None
+                              else data.get("question_card")),
+            "waiting": True,
+            "phase": "waiting_taskbook_revision",
+            "taskbook_revision_fields": canonical_fields,
+            "taskbook_scope_boundary_fields": scope_fields,
+            "taskbook_recovery_actions": actions,
+            "taskbook_revision_reason": reason,
+            "taskbook_revision_draft": draft_markdown,
+        }
+
     def _confirmation(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         task = ImageTaskCard.model_validate(data["task_card"])
-        if self._blocking_unknowns(task):
-            raise ValueError("仍有阻塞未知项，禁止生成可批准任务书。")
-        if data.get("task_specification"):
+        category = (data.get("category_constraint_current") or {}).get("skill")
+        if category:
+            # 旧检查点的未知项在此迁移到显式策略契约（test21 可直接从检查点 4 重试）。
+            task = self._apply_category_unknowns(task, self._category_skill_with_current_policies(category))
+        invalidated: dict[str, Any] = {}
+        if data.get("phase") == "waiting_taskbook_revision":
+            action = options.get("taskbook_action")
+            answers = options.get("clarification_answers")
+            if answers:
+                card = QuestionCard.model_validate(data.get("question_card") or {"task_id": task.task_id, "questions": []})
+                record, resolved = self._answer_record(task, card, answers)
+                if resolved:
+                    task = task.model_copy(update={
+                        "known_facts": {**task.known_facts, **resolved},
+                        "unknowns": {key: value for key, value in task.unknowns.items()
+                                     if key not in resolved},
+                    })
+                    transcript = list(data.get("clarification_transcript", []))
+                    transcript.append({"question_card": card.model_dump(mode="json"),
+                                       "answer_record": record.model_dump(mode="json")})
+                    invalidated["clarification_transcript"] = transcript
+                    self.store.events.append("taskbook_revision_supplemented", fields=sorted(resolved))
+            elif action == "apply_scope_boundaries":
+                scope_fields = list(data.get("taskbook_scope_boundary_fields") or [])
+                task, applied = self._apply_scope_boundaries(task, scope_fields)
+                if not applied:
+                    raise ValueError("当前没有可应用的明确默认或范围边界。")
+                self.store.events.append("taskbook_scope_boundaries_applied", fields=applied)
+            elif action not in {None, "regenerate"}:
+                raise ValueError("当前任务书修订动作无效。")
+            if invalidated or action == "apply_scope_boundaries":
+                invalidated = {**invalidated, "task_specification": None, "task_markdown": None,
+                               "task_revision": None, "task_approval": None}
+                data = {**data, "task_specification": None, "task_markdown": None}
+        # 主准入只看结构化阻塞字段；正文关键词扫描降级为一致性检查。
+        blockers = self._blocking_unknowns(task)
+        if blockers:
+            return self._taskbook_revision_result(
+                task, data, invalidated=invalidated, fields=blockers,
+                reason="仍有阻塞未知项需要人工处理，不能直接生成可批准任务书。",
+            )
+        spec: TaskSpecification | None = None
+        markdown: str
+        if options.get("edited_markdown") is not None:
+            base = (TaskSpecification.model_validate(data["task_specification"])
+                    if data.get("task_specification") else specification_from_task(task))
+            spec = update_specification_from_markdown(base, options["edited_markdown"])
+            markdown = specification_to_markdown(spec)
+            blocking_facts = [fact.label for fact in spec.facts if fact.status == "blocking"]
+            if blocking_facts:
+                return self._taskbook_revision_result(
+                    task, data, invalidated=invalidated, fields=blocking_facts,
+                    reason="任务书仍包含需要你决定的阻塞条目；请补充这些条目、改写为明确结论或重新生成。",
+                    draft_markdown=options["edited_markdown"],
+                )
+            if self._markdown_has_unresolved_items(markdown):
+                return self._taskbook_revision_result(
+                    task, data, invalidated=invalidated, fields=[],
+                    reason="任务书正文仍包含待确认或待补充等未闭环表述；请直接编辑改写，或重新生成任务书。",
+                    draft_markdown=options["edited_markdown"],
+                )
+        elif data.get("task_specification"):
             spec = TaskSpecification.model_validate(data["task_specification"])
             # The first pass is authored by the reasoning model.  Re-entering the
             # approval gate must preserve that exact document instead of silently
@@ -545,22 +709,39 @@ class WorkflowRunner:
                 messages=[{"role":"user","content":"基于任务卡、来源材料和完整问答，重新理解并撰写创作任务书。"}],
                 variables={"task":task.model_dump(mode="json"), "clarification_transcript":transcript},
                 template_id="confirmation_build", template_version="3", input_refs=[r.ref_id for r in task.source_refs])
-            if any(u.risk_level.value == "blocking" for u in doc.default_handling_for_unknowns):
-                raise ValueError("推理模型生成的任务书仍包含阻塞待决项，禁止进入人工批准。")
-            if self._markdown_has_unresolved_items(doc.markdown_body):
-                raise ValueError("任务书正文仍包含待确认或待补充事项，禁止进入人工批准。")
-            facts = [SpecificationFact(label=f.field, value=str(f.value), provenance=f.source_ref, status="confirmed") for f in doc.confirmed_facts]
-            facts.extend(SpecificationFact(label=u.field, value=u.handling, provenance="reasoning_llm",
-                status="blocking" if u.risk_level.value == "blocking" else "tentative") for u in doc.default_handling_for_unknowns)
-            spec = TaskSpecification(task_id=task.task_id, facts=facts).finalized()
+            blocking_in_doc = [str(u.field) for u in doc.default_handling_for_unknowns
+                               if u.risk_level.value == "blocking"]
+            if blocking_in_doc:
+                return self._taskbook_revision_result(
+                    task, data, invalidated=invalidated, fields=blocking_in_doc,
+                    reason="推理模型生成的任务书仍包含阻塞待决项，需要人工补充或明确处理方式。",
+                    draft_markdown=doc.markdown_body,
+                )
             markdown = doc.markdown_body
-        if options.get("edited_markdown") is not None:
-            spec = update_specification_from_markdown(spec, options["edited_markdown"])
-            markdown = specification_to_markdown(spec)
-        if self._markdown_has_unresolved_items(markdown):
-            raise ValueError("任务书正文仍包含待确认或待补充事项，禁止批准。")
+            if self._markdown_has_unresolved_items(markdown):
+                # 一致性检查：一次定向修复；仍矛盾则回退确定性任务书，不终止工程。
+                repaired = self.gateway.call("confirmation_build", ModelRole.REASONING_LLM,
+                    lambda route: revise_confirmation_markdown(task, markdown, self._text(route)),
+                    messages=[{"role":"user","content":"将任务书正文中的未闭环表述改写为明确执行基线或本轮范围边界。"}],
+                    variables={"task":task.model_dump(mode="json")},
+                    template_id="confirmation_build_repair", template_version="1",
+                    input_refs=[r.ref_id for r in task.source_refs])
+                if self._markdown_has_unresolved_items(repaired):
+                    self.store.events.append("taskbook_auto_repaired", mode="deterministic_fallback")
+                    spec = specification_from_task(task)
+                    markdown = specification_to_markdown(spec)
+                else:
+                    self.store.events.append("taskbook_auto_repaired", mode="model_repair")
+                    markdown = repaired
+            if spec is None:
+                facts = [SpecificationFact(label=f.field, value=str(f.value), provenance=f.source_ref, status="confirmed") for f in doc.confirmed_facts]
+                facts.extend(SpecificationFact(label=u.field, value=u.handling, provenance="reasoning_llm",
+                    status="blocking" if u.risk_level.value == "blocking" else "tentative") for u in doc.default_handling_for_unknowns)
+                spec = TaskSpecification(task_id=task.task_id, facts=facts).finalized()
+        assert spec is not None
         history = list(data.get("task_revision_history", []))
-        raw_task = json.dumps(data.get("task_card"), ensure_ascii=False, sort_keys=True)
+        # 指纹基于迁移后的有效任务卡（本函数返回值），保证重进确认门时修订哈希稳定。
+        raw_task = json.dumps(task.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
         actor = options.get("actor") or "manual-user"
         revisions = [TaskRevision.model_validate(item) for item in history]
         candidate = revise_task(revisions, raw_task, markdown, actor)
@@ -572,12 +753,17 @@ class WorkflowRunner:
             self.store.events.append("task_revision_created", revision=revision)
         revision_hash = revision["revision_hash"]
         approved = bool(options.get("task_approved") and options.get("actor"))
-        return {"task_specification": spec.model_dump(mode="json"), "task_markdown": markdown,
+        return {**invalidated,
+                "task_card": task.model_dump(mode="json"),
+                "task_specification": spec.model_dump(mode="json"), "task_markdown": markdown,
                 "readiness": {"ready": True, "blocking_items": [],
                               "category_constraint_hash": (data.get("category_constraint_current") or {}).get("constraint_hash")},
                 "task_revision": revision,
                 "task_revision_history": history,
                 "task_approval": ({"revision_hash": revision_hash, "actor": options["actor"]} if approved else None),
+                "taskbook_revision_fields": None, "taskbook_scope_boundary_fields": None,
+                "taskbook_recovery_actions": None, "taskbook_revision_reason": None,
+                "taskbook_revision_draft": None,
                 "waiting": not approved, "phase": "task_approved" if approved else "waiting_human_approval"}
 
     @staticmethod

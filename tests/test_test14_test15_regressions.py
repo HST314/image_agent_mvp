@@ -90,7 +90,8 @@ def test_auto_category_checkpoint_is_readable_while_model_is_still_thinking(tmp_
     assert outcome["result"]["phase"] == "waiting_clarification"
 
 
-def test_taskbook_markdown_pending_items_conflict_with_empty_structure(tmp_path: Path) -> None:
+def test_taskbook_markdown_pending_items_trigger_directed_repair(tmp_path: Path) -> None:
+    """模型正文含未闭环表述时自动定向修复一次，不再终止工程。"""
     workflow, _ = runner(tmp_path, offline=False)
 
     class Doc:
@@ -98,12 +99,48 @@ def test_taskbook_markdown_pending_items_conflict_with_empty_structure(tmp_path:
         default_handling_for_unknowns = []
         markdown_body = "# 创作任务书\n\n## 待决事项\n\n- 成品尺寸待确认\n"
 
-    workflow.gateway.call = lambda *_args, **_kwargs: Doc()
-    with pytest.raises(ValueError, match="正文仍包含"):
-        workflow.run({"state": "intake_clarify", "phase": "ready_to_draft",
-                      "task_card": {**cultural_wall_task(), "unknowns": {}},
-                      "clarification_transcript": []}, RunnerOptions(),
-                     only_state="confirmation_build")
+    def call(_state, _role, _invoke, **kwargs):
+        if kwargs.get("template_id") == "confirmation_build_repair":
+            return "# 创作任务书\n\n## 交付规格\n\n- 成品尺寸按 5m × 8m 执行基线制作\n"
+        return Doc()
+
+    workflow.gateway.call = call
+    result = workflow.run({"state": "intake_clarify", "phase": "ready_to_draft",
+                           "task_card": {**cultural_wall_task(), "unknowns": {}},
+                           "clarification_transcript": []}, RunnerOptions(),
+                          only_state="confirmation_build")
+
+    assert result["phase"] == "waiting_human_approval"
+    assert result["task_markdown"].startswith("# 创作任务书")
+    assert "待确认" not in result["task_markdown"]
+
+
+def test_taskbook_markdown_unresolved_after_repair_falls_back_to_deterministic(tmp_path: Path) -> None:
+    """修复仍矛盾时回退到确定性任务书，工程继续而不是失败。"""
+    workflow, store = runner(tmp_path, offline=False)
+
+    class Doc:
+        confirmed_facts = []
+        default_handling_for_unknowns = []
+        markdown_body = "# 创作任务书\n\n## 待决事项\n\n- 成品尺寸待确认\n"
+
+    def call(_state, _role, _invoke, **kwargs):
+        if kwargs.get("template_id") == "confirmation_build_repair":
+            return "- 成品尺寸仍待确认\n"
+        return Doc()
+
+    workflow.gateway.call = call
+    result = workflow.run({"state": "intake_clarify", "phase": "ready_to_draft",
+                           "task_card": {**cultural_wall_task(), "unknowns": {}},
+                           "clarification_transcript": []}, RunnerOptions(),
+                          only_state="confirmation_build")
+
+    assert result["phase"] == "waiting_human_approval"
+    assert "待确认" not in result["task_markdown"]
+    assert not [fact for fact in result["task_specification"]["facts"] if fact["status"] == "blocking"]
+    events = [line for line in (store.root / "events" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+              if "taskbook_auto_repaired" in line]
+    assert events and "deterministic_fallback" in events[-1]
 
 
 def test_rerun_clarification_restores_original_task_boundary(tmp_path: Path) -> None:

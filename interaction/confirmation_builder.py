@@ -83,10 +83,31 @@ def _question_handling(question_card: QuestionCard, answer_record: QuestionAnswe
 
 
 def _unknown_handling(task: ImageTaskCard) -> list[UnknownHandling]:
-    """Convert pre-existing unknowns into generic handling records."""
+    """Convert pre-existing unknowns into strategy-aware handling records."""
 
     records: list[UnknownHandling] = []
     for field, value in task.unknowns.items():
+        strategy = value.get("handling_strategy") if isinstance(value, dict) else None
+        if strategy == "safe_default" and isinstance(value, dict):
+            default = str(value.get("default_value") or "").strip()
+            if default:
+                records.append(
+                    UnknownHandling(
+                        field=field,
+                        handling=f"采用明确默认值作为执行基线：{default}（任务书确认前仍可修改）。",
+                        risk_level=RiskLevel.LOW,
+                    )
+                )
+                continue
+        if strategy == "out_of_scope" and isinstance(value, dict):
+            records.append(
+                UnknownHandling(
+                    field=field,
+                    handling=str(value.get("scope_note") or "本轮交付不包含该项，按范围边界处理，不进入生成假设。"),
+                    risk_level=RiskLevel.LOW,
+                )
+            )
+            continue
         risk_value = value.get("risk_level") if isinstance(value, dict) else None
         try:
             risk_level = RiskLevel(str(risk_value).lower()) if risk_value else RiskLevel.MEDIUM
@@ -178,6 +199,28 @@ def _build_with_client(
     return doc
 
 
+def _unknown_strategy_lines(task: ImageTaskCard) -> list[str]:
+    """Deterministic per-field handling instructions injected into the prompt."""
+
+    lines: list[str] = []
+    for field, value in task.unknowns.items():
+        if not isinstance(value, dict):
+            continue
+        label = str(value.get("label") or value.get("question") or field)
+        strategy = value.get("handling_strategy")
+        if strategy == "safe_default" and str(value.get("default_value") or "").strip():
+            lines.append(
+                f"- {label}：采用明确默认值“{str(value['default_value']).strip()}”作为执行基线写入任务书，标注为默认处理；不得写成待决事项。"
+            )
+        elif strategy == "out_of_scope":
+            lines.append(
+                f"- {label}：本轮交付范围不包含该项，任务书写为范围边界（例如“本轮不包含{label}”）；不得写成待决事项，不进入生成假设。"
+            )
+        elif bool(value.get("blocking")) and not bool(value.get("has_safe_default")):
+            lines.append(f"- {label}：阻塞项，保持人工处理，不得自行补全。")
+    return lines
+
+
 def _build_confirmation_prompt(
     task: ImageTaskCard,
     question_card: QuestionCard,
@@ -185,6 +228,12 @@ def _build_confirmation_prompt(
 ) -> str:
     """Build a generic JSON-only prompt for confirmation document drafting."""
 
+    strategy_lines = _unknown_strategy_lines(task)
+    strategy_block = (
+        "未知项处理策略（必须逐项遵守）：\n" + "\n".join(strategy_lines) + "\n"
+        if strategy_lines
+        else ""
+    )
     return (
         "你正在为通用图片任务引擎起草 TaskConfirmationDoc。\n"
         "只能使用给定任务卡、澄清问题和用户回答，不得增加任何具体业务品类假设。\n"
@@ -200,11 +249,48 @@ def _build_confirmation_prompt(
         "}\n"
         "规则：sign_status 保持省略或 pending_sign；confirmed_facts 必须能追溯到 source_ref；"
         "用户跳过的问题必须采用保守的未确认处理；summary、handling、human_annotations、markdown_body 必须使用中文；"
-        "markdown_body 必须综合目标、受众、核心内容、视觉方向、交付规格、硬约束、禁止项和待决事项重新撰写，不得把输入字段逐项拼接。\n"
+        "markdown_body 必须综合目标、受众、核心内容、视觉方向、交付规格、硬约束和禁止项重新撰写，不得把输入字段逐项拼接；"
+        "markdown_body 与 default_handling_for_unknowns 中严禁出现“待确认、待补充、未提供、需后续、尚未明确”等未闭环表述；"
+        "非阻塞未知项只能按下方策略写为执行基线或本轮范围边界，不得写成待决事项；"
+        "不得把任何非阻塞未知项的 risk_level 标为 blocking。\n"
+        f"{strategy_block}"
         f"任务卡 JSON: {json.dumps(task.model_dump(mode='json'), ensure_ascii=False)}\n"
         f"问题卡 JSON: {json.dumps(question_card.model_dump(mode='json'), ensure_ascii=False)}\n"
         f"回答记录 JSON: {json.dumps(answer_record.model_dump(mode='json'), ensure_ascii=False)}"
     )
+
+
+def revise_confirmation_markdown(
+    task: ImageTaskCard,
+    markdown: str,
+    client: TextModelClient,
+) -> str:
+    """One directed repair pass rewriting open-ended task-book prose."""
+
+    strategy_lines = _unknown_strategy_lines(task)
+    strategy_block = (
+        "未知项处理策略（必须逐项遵守）：\n" + "\n".join(strategy_lines) + "\n"
+        if strategy_lines
+        else ""
+    )
+    prompt = (
+        "下面的创作任务书正文含有未闭环的开放性表述，请重写为一份完整、可立即执行的中文创作任务书。\n"
+        "要求：\n"
+        "- 严禁出现“待确认、待补充、未提供、需后续、尚未明确”等未闭环表述；\n"
+        "- 非阻塞未知项按给定策略写成明确执行基线（给出采用的默认值）或本轮范围边界（写明“本轮不包含……”）；\n"
+        "- 保留原任务书的结构与已确认事实，不得新增任务卡中不存在的事实；\n"
+        "- 只输出重写后的 Markdown 正文，不要输出任何解释。\n"
+        f"{strategy_block}"
+        f"任务卡 JSON: {json.dumps(task.model_dump(mode='json'), ensure_ascii=False)}\n"
+        f"原任务书正文：\n{markdown}"
+    )
+    text = client.complete(prompt).strip()
+    if text.startswith("```"):
+        lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
+        text = "\n".join(lines).strip()
+    if not text:
+        raise ValueError("任务书修复模型没有返回正文。")
+    return text
 
 
 def _extract_json_object(text: str) -> str:
@@ -252,6 +338,26 @@ def specification_from_task(task: ImageTaskCard) -> TaskSpecification:
     )
     for field, value in task.unknowns.items():
         blocking = bool(isinstance(value, dict) and value.get("blocking") and not value.get("has_safe_default"))
+        strategy = value.get("handling_strategy") if isinstance(value, dict) else None
+        if not blocking and strategy == "safe_default":
+            default = str(value.get("default_value") or "").strip()
+            if default:
+                facts.append(SpecificationFact(
+                    label=field,
+                    value=f"采用明确默认值作为执行基线：{default}（确认前仍可修改）",
+                    provenance="需求澄清",
+                    status="tentative",
+                ))
+                continue
+        if not blocking and strategy == "out_of_scope":
+            note = str(value.get("scope_note") or "").strip() or "本轮交付不包含该项，按范围边界处理，不进入生成假设。"
+            facts.append(SpecificationFact(
+                label=field,
+                value=note,
+                provenance="需求澄清",
+                status="tentative",
+            ))
+            continue
         facts.append(SpecificationFact(
             label=field,
             value=_human_value(value),
@@ -383,6 +489,8 @@ def update_specification_from_markdown(spec: TaskSpecification, markdown: str) -
         "暂定处理": "tentative",
         "暂定处理（请核对）": "tentative",
         "仍需你决定": "blocking",
+        # 操作说明区之后的追加内容视为人工敲定的结论，而非阻塞待决项。
+        "修改方式": "confirmed",
     }
     status = "confirmed"; parsed: list[SpecificationFact] = []
     for raw in markdown.splitlines():

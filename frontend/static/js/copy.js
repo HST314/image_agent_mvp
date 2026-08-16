@@ -28,6 +28,7 @@ const PHASE_LABELS = {
   ready_for_quality_inspection: '等待重新质检',
   waiting_clarification: '等待澄清回答',
   waiting_clarification_review: '澄清预算用尽，等待人工复核',
+  waiting_taskbook_revision: '任务书需要人工修订',
   waiting_human_approval: '等待人工确认',
   waiting_skill_approval: '等待技能调用人工确认',
   skill_approved_pending_render: '技能调用已放行，等待生成主图',

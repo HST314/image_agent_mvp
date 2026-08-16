@@ -11,6 +11,8 @@ const BACKEND_CAPABILITIES = [
   'retry', 'approve_category_constraint', 'retry_category_constraint',
   'answer_clarification', 'apply_clarification_safe_defaults',
   'adjust_clarification_budget', 'continue_clarification_after_budget_change',
+  'answer_taskbook_revision', 'apply_taskbook_scope_boundaries',
+  'regenerate_taskbook', 'edit_taskbook',
   'select_master', 'review_calibration',
   'enter_human_tune',
   'approve_skill_invocations', 'retry_skill_invocations', 'resume_quality_inspection',
@@ -56,6 +58,19 @@ test('waiting_clarification_review → 可恢复的 clarify 舞台', () => {
 test('confirmation_build + waiting_human_approval → taskbook 舞台', () => {
   const v = view({ state: 'confirmation_build', phase: 'waiting_human_approval' });
   assert.equal(deriveView(v).stage, 'taskbook');
+});
+
+test('waiting_taskbook_revision → 可恢复的任务书修订舞台', () => {
+  const v = view(
+    { state: 'confirmation_build', phase: 'waiting_taskbook_revision' },
+    {},
+    ['answer_taskbook_revision', 'apply_taskbook_scope_boundaries', 'regenerate_taskbook', 'edit_taskbook'],
+  );
+  const result = deriveView(v);
+  assert.equal(result.stage, 'taskbook');
+  assert.equal(result.taskbookRevision, true);
+  assert.equal(result.waiting, true);
+  assert.deepEqual(result.actions, v.capabilities);
 });
 
 test('waiting_master_selection → gallery 舞台', () => {

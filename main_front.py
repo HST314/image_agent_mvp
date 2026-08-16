@@ -103,6 +103,7 @@ class AdvanceRequest(StrictRequest):
     skill_action: Literal["approve", "retry"] | None = None
     category_action: Literal["approve", "retry"] | None = None
     clarification_action: Literal["apply_safe_defaults", "continue_after_budget_change"] | None = None
+    taskbook_action: Literal["apply_scope_boundaries", "regenerate"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=128)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
@@ -253,6 +254,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         skill_action=body.skill_action,
         category_action=body.category_action,
         clarification_action=body.clarification_action,
+        taskbook_action=body.taskbook_action,
     )
 
 
@@ -303,6 +305,10 @@ def _job_operation(body: AdvanceRequest) -> str:
         return "应用澄清安全默认值"
     if body.clarification_action == "continue_after_budget_change":
         return "按新预算继续澄清"
+    if body.taskbook_action == "apply_scope_boundaries":
+        return "应用任务书明确默认或范围边界"
+    if body.taskbook_action == "regenerate":
+        return "重新生成任务书"
     if body.skill_action == "retry":
         return "重新调用两库"
     if body.skill_action == "approve":
@@ -343,6 +349,17 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
             actions.append("apply_clarification_safe_defaults")
         if int(snapshot.get("clarification_remaining_budget") or 0) > 0:
             actions.append("continue_clarification_after_budget_change")
+        return actions
+    if phase == "waiting_taskbook_revision":
+        # 任务书修订是可恢复等待态：动作清单与后端 taskbook_recovery_actions 对齐。
+        actions = []
+        if (snapshot.get("question_card") or {}).get("questions"):
+            actions.append("answer_taskbook_revision")
+        if snapshot.get("taskbook_scope_boundary_fields"):
+            actions.append("apply_taskbook_scope_boundaries")
+        actions.append("regenerate_taskbook")
+        if snapshot.get("taskbook_revision_draft") or snapshot.get("task_markdown"):
+            actions.append("edit_taskbook")
         return actions
     if phase == "waiting_skill_approval":
         return ["approve_skill_invocations", "retry_skill_invocations"]

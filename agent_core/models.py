@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def new_id(prefix: str) -> str:
@@ -312,6 +312,40 @@ class RequiredQuestion(StrictBaseModel):
     question: str
     blocks_generation: bool
     default_handling: str | None = None
+    # 未知项处理策略三态：blocking（不回答不得生成）、safe_default（存在可执行
+    # 默认值，任务书写为执行基线）、out_of_scope（本轮范围边界，不进入生成假设）。
+    # "非阻塞"不再等同"有安全默认"；未显式声明策略的非阻塞项一律按 out_of_scope。
+    handling_strategy: Literal["blocking", "safe_default", "out_of_scope"] | None = None
+    default_value: str | None = None
+
+    @model_validator(mode="after")
+    def handling_strategy_is_consistent(self) -> "RequiredQuestion":
+        if self.blocks_generation and self.handling_strategy not in {None, "blocking"}:
+            raise ValueError(
+                f"品类配置错误：{self.field} 标记为阻塞，处理策略必须是 blocking。"
+            )
+        if self.handling_strategy == "blocking" and not self.blocks_generation:
+            raise ValueError(
+                f"品类配置错误：{self.field} 声明 blocking 策略时必须同时 blocks_generation。"
+            )
+        if self.handling_strategy == "safe_default":
+            if not str(self.default_value or "").strip():
+                raise ValueError(
+                    f"品类配置错误：{self.field} 声明 safe_default 策略必须提供可执行的 default_value。"
+                )
+            handling = str(self.default_handling or "")
+            if any(marker in handling for marker in ("保持未确认", "不得", "禁止")):
+                raise ValueError(
+                    f"品类配置错误：{self.field} 声明 safe_default 却又要求保持未确认/不得补全。"
+                )
+        return self
+
+    def resolved_strategy(self) -> str:
+        """Normalize the effective strategy; legacy entries never imply a default."""
+
+        if self.blocks_generation:
+            return "blocking"
+        return self.handling_strategy or "out_of_scope"
 
 
 class PromptInjection(StrictBaseModel):

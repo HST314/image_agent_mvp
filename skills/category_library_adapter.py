@@ -57,6 +57,34 @@ class CategoryLibraryAdapter:
     def _record_category_id(record: dict[str, Any]) -> str:
         return f"library_{record.get('id', 'unknown')}"
 
+    def refresh_skill_policies(self, skill: CategorySkill) -> CategorySkill:
+        """Backfill未知项策略元数据 onto a legacy-frozen skill from the current library.
+
+        冻结的品类约束保持问题集与阻塞判定不变；仅按当前库中同类别记录的
+        input_policies 刷新每个问题的 handling_strategy / default_value /
+        default_handling。库中不存在该类别时原样返回。
+        """
+
+        record = next(
+            (item for item in self.records if self._record_category_id(item) == skill.category_id),
+            None,
+        )
+        if record is None:
+            return skill
+        current_by_question = {q.question: q for q in self._to_skill(record).required_questions}
+        questions = []
+        for question in skill.required_questions:
+            current = current_by_question.get(question.question)
+            if current is None or current.handling_strategy is None:
+                questions.append(question)
+                continue
+            questions.append(question.model_copy(update={
+                "handling_strategy": current.handling_strategy,
+                "default_value": current.default_value,
+                "default_handling": current.default_handling,
+            }))
+        return skill.model_copy(update={"required_questions": questions})
+
     @staticmethod
     def _iter_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Flatten supported hierarchy records without assuming business terms."""
@@ -116,6 +144,8 @@ class CategoryLibraryAdapter:
         definition = record.get("product_definition", {}) if isinstance(record.get("product_definition"), dict) else {}
 
         blocking_inputs = [str(value) for value in project_inputs.get("blocking_if_missing", [])]
+        raw_policies = project_inputs.get("input_policies", {})
+        input_policies = raw_policies if isinstance(raw_policies, dict) else {}
 
         def blocks(item: Any) -> bool:
             text = str(item)
@@ -128,15 +158,31 @@ class CategoryLibraryAdapter:
                     return True
             return False
 
-        required_questions = [
-            RequiredQuestion(
-                field=f"library_required_input_{index}",
-                question=str(item),
-                blocks_generation=blocks(item),
-                default_handling="缺失时保持未确认，不得在生成阶段自行补全。",
+        def policy_for(item: Any) -> dict[str, Any]:
+            policy = input_policies.get(str(item))
+            return dict(policy) if isinstance(policy, dict) else {}
+
+        def handling_for(item: Any, *, is_blocking: bool, policy: dict[str, Any]) -> str:
+            if is_blocking:
+                return "缺失时保持未确认，不得在生成阶段自行补全。"
+            if policy.get("strategy") == "safe_default":
+                return str(policy.get("default_handling") or "采用明确默认值作为执行基线，任务书确认前仍可修改。")
+            return "本轮交付不包含该项，任务书按范围边界说明，不进入生成假设。"
+
+        required_questions = []
+        for index, item in enumerate(project_inputs.get("required", [])[:8], start=1):
+            policy = policy_for(item)
+            is_blocking = blocks(item)
+            required_questions.append(
+                RequiredQuestion(
+                    field=f"library_required_input_{index}",
+                    question=str(item),
+                    blocks_generation=is_blocking,
+                    default_handling=handling_for(item, is_blocking=is_blocking, policy=policy),
+                    handling_strategy=None if is_blocking else policy.get("strategy"),
+                    default_value=policy.get("default_value"),
+                )
             )
-            for index, item in enumerate(project_inputs.get("required", [])[:8], start=1)
-        ]
         visual_rules = _string_list(production.get("route_selection_rules"))
         constraints = _string_list(project_inputs.get("required")) + _string_list(
             production.get("materials", {}).get("required_variant_fields")

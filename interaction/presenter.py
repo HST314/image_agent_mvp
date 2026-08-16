@@ -53,5 +53,5 @@ def confirmation_markdown(doc: TaskConfirmationDoc) -> str:
     facts = "\n".join(f"- {label_for(f.field)}：{f.value}" for f in doc.confirmed_facts)
     tentative = "\n".join(f"- 当前暂按{u.handling}处理；如需修改请直接改写。" for u in doc.default_handling_for_unknowns if u.risk_level.value != "blocking") or "- 当前没有暂定项"
     blocking = "\n".join(f"- {label_for(u.field)}：{u.handling}" for u in doc.default_handling_for_unknowns if u.risk_level.value == "blocking") or "- 当前没有阻塞项"
-    forbidden = "\n".join(f"- {item}" for item in doc.forbidden_items) or "- 未提供额外禁止项"
+    forbidden = "\n".join(f"- {item}" for item in doc.forbidden_items) or "- 无额外禁止项"
     return f"# 创作任务书\n\n> {doc.summary or '请确认本次创作目标和交付要求。'}\n\n## 本次目标\n{facts}\n\n## 画面重点\n- 以已确认的主体、场景和视觉重点为准\n\n## 交付要求\n- 生成 5 个差异化候选方向，并从中选择 1 张继续完善\n\n## 必须遵守\n{forbidden}\n\n## 暂定处理（可直接编辑）\n{tentative}\n\n## 仍需你决定\n{blocking}\n\n## 修改方式\n可直接编辑任意段落，或用自然语言说明需要变更的内容。\n"
