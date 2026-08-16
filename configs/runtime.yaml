@@ -1,21 +1,25 @@
 max_auto_questions: 3
 stream_model_output: false
 clarification_total_budget: 10
+category_constraint:
+  release: manual
+style_direction:
+  release: manual
 skill_invocation:
   release: auto
 self_check:
-  termination: solo
+  termination: fix
   fixed_rounds: 2
   max_rounds: 4
   stop_early_on_pass: false
-  release: auto
+  release: manual
 max_render_retries: 0
 candidate_concurrency: 5
-model_timeout_seconds: 180
-image_api_base_url: ""
-default_output_size: "2560x1440"
-response_format: "url"
+model_timeout_seconds: 180.0
+image_api_base_url: ''
+default_output_size: 2560x1440
+response_format: url
 watermark: false
 offline_mode: false
 allow_skill_degradation: false
-style_library_root: "agent-library"
+style_library_root: agent-library
