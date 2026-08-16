@@ -8,7 +8,7 @@ import { state, patch, getActor } from './store.js';
 import * as api from './api.js';
 import { viewOperations, createJobRunner, isTerminalJobStatus } from './jobrunner.js';
 import { renderMarkdownInto } from './markdown.js';
-import { deriveView, skillApprovalActorState, stateLabel } from './states.js';
+import { deriveView, skillApprovalActorState, stateLabel, rerunBoundary, CAPABILITY_ACTIONS, EMPTY_PAYLOAD_CAPABILITIES } from './states.js';
 import { createTimelineFollower } from './stepstatus.js';
 import { renderClarify } from './clarify.js';
 import { renderTaskbook } from './taskbook.js';
@@ -19,6 +19,7 @@ import { markActiveTab, setTopContext } from './topnav.js';
 import { errorText, terminationReasonLabel } from './copy.js';
 import { renderProgressSteps, renderQualityHistory, renderSkillInvocations } from './snapshots.js';
 import { restoreWorkspaceState } from './workspace_state.js';
+import { openBranchDialog } from './branches.js';
 
 const MANUAL_ACTIONS = [
   { id: 'execute', label: '执行建议', primary: true },
@@ -34,7 +35,7 @@ const MANUAL_ACTIONS = [
 /** 离开工程视图（回首页等）时调用：中止仍在进行中的操作与 job 跟踪循环。 */
 export function stopJobTracking() { viewOperations.leave(); }
 
-export function renderProject(view, { autostartBootstrap = false } = {}) {
+export function renderProject(view, { autostartBootstrap = false, autostartRerun = false } = {}) {
   viewOperations.begin();
   // 后台对账重渲染前关闭旧的历史快照弹窗；同检查点的弹窗会由 UI 状态恢复
   // 重新打开，避免 body 上叠出两个 modal。
@@ -50,6 +51,13 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
   const derived = deriveView(view);
 
   setTopContext({ projectId, branch: manifest.current_branch });
+  /* 顶栏分支徽章即分支界面入口（每次渲染重绑，避免闭包捕获旧工程）。 */
+  const branchButton = $('#topnav-branch');
+  if (branchButton) {
+    branchButton.onclick = () => {
+      openBranchDialog({ projectId, onSwitched: () => openProject(projectId) });
+    };
+  }
 
   const actor = getActor();
 
@@ -80,7 +88,7 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
   const stagePanel = sectionPanel(stageTitle(derived), stageSubtitle(derived));
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
-  const refresh = (next) => { if (next) renderProject(next); else openProject(projectId); };
+  const refresh = (next, opts) => { if (next) renderProject(next, opts); else openProject(projectId); };
   let jobRunner;
   const showIntermediateView = (liveView) => {
     if (liveView?.snapshot?.state !== 'category_constraint') return;
@@ -116,6 +124,17 @@ export function renderProject(view, { autostartBootstrap = false } = {}) {
      * 幂等键走 M1 机制（intent=bootstrap，指纹=空检查点+空负载），重复点击
      * 或刷新重进不会重复执行（后端 JOBS.submit 按工程+键去重）。 */
     jobRunner.start({}, { intent: 'bootstrap', operation: '初始化工程' });
+  } else if (autostartRerun && !manifest.failed_step) {
+    /* 回退（重跑建分支）后立即自动启动该节点重跑：进度卡显示实时状态、主区
+     * 显示该节点控件骨架，任务结束自动刷新出真实内容。skeleton 为 null 的边界
+     * （最终确认）落到节点真实界面，由人工动作继续，不自动产生调用。 */
+    const boundary = rerunBoundary(view);
+    if (boundary?.runnable && boundary.skeleton) {
+      jobRunner.start({}, {
+        intent: `rerun-${manifest.current_branch}`,
+        operation: `重跑${stateLabel(snapshot.state)}`,
+      });
+    }
   }
   restoreWorkspaceState(content, view);
 }
@@ -149,12 +168,17 @@ function renderStage(panel, view, derived, ctx) {
   const snapshot = view.snapshot || {};
   const { projectId, actor, refresh, jobRunner } = ctx;
   const stage = derived.stage;
+  const boundary = rerunBoundary(view);
 
   if (stage === 'category') {
     renderCategoryConstraint(panel, view, ctx);
     return;
   }
   if (stage === 'clarify') {
+    if (boundary?.skeleton === 'clarify') {
+      renderStageSkeleton(panel, 'clarify', boundary, jobRunner);
+      return;
+    }
     renderClarify(panel, view, {
       projectId,
       jobRunner,
@@ -163,6 +187,10 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'taskbook') {
+    if (boundary?.skeleton === 'taskbook') {
+      renderStageSkeleton(panel, 'taskbook', boundary, jobRunner);
+      return;
+    }
     renderTaskbook(panel, view, { projectId, actor, onChanged: refresh, jobRunner });
     return;
   }
@@ -171,16 +199,34 @@ function renderStage(panel, view, derived, ctx) {
     return;
   }
   if (stage === 'style_processing') {
-    // 已落盘的艺术风格结果属于当前阶段上下文；状态页往返或刷新时应继续
-    // 展示，而不是退化为只有“准备中”的空占位。
-    if (snapshot.skill_invocations || snapshot.skill_invocation_current || snapshot.style_selections) {
-      renderSkillInvocations(panel, projectId, snapshot, { mode: 'style' });
+    // 已落盘的艺术风格结果属于当前阶段上下文；状态页往返或刷新时应继续展示。
+    const hasStyleData = Boolean(snapshot.skill_invocations || snapshot.skill_invocation_current
+      || (Array.isArray(snapshot.style_selections) && snapshot.style_selections.length));
+    if (hasStyleData) renderSkillInvocations(panel, projectId, snapshot, { mode: 'style' });
+    if (boundary?.skeleton === 'style' && !hasStyleData) {
+      // 重跑分支头：五个风格位骨架；任务在途时骨架 busy，完成自动刷新为真实内容。
+      renderStageSkeleton(panel, 'style', boundary, jobRunner);
+      return;
     }
-    renderRecoveryStage(panel, derived, jobRunner, '正在准备艺术风格',
-      '系统将基于已确认任务书与品类约束筛选五种可执行风格。');
+    /* 有数据的中断边界（如风格已放行待生成）：真实内容 + 明确的下一步动作按钮，
+     * 不再退化为通用占位卡。 */
+    const action = capabilityStartButton(derived.actions, derived.processing, jobRunner);
+    if (action) panel.append(action);
+    else if (!hasStyleData) {
+      renderRecoveryStage(panel, derived, jobRunner, '正在准备艺术风格',
+        '系统将基于已确认任务书与品类约束筛选五种可执行风格。');
+    }
     return;
   }
   if (stage === 'gallery') {
+    const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
+    if (!candidates.length) {
+      // 主图选择节点没有候选图时同样只显示本节点的五个候选位骨架。
+      renderStageSkeleton(panel, 'candidates', {
+        processing: derived.processing, runnable: false, capability: null,
+      }, jobRunner, { idleHint: '候选图尚未生成；请从艺术风格阶段重新开始生成。' });
+      return;
+    }
     let selectedId = null;
     const { confirmButton } = renderGalleryStage(panel, view, {
       projectId, selectedId,
@@ -263,17 +309,95 @@ function renderStage(panel, view, derived, ctx) {
 }
 
 function renderRecoveryStage(panel, derived, jobRunner, title, description) {
-  const recoverable = !derived.processing
-    && (derived.actions || []).some((action) => !['branch'].includes(action));
-  const btn = recoverable
-    ? el('button', { type: 'button', class: 'btn btn--primary', text: '恢复此阶段' })
+  const capability = (derived.actions || []).find((action) => EMPTY_PAYLOAD_CAPABILITIES.has(action));
+  const btn = !derived.processing && capability
+    ? el('button', { type: 'button', class: 'btn btn--primary', text: CAPABILITY_ACTIONS[capability]?.label || '恢复此阶段' })
     : null;
   btn?.addEventListener('click', () => jobRunner.start({}));
   panel.append(stateBlock(derived.processing ? 'loading' : 'empty', title, description, btn));
 }
 
+/* ---------- 节点控件骨架 ----------
+ * 重跑分支头（或节点暂无数据且任务在途）时，主区显示该节点的控件骨架而不是
+ * 通用占位卡；创作进度卡显示真实任务状态，任务结束自动刷新为真实内容。 */
+
+/** 第一个可空负载启动的能力对应的动作按钮；无能力或任务在途时返回 null。 */
+function capabilityStartButton(capabilities, processing, jobRunner) {
+  const capability = (capabilities || []).find((action) => EMPTY_PAYLOAD_CAPABILITIES.has(action));
+  if (processing || !capability) return null;
+  const btn = el('button', {
+    type: 'button', class: 'btn btn--primary',
+    text: CAPABILITY_ACTIONS[capability]?.label || '开始',
+  });
+  btn.addEventListener('click', () => jobRunner.start({}));
+  return btn;
+}
+
+const SKELETON_KIND_META = {
+  style: { label: '艺术风格骨架', slots: 5, hint: '正在准备五个艺术风格方向，完成后自动刷新为真实风格卡。' },
+  candidates: { label: '候选图骨架', slots: 5, hint: '正在生成五张候选图，完成后自动刷新为真实候选。' },
+  category: { label: '品类约束骨架', slots: 0, hint: '正在匹配广告品类约束，完成后自动刷新为真实约束。' },
+  clarify: { label: '需求澄清骨架', slots: 0, hint: '正在准备澄清问题，完成后自动刷新为真实问题卡。' },
+  taskbook: { label: '任务书骨架', slots: 0, hint: '正在生成创作任务书，完成后自动刷新为真实任务书。' },
+  quality: { label: '画面质检骨架', slots: 0, hint: '正在执行画面质检，完成后自动刷新为真实质检结论。' },
+};
+
+function skeletonLine(className) { return el('span', { class: `skeleton-line ${className}`, 'aria-hidden': 'true' }); }
+
+function skeletonSlot(index, kind) {
+  const slot = el('div', { class: `skeleton-slot skeleton-slot--${kind}` });
+  slot.append(el('span', { class: 'skeleton-visual', 'aria-hidden': 'true' }),
+    skeletonLine('skeleton-line--title'), skeletonLine('skeleton-line--text'));
+  slot.setAttribute('aria-label', `占位 ${index + 1}`);
+  return slot;
+}
+
+/**
+ * 渲染节点控件骨架 + （非在途时的）启动按钮。
+ * boundary：rerunBoundary(view) 的结果或等形对象 { processing, runnable, capability }。
+ */
+function renderStageSkeleton(panel, kind, boundary, jobRunner, { idleHint } = {}) {
+  const meta = SKELETON_KIND_META[kind] || SKELETON_KIND_META.style;
+  const processing = Boolean(boundary?.processing);
+  const wrap = el('div', {
+    class: `stage-skeleton stage-skeleton--${kind}`, role: 'status',
+    'aria-busy': String(processing), 'aria-label': meta.label,
+  });
+  if (meta.slots) {
+    const grid = el('div', { class: 'skeleton-grid' });
+    for (let index = 0; index < meta.slots; index += 1) grid.append(skeletonSlot(index, kind));
+    wrap.append(grid);
+  } else if (kind === 'quality') {
+    const layout = el('div', { class: 'skeleton-quality' });
+    layout.append(el('span', { class: 'skeleton-visual skeleton-visual--hero', 'aria-hidden': 'true' }));
+    const side = el('div', { class: 'skeleton-side' });
+    side.append(skeletonLine('skeleton-line--title'), skeletonLine('skeleton-line--text'),
+      skeletonLine('skeleton-line--text'), skeletonLine('skeleton-line--text'));
+    layout.append(side);
+    wrap.append(layout);
+  } else {
+    const card = el('div', { class: 'skeleton-card' });
+    card.append(skeletonLine('skeleton-line--title'));
+    const lines = kind === 'clarify' ? 3 : 5;
+    for (let index = 0; index < lines; index += 1) card.append(skeletonLine('skeleton-line--text'));
+    wrap.append(card);
+  }
+  wrap.append(el('p', { class: 'stage-skeleton__hint', text: processing ? meta.hint : (idleHint || '该节点将从此处重新开始。') }));
+  panel.append(wrap);
+  const action = boundary?.runnable
+    ? capabilityStartButton([boundary.capability], processing, jobRunner)
+    : null;
+  if (action) panel.append(action);
+}
+
 function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
   const snapshot = view.snapshot || {};
+  const boundary = rerunBoundary(view);
+  if (boundary?.skeleton === 'category') {
+    // 重跑分支头：品类约束结果已按设计清空，主区显示品类卡骨架而不是旧结果。
+    renderStageSkeleton(panel, 'category', boundary, jobRunner);
+    return;
+  }
   const current = snapshot.category_constraint_current || {};
   const skill = current.skill || {};
   const injection = skill.prompt_injection || {};
@@ -309,11 +433,9 @@ function renderCategoryConstraint(panel, view, { actor, jobRunner }) {
     panel.append(el('h4', { text: '该品类必需输入' }), list);
   }
   if (snapshot.phase !== 'waiting_category_approval') {
-    renderRecoveryStage(panel, {
-      actions: view.capabilities || [],
-      processing: Boolean(view.active_job),
-    }, jobRunner,
-      '品类约束已通过', '系统将携带这些约束进入需求澄清。');
+    // 品类结果已在上方真实展示；此处只给明确的下一步动作，不再叠加占位卡。
+    const action = capabilityStartButton(view.capabilities || [], Boolean(view.active_job), jobRunner);
+    if (action) panel.append(action);
     return;
   }
   const actorState = skillApprovalActorState(actor);
@@ -420,6 +542,12 @@ function renderSkillApproval(panel, view, { projectId, actor, jobRunner }) {
 
 function renderCalibration(panel, view, { projectId, refresh, jobRunner }) {
   const snapshot = view.snapshot || {};
+  const boundary = rerunBoundary(view);
+  if (boundary?.skeleton === 'quality') {
+    // 重跑分支头：质检结论已按设计清空，主区显示质检骨架而不是上一轮旧结论。
+    renderStageSkeleton(panel, 'quality', boundary, jobRunner);
+    return;
+  }
   const inspection = snapshot.inspection || {};
   const asset = snapshot.asset || snapshot.current_asset || snapshot.master_asset;
   const layout = el('div', { class: 'inspection-layout' });

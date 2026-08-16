@@ -361,7 +361,7 @@ export function renderQualityHistory(container, view, { onChanged } = {}) {
           toast('新分支已创建，但工程数据不完整。请运行工程健康检查并修复后重试。', 'error');
         } else {
           toast(`已从第 ${snapshot.round} 轮创建分支。`);
-          onChanged?.(result.view);
+          onChanged?.(result.view, { autostartRerun: true });
         }
       } catch (error) { branch.disabled = false; toast(error.message, 'error'); }
     });
@@ -493,7 +493,7 @@ export function openSnapshotDialog({ projectId, item, onBranchCreated }) {
         ? `已核对并切换到从${label}阶段创建的新分支。`
         : `已重跑${label}阶段并切换到新分支。`, result.recoveryRequired ? 'error' : undefined);
       if (result.view) {
-        try { onBranchCreated?.(result.view); }
+        try { onBranchCreated?.(result.view, { autostartRerun: true }); }
         catch { toast('分支已创建，但界面渲染失败。请返回工程列表后重新打开该工程。', 'error'); }
       }
     } catch (error) {

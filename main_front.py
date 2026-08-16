@@ -380,8 +380,15 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
         "skill_approved_pending_render": "render_candidates",
         "candidate_generation_completed": "choose_master",
         "master_selected": "start_quality_inspection",
-        "ready_for_quality_inspection": "start_quality_inspection",
         "calibration_completed": "open_final_approval",
+        # 重跑分支头边界（project_store._rewind_stage 写入）：给出本节点的重启
+        # 动作，界面才有合法入口；缺一项就会退化为只有 branch 能力的死胡同。
+        "ready_for_category_match": "start_category_match",
+        "ready_for_clarification": "start_clarification",
+        "ready_for_taskbook": "build_taskbook",
+        "ready_for_style_direction": "prepare_style_direction",
+        "ready_for_quality_inspection": "start_quality_inspection",
+        "ready_for_final_approval": "open_final_approval",
     }
     if snapshot and phase in recovery:
         return [recovery[phase], "branch"]

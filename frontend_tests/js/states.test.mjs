@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   WORKFLOW_STATES, CAPABILITY_ACTIONS, deriveView, approvalValid, eventLabel,
-  skillApprovalActorState, stateLabel,
+  skillApprovalActorState, stateLabel, rerunBoundary, RERUN_BOUNDARIES,
+  EMPTY_PAYLOAD_CAPABILITIES,
 } from '../../frontend/static/js/states.js';
 
 // 后端 v1.7.3 事实表：main_front._capabilities 的全部可能输出。
@@ -18,6 +19,7 @@ const BACKEND_CAPABILITIES = [
   'approve_skill_invocations', 'retry_skill_invocations', 'resume_quality_inspection',
   'submit_human_tune', 'start_clarification', 'build_taskbook', 'prepare_style_direction',
   'render_candidates', 'choose_master', 'start_quality_inspection', 'open_final_approval',
+  'start_category_match',
   'edit_rework', 'abandon', 'branch', 'inspect',
 ];
 
@@ -192,4 +194,57 @@ test('事件标签有兜底且不泄露未知类型细节', () => {
   assert.equal(eventLabel({ type: 'some_future_event' }), '记录进度');
   // T11（契约 §11）：未知状态不再把英文 state id 原样上屏
   assert.equal(stateLabel('unknown_state'), '状态未知');
+});
+
+/* ---- 重跑分支头边界（ready_for_* 相位，与后端 _rewind_stage/_capabilities 对齐） ---- */
+
+test('每个重跑边界相位都有节点骨架与已注册的重启能力', () => {
+  assert.deepEqual(Object.keys(RERUN_BOUNDARIES).sort(), [
+    'ready_for_category_match', 'ready_for_clarification', 'ready_for_final_approval',
+    'ready_for_quality_inspection', 'ready_for_style_direction', 'ready_for_taskbook',
+  ]);
+  for (const [phase, info] of Object.entries(RERUN_BOUNDARIES)) {
+    assert.ok(CAPABILITY_ACTIONS[info.capability], `${phase} 的重启能力未注册：${info.capability}`);
+    assert.ok(EMPTY_PAYLOAD_CAPABILITIES.has(info.capability), `${phase} 的重启能力必须可空负载启动`);
+    assert.equal(CAPABILITY_ACTIONS[info.capability].kind, 'job');
+  }
+  // 仅最终确认边界不需要骨架（落到节点真实界面，由人工确认继续）。
+  assert.equal(RERUN_BOUNDARIES.ready_for_final_approval.skeleton, null);
+});
+
+test('rerunBoundary：识别边界、在途状态与可运行性', () => {
+  const boundaryView = view(
+    { state: 'initial_candidate_generation', phase: 'ready_for_style_direction' },
+    {},
+    ['prepare_style_direction', 'branch'],
+  );
+  assert.deepEqual(rerunBoundary(boundaryView), {
+    phase: 'ready_for_style_direction', skeleton: 'style',
+    capability: 'prepare_style_direction', processing: false, runnable: true,
+  });
+  // 能力清单缺失重启动作时不可运行（旧后端的死胡同形态）。
+  assert.equal(rerunBoundary(view(
+    { state: 'initial_candidate_generation', phase: 'ready_for_style_direction' }, {}, ['branch'],
+  )).runnable, false);
+  // 在途 job → processing。
+  assert.equal(rerunBoundary({
+    ...boundaryView, active_job: { status: 'running' },
+  }).processing, true);
+  // 非边界相位返回 null。
+  assert.equal(rerunBoundary(view({ state: 'intake_clarify', phase: 'waiting_clarification' })), null);
+  assert.equal(rerunBoundary(null), null);
+});
+
+test('重跑边界相位仍映射到本节点舞台（不出现通用恢复舞台）', () => {
+  const cases = [
+    [{ state: 'category_constraint', phase: 'ready_for_category_match' }, 'category'],
+    [{ state: 'intake_clarify', phase: 'ready_for_clarification' }, 'clarify'],
+    [{ state: 'confirmation_build', phase: 'ready_for_taskbook' }, 'taskbook'],
+    [{ state: 'initial_candidate_generation', phase: 'ready_for_style_direction' }, 'style_processing'],
+    [{ state: 'self_check_iteration', phase: 'ready_for_quality_inspection' }, 'calibration'],
+    [{ state: 'final_approval', phase: 'ready_for_final_approval' }, 'final'],
+  ];
+  for (const [snapshot, stage] of cases) {
+    assert.equal(deriveView(view(snapshot, {}, ['branch'])).stage, stage, snapshot.phase);
+  }
 });

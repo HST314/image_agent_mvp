@@ -175,4 +175,35 @@ select.input{appearance:auto}
 @media(max-width:479px){.topnav{gap:6px;padding:0 10px}.topnav__tab{padding:8px 8px}.topnav__context{gap:8px}.topnav__context .btn{padding-left:11px;padding-right:11px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 .taskbook-revision{display:grid;gap:4px;margin:0 0 18px;padding:14px;border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);border-radius:10px;background:var(--warning-soft);color:var(--warning);font-size:14px}
+
+/* ===== 节点控件骨架（重跑分支头/节点无数据等待态） ===== */
+.stage-skeleton{display:grid;gap:14px}
+.stage-skeleton__hint{margin:0;color:var(--muted);font-size:13px}
+.stage-skeleton[aria-busy="true"] .skeleton-visual,.stage-skeleton[aria-busy="true"] .skeleton-line{animation:shimmer 1.3s infinite}
+.skeleton-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}
+.skeleton-slot{display:grid;gap:8px;padding:10px;border:1px solid var(--border);border-radius:12px;background:var(--subtle)}
+.skeleton-visual{display:block;height:110px;border-radius:9px;background:linear-gradient(90deg,var(--subtle),var(--border),var(--subtle));background-size:200% 100%}
+.skeleton-slot--candidates .skeleton-visual{height:150px}
+.skeleton-line{display:block;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--subtle),var(--border),var(--subtle));background-size:200% 100%}
+.skeleton-line--title{height:15px;width:62%}
+.skeleton-line--text{width:88%}
+.skeleton-line--text+.skeleton-line--text{width:74%}
+.skeleton-card{display:grid;gap:12px;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--subtle)}
+.skeleton-quality{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr);gap:16px;align-items:start}
+.skeleton-visual--hero{height:280px}
+.skeleton-side{display:grid;gap:12px;padding-top:6px}
+@media(max-width:1023px){.skeleton-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.skeleton-quality{grid-template-columns:1fr}}
+@media(max-width:599px){.skeleton-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.skeleton-visual--hero{height:200px}}
+
+/* ===== 顶栏分支按钮与分支查看界面 ===== */
+button.badge.topnav__branch{cursor:pointer;font:inherit}
+button.badge.topnav__branch:hover{filter:brightness(1.08)}
+button.badge.topnav__branch:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.branch-list{display:grid;gap:10px}
+.branch-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;padding:12px 14px;border:1px solid var(--border);border-radius:12px}
+.branch-item.is-current{border-color:color-mix(in srgb,var(--primary) 45%,transparent);background:var(--primary-soft)}
+.branch-item__name{display:flex;align-items:center;gap:8px;font-weight:700;overflow-wrap:anywhere}
+.branch-item__meta{color:var(--muted);font-size:12px}
+.branch-item__actions{grid-row:span 2}
+@media(max-width:599px){.branch-item{grid-template-columns:1fr}.branch-item__actions{grid-row:auto}}
 .clarification-review{display:grid;gap:4px;margin:0 0 18px;padding:14px;border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);border-radius:10px;background:var(--warning-soft);color:var(--warning);font-size:14px}.clarification-recovery{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}

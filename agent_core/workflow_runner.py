@@ -76,6 +76,17 @@ class WorkflowRunner:
         "human_prompt_iteration": DomainState.HUMAN_EDIT,
         "final_approval": DomainState.DELIVERY_FROZEN,
     }
+    # 重跑分支头边界相位（storage.project_store._rewind_stage 写入）：边界上的
+    # "推进"必须重跑本节点，而不是按 ORDER 跨入下一节点（否则候选图等本节点
+    # 产物缺失，界面落入无数据的死胡同）。
+    RERUN_BOUNDARY_TARGET = {
+        "ready_for_category_match": "category_constraint",
+        "ready_for_clarification": "intake_clarify",
+        "ready_for_taskbook": "confirmation_build",
+        "ready_for_style_direction": "initial_candidate_generation",
+        "ready_for_quality_inspection": "self_check_iteration",
+        "ready_for_final_approval": "final_approval",
+    }
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  output: Callable[[str], None] | None = None) -> None:
@@ -104,6 +115,8 @@ class WorkflowRunner:
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
         phase = snapshot.get("phase")
+        boundary = self.RERUN_BOUNDARY_TARGET.get(str(phase or ""))
+        if boundary: return boundary
         if phase in {"waiting_category_approval", "waiting_human_approval", "waiting_clarification",
                      "waiting_clarification_review", "waiting_taskbook_revision", "waiting_master_selection",
                      "waiting_skill_approval", "skill_approved_pending_render"}:

@@ -50,6 +50,7 @@ export const CAPABILITY_ACTIONS = {
   choose_master: { id: 'choose_master', label: '进入主图选择', kind: 'job' },
   start_quality_inspection: { id: 'start_quality_inspection', label: '开始画面质检', kind: 'job' },
   open_final_approval: { id: 'open_final_approval', label: '进入最终确认', kind: 'job' },
+  start_category_match: { id: 'start_category_match', label: '开始匹配品类约束', kind: 'job' },
   edit_rework: { id: 'edit_rework', label: '修改建议后执行', kind: 'job' },
   abandon: { id: 'abandon', label: '终止且不交付', kind: 'job' },
   branch: { id: 'branch', label: '查看分支', kind: 'ui' },
@@ -57,6 +58,46 @@ export const CAPABILITY_ACTIONS = {
 };
 
 const FINAL_APPROVAL_HINT = '人工确认';
+
+/* 重跑分支头边界相位（与 storage.project_store._rewind_stage、main_front._capabilities
+ * 对齐）：边界落在哪个节点，主区就显示哪个节点的控件骨架；capability 是该节点
+ * 的空负载重启动作。skeleton 为 null 的边界（最终确认）落到节点真实界面，不需要
+ * 骨架，也不参与自动重跑。 */
+export const RERUN_BOUNDARIES = {
+  ready_for_category_match: { skeleton: 'category', capability: 'start_category_match' },
+  ready_for_clarification: { skeleton: 'clarify', capability: 'start_clarification' },
+  ready_for_taskbook: { skeleton: 'taskbook', capability: 'build_taskbook' },
+  ready_for_style_direction: { skeleton: 'style', capability: 'prepare_style_direction' },
+  ready_for_quality_inspection: { skeleton: 'quality', capability: 'start_quality_inspection' },
+  ready_for_final_approval: { skeleton: null, capability: 'open_final_approval' },
+};
+
+/** 空负载即可启动的重启能力（其余能力需要答案/选择/操作人等负载，不能一键启动）。 */
+export const EMPTY_PAYLOAD_CAPABILITIES = new Set([
+  'retry', 'start_category_match', 'start_clarification', 'build_taskbook',
+  'prepare_style_direction', 'render_candidates', 'choose_master',
+  'start_quality_inspection', 'resume_quality_inspection', 'open_final_approval',
+]);
+
+/**
+ * 当前视图是否停在重跑分支头边界。
+ * 返回 { phase, skeleton, capability, processing, runnable } 或 null：
+ * - processing：该工程有在途 job（骨架保持 busy，不显示启动按钮）；
+ * - runnable：服务端能力清单包含该边界的重启动作（可一键/自动重跑）。
+ */
+export function rerunBoundary(view) {
+  const phase = view?.snapshot?.phase;
+  const info = RERUN_BOUNDARIES[phase];
+  if (!info) return null;
+  const capabilities = Array.isArray(view?.capabilities) ? view.capabilities : [];
+  return {
+    phase,
+    skeleton: info.skeleton,
+    capability: info.capability,
+    processing: Boolean(view?.active_job),
+    runnable: capabilities.includes(info.capability),
+  };
+}
 
 /* T11（契约 §11）：未知状态不得把英文 state id 原样上屏，统一兜底中文。 */
 export function stateLabel(id) { return STATE_LABELS[id] || (id ? '状态未知' : '未开始'); }
