@@ -753,11 +753,21 @@ class ProjectStore:
         lock_path = self.root / ".lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         stream = lock_path.open("a+b", buffering=0)
+        acquired = False
         try:
-            portalocker.lock(stream, portalocker.LOCK_SH)
+            # ``msvcrt`` has no shared-lock primitive.  Portalocker therefore
+            # requires its optional pywin32 backend for LOCK_SH on Windows.
+            # A branch projection is short-lived, so serialize readers there
+            # with an exclusive lock; POSIX platforms retain concurrent reads.
+            mode = portalocker.LOCK_EX if os.name == "nt" else portalocker.LOCK_SH
+            portalocker.lock(stream, mode)
+            acquired = True
             yield
         finally:
-            portalocker.unlock(stream)
+            # Preserve the original lock error.  Calling unlock after a failed
+            # acquisition can raise a second exception and hide the real cause.
+            if acquired:
+                portalocker.unlock(stream)
             stream.close()
 
     def check_health(self, *, repair: bool = False) -> dict[str, Any]:

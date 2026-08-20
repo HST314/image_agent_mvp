@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main_front
+import storage.project_store as project_store_module
 from storage.project_store import CorruptProjectError, ProjectStore, atomic_json
 
 
@@ -260,6 +261,37 @@ def test_branch_listing_is_atomic_when_pending_is_cleared_during_read(tmp_path: 
         for item in result["items"] for checkpoint in item["checkpoints"]
     }
     assert _control_bytes(store) == committed
+
+
+def test_windows_branch_read_uses_exclusive_lock_without_shared_backend(tmp_path: Path, monkeypatch):
+    store, _ = _store(tmp_path)
+    lock_modes: list[int] = []
+    unlocks: list[object] = []
+
+    monkeypatch.setattr(project_store_module.os, "name", "nt")
+    monkeypatch.setattr(project_store_module.portalocker, "lock", lambda stream, mode: lock_modes.append(mode))
+    monkeypatch.setattr(project_store_module.portalocker, "unlock", lambda stream: unlocks.append(stream))
+
+    projection = store.branches()
+
+    assert projection["current_branch"] == "main"
+    assert lock_modes == [project_store_module.portalocker.LOCK_EX]
+    assert len(unlocks) == 1
+
+
+def test_failed_branch_read_lock_does_not_attempt_unlock(tmp_path: Path, monkeypatch):
+    store, _ = _store(tmp_path)
+    unlocks: list[object] = []
+
+    def fail_lock(stream, mode):
+        raise ImportError("shared backend unavailable")
+
+    monkeypatch.setattr(project_store_module.portalocker, "lock", fail_lock)
+    monkeypatch.setattr(project_store_module.portalocker, "unlock", lambda stream: unlocks.append(stream))
+
+    with pytest.raises(ImportError, match="shared backend unavailable"):
+        store.branches()
+    assert unlocks == []
 
 
 def test_project_corrupt_response_is_sanitized_and_traceable(caplog):
