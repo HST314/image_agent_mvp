@@ -635,7 +635,11 @@ async def annotate_and_rework(project_id: str, body: AnnotationRequest) -> dict[
                 source, source_record=store.artifacts.resolve(body.artifact_id)
                 guide_bytes=compose(source.read_bytes(), body.marks)
                 guide=store.artifacts.save_bytes(guide_bytes, metadata={"kind":"annotation_guide","parent_artifact_id":body.artifact_id,"marks":body.marks})
-                child=_project_runner(store)._image_call("human_prompt_rework", body.prompt, [guide["uri"]])
+                runner = _project_runner(store)
+                child=runner._image_call(
+                    "human_prompt_rework", body.prompt, [guide["uri"]],
+                    size=runner._resolved_render_size(snapshot, "human_prompt_rework"),
+                )
                 updated={**snapshot, "state":"human_prompt_iteration", "asset":child, "current_asset":child,
                          "annotation_parent_asset":source_record, "annotation_guide_asset":guide,
                          "phase":"waiting_human_tune", "waiting":True, "human_tune_mode":True,

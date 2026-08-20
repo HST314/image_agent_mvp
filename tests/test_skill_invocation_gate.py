@@ -171,12 +171,12 @@ def test_retryable_five_render_failure_recovers_via_api_without_reinvoking_skill
 
     original_image_call = runner._image_call
 
-    def fail_one(state: str, prompt: str, references: list[str], index: int = 0):
+    def fail_one(state: str, prompt: str, references: list[str], index: int = 0, size: str | None = None):
         if index == 2:
             raise ModelCallError(
                 "provider timed out after submission", True, "timeout_unknown", "req-timeout", "trace-timeout",
             )
-        return original_image_call(state, prompt, references, index=index)
+        return original_image_call(state, prompt, references, index=index, size=size)
 
     monkeypatch.setattr(runner, "_image_call", fail_one)
     with pytest.raises(CandidateBatchError):

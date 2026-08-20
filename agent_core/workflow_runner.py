@@ -9,6 +9,7 @@ from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from agent_core.batch import CandidateBatchError, CandidateBatchGenerator
+from agent_core.render_spec import resolve_render_size
 from agent_core.models import (ImageTaskCard, ModelRole, QuestionAnswer,
                                QuestionAnswerRecord, QuestionCard,
                                SpecificationFact, TaskSpecification,
@@ -31,7 +32,7 @@ from model_router.clients import build_text_client, build_vlm_client
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRoute, ModelRouter
 from render_clients.ark_client import ArkImageRenderClient
-from render_clients.payload_mapper import build_render_payload
+from render_clients.payload_mapper import build_render_payload, validate_render_size
 from storage.project_store import ProjectStore, content_hash
 from storage.assets import normalize_image_asset
 from storage.provider_assets import ProviderImageAdapter
@@ -1191,6 +1192,22 @@ class WorkflowRunner:
             return "manual"
         return self.policy.style_direction.release
 
+    def _resolved_render_size(self, data: dict[str, Any], state: str) -> str:
+        """Reuse the frozen render size, or derive it for a legacy checkpoint."""
+        binding = self.gateway.router.binding_for_state(state)
+        frozen = str(data.get("render_size") or "").strip()
+        if frozen:
+            validate_render_size(binding.model, frozen)
+            return frozen
+        # Very old/manual snapshots may predate TaskSpecification entirely.
+        # They cannot supply a task-derived ratio, so retain their historical
+        # runtime-policy behavior instead of making recovery impossible.
+        if not data.get("task_specification"):
+            validate_render_size(binding.model, self.policy.default_output_size)
+            return self.policy.default_output_size
+        spec = TaskSpecification.model_validate(data["task_specification"])
+        return resolve_render_size(spec, binding.model, self.policy.default_output_size).size
+
     def _render_candidates(self, data: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
         """Cross the paid render boundary only after the skill gate is released."""
         spec = TaskSpecification.model_validate(data["task_specification"])
@@ -1208,9 +1225,13 @@ class WorkflowRunner:
                 raise ValueError("技能调用结果已过期，请重新调用两库后再生成。")
 
         # 生图逻辑：固定内容与品牌色，只注入已通过门禁的五个文本方案。
-        from render_clients.payload_mapper import validate_render_size
         image_binding = self.gateway.router.binding_for_state("initial_candidate_generation")
-        validate_render_size(image_binding.model, self.policy.default_output_size)
+        size_decision = resolve_render_size(spec, image_binding.model, self.policy.default_output_size)
+        render_size = size_decision.size
+        # Validate every paid image consumer before the first candidate request;
+        # a later rework must not discover an incompatible size after charging.
+        for state in ("initial_candidate_generation", "self_check_rework", "human_prompt_rework"):
+            validate_render_size(self.gateway.router.binding_for_state(state).model, render_size)
         style_names = {
             item.get("style_id"): item.get("style_name")
             for item in prepared.get("skill_invocations", {}).get("style_library", {}).get("selections", [])
@@ -1218,7 +1239,9 @@ class WorkflowRunner:
 
         def render(index: int) -> dict[str, Any]:
             plan = plans[index]
-            result = self._image_call("initial_candidate_generation", plan["prompt_text"], [], index=index)
+            result = self._image_call(
+                "initial_candidate_generation", plan["prompt_text"], [], index=index, size=render_size,
+            )
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}",
                     "style_name": style_names.get(plan["style_id"]) or f"风格方向 {index + 1}",
                     "style_id": plan["style_id"], "extraction_key": plan["extraction_key"],
@@ -1226,7 +1249,11 @@ class WorkflowRunner:
 
         version_id = prepared.get("skill_invocation_current", {}).get("version_id")
         render_plan_hash = content_hash(plans)
-        cache_scope = {"skill_version_id": version_id, "render_plan_hash": render_plan_hash}
+        cache_scope = {
+            "skill_version_id": version_id,
+            "render_plan_hash": render_plan_hash,
+            "render_size": render_size,
+        }
         expected_assets = [
             {"style_id": plan["style_id"], "prompt_version_id": plan["prompt_version_id"],
              "provenance": plan["provenance"]}
@@ -1240,7 +1267,10 @@ class WorkflowRunner:
                                         )
         if batch["failed"]:
             raise CandidateBatchError(batch["failed"])
-        return {**prepared, "candidates": batch["succeeded"], "waiting": False,
+        return {**prepared, "candidates": batch["succeeded"],
+                "render_size": render_size, "render_size_source": size_decision.source,
+                "requested_output_spec": size_decision.requested_spec,
+                "waiting": False,
                 "phase": "candidate_generation_completed"}
 
     def _candidates(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
@@ -1385,13 +1415,18 @@ class WorkflowRunner:
                         "termination_satisfied": False}
             elif action.action not in {"execute", "edit_and_execute", "skip"}:
                 raise ValueError(f"轮次上限不支持处置动作：{action.action}")
+        render_size = self._resolved_render_size(data, "self_check_rework")
         loop = CalibrationLoop(self.store, SelfCheckPolicy(**policy_data), inspector=self._inspect,
-            reworker=lambda assembled: self._image_call("self_check_rework", assembled["text"], [r["uri"] for r in assembled["references"]]),
+            reworker=lambda assembled: self._image_call(
+                "self_check_rework", assembled["text"],
+                [r["uri"] for r in assembled["references"]], size=render_size,
+            ),
             presenter=lambda number, result: self._present_inspection(number, result))
         result = loop.run(current_asset=data.get("asset") or data["master_asset"], stable_specification=specification_to_markdown(spec),
                           constraints=[], approve=(lambda _: action) if action else None,
                           start_round=int(data.get("round", 1)), snapshot_context=data)
         result["inspection_asset"] = result.get("inspection_asset") or result.get("asset")
+        result["render_size"] = render_size
         if "round_limit" not in str(result.get("termination_reason")):
             result["available_actions"] = []
             result["best_asset"] = None
@@ -1418,7 +1453,10 @@ class WorkflowRunner:
         if not prompt: return {"asset": data.get("current_asset") or data.get("asset"), "waiting": True,
                                "phase": "waiting_human_tune", "human_tune_mode": True}
         current = data.get("current_asset") or data["asset"]
-        result = self._image_call("human_prompt_rework", prompt, [str(current["uri"])])
+        render_size = self._resolved_render_size(data, "human_prompt_rework")
+        result = self._image_call(
+            "human_prompt_rework", prompt, [str(current["uri"])], size=render_size,
+        )
         asset = normalize_image_asset(result)
         self.store.events.append("calibration_invalidated", reason="human_rework", previous_checked_asset_hash=data.get("latest_checked_asset_hash"), new_asset_hash=asset["sha256"])
         return {"asset": asset, "current_asset": asset, "waiting": True, "phase": "waiting_human_tune", "human_tune_mode": True,
@@ -1514,7 +1552,8 @@ class WorkflowRunner:
         if client is None: raise RuntimeError("视觉检查模型不可用。")
         return client
 
-    def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None) -> dict[str, Any]:
+    def _image_call(self, state: str, prompt: str, references: list[str], *,
+                    index: int | None = None, size: str | None = None) -> dict[str, Any]:
         if state == "initial_candidate_generation":
             from agent_core.style_pipeline import assert_reference_isolated
             assert_reference_isolated({"prompt": prompt, "candidate_index": index})
@@ -1533,11 +1572,12 @@ class WorkflowRunner:
                                            metadata={"state": state, "candidate_index": index, "mock": True})
             return normalize_image_asset({**saved, "mock": True})
         provider_references = self.provider_assets.resolve_all(references)
+        render_size = size or self.policy.default_output_size
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
             lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or "https://ark.cn-beijing.volces.com/api/v3",
                 model=route.binding.model, timeout=self.policy.model_timeout_seconds, max_retries=0,
                 idempotency_key=str(route.binding.parameters.get("_idempotency_key", ""))).render(build_render_payload(route.binding.model, prompt,
-                self.policy.default_output_size, {"state":state}, response_format=self.policy.response_format,
+                render_size, {"state":state}, response_format=self.policy.response_format,
                 watermark=self.policy.watermark, reference_images=provider_references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
