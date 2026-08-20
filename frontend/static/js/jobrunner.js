@@ -84,6 +84,8 @@ export function createNavigator(deps, registry = viewOperations) {
  * ③ error.message 兜底——与后端工作流 classify_error 的 message 判定一致。 */
 export function shouldClearIntentKey(record) {
   if (record?.status === 'succeeded') return true;
+  // 排队超时发生在 execute() 之前，后端明确标记 retry_safe；可直接轮换键重试。
+  if (record?.status === 'stalled' && record?.error?.retry_safe === true) return true;
   if (record?.status !== 'failed') return false;
   const error = record?.error || {};
   const category = String(error.category || '').toLowerCase();
@@ -94,7 +96,7 @@ export function shouldClearIntentKey(record) {
   return !(message.includes('TIMEOUT') || message.includes('UNKNOWN'));
 }
 
-const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
+const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'stalled']);
 export function isTerminalJobStatus(status) { return TERMINAL_JOB_STATUS.has(status); }
 
 /** 进度展示用的操作名（由 payload 推断）。 */
@@ -168,6 +170,7 @@ export function createJobRunner(deps, registry = viewOperations) {
         if (record.status === 'succeeded') notify('已保存到新的工作流检查点。');
         // T11：后端英文错误信息经 copy.errorText 中文化后再 toast。
         else if (record.status === 'failed') notify(record.error?.message ? errorText(record.error.message) : '任务失败。', 'error');
+        else if (record.status === 'stalled') notify('任务尚未开始便排队超时，操作区已恢复，可安全重试。', 'error');
         // M1：仅在工作流成功或确认无副作用的终态清除幂等键；未知结果保留。
         if (intent && shouldClearIntentKey(record)) clearIntentIdempotencyKey(projectId, intent);
         schedule(() => {

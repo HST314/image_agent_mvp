@@ -7,7 +7,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 from model_router.router import ModelRouter
@@ -16,10 +16,13 @@ from storage.project_store import EventStore
 LOGGER = logging.getLogger(__name__)
 
 
-def _probe(name: str, code: str, trace_id: str, check: Callable[[], None]) -> dict[str, str]:
+def _probe(name: str, code: str, trace_id: str, check: Callable[[], Any]) -> dict[str, Any]:
     try:
-        check()
-        return {"name": name, "status": "ok"}
+        details = check()
+        result: dict[str, Any] = {"name": name, "status": "ok"}
+        if isinstance(details, dict):
+            result["metrics"] = details
+        return result
     except Exception:
         LOGGER.exception("diagnostic probe failed trace_id=%s probe=%s", trace_id, name)
         return {"name": name, "status": "error", "error_code": code}
@@ -34,9 +37,11 @@ def run_diagnostics(*, projects_root: Path, model_config: Path, app_root: Path,
         router = ModelRouter.from_file(model_config)
         router.validate_required_bindings()
 
-    def jobs() -> None:
+    def jobs() -> dict[str, Any]:
         if not getattr(job_registry, "is_ready")():
             raise RuntimeError("job executor is stopped")
+        metrics = getattr(job_registry, "metrics", None)
+        return metrics() if callable(metrics) else {}
 
     def storage() -> None:
         projects_root.mkdir(parents=True, exist_ok=True)

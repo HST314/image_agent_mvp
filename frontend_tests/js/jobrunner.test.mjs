@@ -222,6 +222,7 @@ test('交错③：终态键策略——succeeded/已知失败清除，未知失�
   assert.equal(shouldClearIntentKey({ status: 'cancelled' }), false);
   assert.equal(shouldClearIntentKey({ status: 'interrupted' }), false);
   assert.equal(shouldClearIntentKey({ status: 'unknown', error: { message: 'poll failed' } }), false);
+  assert.equal(shouldClearIntentKey({ status: 'stalled', error: { retry_safe: true } }), true);
 });
 
 test('交错③契约：按真实 error.category/error.code 记录分类（agent_core/jobs.py 写入形态）', () => {
@@ -297,7 +298,7 @@ test('M1 主路径回归：POST 抛错（120s 超时响应丢失）保留键，�
 });
 
 test('isTerminalJobStatus 终态集合', () => {
-  for (const s of ['succeeded', 'failed', 'cancelled', 'interrupted']) assert.equal(isTerminalJobStatus(s), true);
+  for (const s of ['succeeded', 'failed', 'cancelled', 'interrupted', 'stalled']) assert.equal(isTerminalJobStatus(s), true);
   for (const s of ['queued', 'running', 'cancelling', 'submitting', 'unknown']) assert.equal(isTerminalJobStatus(s), false);
 });
 

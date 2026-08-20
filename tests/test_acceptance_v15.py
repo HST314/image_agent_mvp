@@ -19,6 +19,11 @@ def test_health_reports_all_required_probes_without_internal_paths(tmp_path: Pat
     assert {item["name"] for item in body["checks"]} == {
         "model_router", "job_executor", "storage", "event_writer", "asset_api", "runtime_resources"
     }
+    job_check = next(item for item in body["checks"] if item["name"] == "job_executor")
+    assert set(job_check["metrics"]) == {
+        "max_workers", "active_workers", "queue_depth",
+        "oldest_queued_seconds", "oldest_heartbeat_seconds",
+    }
     serialized = response.text.lower()
     assert str(tmp_path).lower() not in serialized
     assert not any(word in serialized for word in ("api_key", "authorization", "traceback"))

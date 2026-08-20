@@ -326,7 +326,8 @@ export function candidateLabel(id) {
 
 const JOB_STATUS_LABELS = {
   submitting: '提交中', queued: '排队中', running: '进行中', cancelling: '取消中',
-  succeeded: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', unknown: '未知',
+  succeeded: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断',
+  stalled: '排队超时', unknown: '未知',
 };
 
 export function jobStatusLabel(status) {
@@ -338,6 +339,7 @@ export function jobStatusLabel(status) {
 /* 后端英文错误码 → 中文提示。匹配方式为"包含"（兼容 "CODE:detail" 形态），
  * 按从具体到通用的顺序声明。 */
 const ERROR_CODE_MAP = [
+  ['QUEUE_START_TIMEOUT', '任务尚未开始便排队超时，可安全重试。'],
   ['PROJECT_FILE_MISSING', '工程数据不完整，请运行工程健康检查并修复后重试。'],
   ['PROJECT_CORRUPT', '工程数据校验失败，请运行工程健康检查并修复后重试。'],
   ['BACKEND_UNAVAILABLE', '后端能力暂不可用，已有进度已保留，请稍后重试。'],

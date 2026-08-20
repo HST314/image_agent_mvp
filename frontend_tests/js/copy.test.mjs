@@ -127,6 +127,7 @@ test('candidate-N 映射为方向 N，其他标识符保留', () => {
 
 test('job 状态映射，未知状态不泄露英文', () => {
   assert.equal(jobStatusLabel('running'), '进行中');
+  assert.equal(jobStatusLabel('stalled'), '排队超时');
   assert.equal(jobStatusLabel('unknown'), '未知');
   assert.equal(jobStatusLabel('some_future_status'), '未知');
 });

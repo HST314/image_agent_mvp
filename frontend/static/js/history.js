@@ -44,7 +44,7 @@ function formatTime(value) {
  * 终态时移除——不做前端假状态（契约 §4/§7）。 */
 export function renderJobProgress(container, job, { onCancel } = {}) {
   let current = job || {};
-  const box = el('div', { class: 'job-progress', role: 'status' });
+  const box = el('div', { class: 'job-progress', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' });
   const spinner = el('span', { class: 'spinner', 'aria-hidden': 'true' });
   const text = el('span', { text: describeJob(job) });
   const live = el('span', { class: 'job-progress__live', hidden: true });
@@ -79,6 +79,7 @@ function describeJob(job) {
     succeeded: '任务完成。',
     failed: `任务失败：${job.error?.message ? errorText(job.error.message) : '未知错误'}`,
     cancelled: '任务已取消。', interrupted: '服务重启，任务中断且不会自动补调用。',
+    stalled: '任务排队超时但尚未开始；操作区已恢复，可安全重试。',
   };
   // T11：未知状态不原样上屏英文 status。
   return map[job.status] || `任务状态：${jobStatusLabel(job.status)}`;

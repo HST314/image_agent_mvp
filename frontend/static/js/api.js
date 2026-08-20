@@ -4,8 +4,8 @@
 
 import { errorText, validationText, fieldLabel, hasCJK } from './copy.js';
 
-const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
-const TERMINAL_EVENTS = new Set(['succeeded', 'failed', 'cancelled']);
+const TERMINAL_JOB_STATUS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'stalled']);
+const TERMINAL_EVENTS = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'stalled']);
 
 export class ApiError extends Error {
   constructor(message, { status = null, code = null, traceId = null } = {}) {
