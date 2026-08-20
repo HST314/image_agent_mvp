@@ -42,6 +42,10 @@ def main() -> None:
             metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
             metadata = archive.read(metadata_name).decode()
         require("Requires-Dist: portalocker" in metadata, "wheel metadata is missing portalocker")
+        require(
+            "Requires-Dist: pywin32" in metadata and "platform_system == \"Windows\"" in metadata,
+            "wheel metadata is missing the Windows portalocker backend",
+        )
         require("Requires-Dist: fastapi" in metadata, "wheel metadata is missing fastapi")
 
         run(sys.executable, "-m", "pip", "install", str(wheel), "--target", str(wheel_target), cwd=outside)

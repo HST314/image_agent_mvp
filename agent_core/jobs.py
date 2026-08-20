@@ -181,10 +181,11 @@ class JobRegistry:
 
     def _run(self, job_id: str, execute: Callable[[], Any]) -> None:
         with self._lock:
-            record = self._read(job_id)
-            # A queued task may have been safely terminalized by the SLA check
-            # before the pool obtained a worker.  It must never execute later.
-            if record.get("status") not in {"queued", "cancelling"}:
+            # The worker is the final authority at the paid-execution boundary.
+            # Observers may never poll this job, so expire it here while holding
+            # the same lock used for the queued -> running transition.
+            record = self._expire_stalled(self._read(job_id))
+            if record.get("status") != "queued":
                 self._callbacks.pop(job_id, None)
                 return
             started_at = _now()

@@ -111,3 +111,27 @@ def resolve_render_size(spec: TaskSpecification, model: str, default_size: str) 
 
     validate_render_size(model, default_size)
     return RenderSizeDecision(default_size, "runtime_default", requested_spec)
+
+
+def resolve_or_validate_frozen_size(
+    spec: TaskSpecification,
+    initial_model: str,
+    consumer_models: list[str],
+    default_size: str,
+    *,
+    frozen_size: str = "",
+    frozen_source: str = "",
+    requested_spec: str | None = None,
+) -> RenderSizeDecision:
+    """Resolve once, then only validate a persisted decision on retries."""
+    if frozen_size:
+        decision = RenderSizeDecision(
+            frozen_size,
+            frozen_source or "persisted_checkpoint",
+            requested_spec,
+        )
+    else:
+        decision = resolve_render_size(spec, initial_model, default_size)
+    for model in consumer_models:
+        validate_render_size(model, decision.size)
+    return decision

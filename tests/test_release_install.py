@@ -26,12 +26,15 @@ def test_wheel_metadata_contains_all_runtime_dependencies(tmp_path: Path) -> Non
         metadata = BytesParser().parsebytes(archive.read(metadata_name))
 
     requirements = metadata.get_all("Requires-Dist", [])
-    for package in ("pydantic", "PyYAML", "openai", "Pillow", "fastapi", "portalocker"):
+    for package in ("pydantic", "PyYAML", "openai", "Pillow", "fastapi", "portalocker", "pywin32"):
         assert any(item.lower().startswith(package.lower()) for item in requirements), requirements
+    windows_backend = next(item for item in requirements if item.lower().startswith("pywin32"))
+    assert 'platform_system == "Windows"' in windows_backend
 
 
 def test_setup_adapter_does_not_duplicate_dependency_metadata() -> None:
     adapter = (ROOT / "setup.py").read_text(encoding="utf-8")
     assert 'install_requires=PROJECT["dependencies"]' in adapter
     assert "portalocker>=" not in adapter
+    assert "pywin32>=" not in adapter
     assert "fastapi>=" not in adapter

@@ -9,7 +9,7 @@ from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from agent_core.batch import CandidateBatchError, CandidateBatchGenerator
-from agent_core.render_spec import resolve_render_size
+from agent_core.render_spec import resolve_or_validate_frozen_size, resolve_render_size
 from agent_core.models import (ImageTaskCard, ModelRole, QuestionAnswer,
                                QuestionAnswerRecord, QuestionCard,
                                SpecificationFact, TaskSpecification,
@@ -1208,9 +1208,40 @@ class WorkflowRunner:
         spec = TaskSpecification.model_validate(data["task_specification"])
         return resolve_render_size(spec, binding.model, self.policy.default_output_size).size
 
+    def _freeze_render_boundary(self, data: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
+        """Persist one validated size before any candidate can incur a charge."""
+        boundary = {
+            **data,
+            **prepared,
+            "waiting": False,
+            "phase": "skill_approved_pending_render",
+        }
+        states = ("initial_candidate_generation", "self_check_rework", "human_prompt_rework")
+        models = [self.gateway.router.binding_for_state(state).model for state in states]
+        decision = resolve_or_validate_frozen_size(
+            TaskSpecification.model_validate(boundary["task_specification"]),
+            models[0],
+            models,
+            self.policy.default_output_size,
+            frozen_size=str(boundary.get("render_size") or "").strip(),
+            frozen_source=str(boundary.get("render_size_source") or ""),
+            requested_spec=boundary.get("requested_output_spec"),
+        )
+        boundary.update(
+            render_size=decision.size,
+            render_size_source=decision.source,
+            requested_output_spec=decision.requested_spec,
+            render_policy_hash=str(boundary.get("render_policy_hash") or self.policy.sha256()),
+        )
+        self.store.checkpoint("initial_candidate_generation", boundary)
+        return boundary
+
     def _render_candidates(self, data: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
         """Cross the paid render boundary only after the skill gate is released."""
         spec = TaskSpecification.model_validate(data["task_specification"])
+        render_size = str(data.get("render_size") or "").strip()
+        if not render_size:
+            raise ValueError("RENDER_SIZE_NOT_FROZEN: 首次付费生图前必须持久冻结尺寸。")
         plans = list(prepared.get("render_plans") or [])
         style_disabled = bool((prepared.get("skill_invocations") or {}).get("style_library", {}).get("disabled"))
         expected_count = self.policy.candidate_concurrency if style_disabled else 5
@@ -1219,19 +1250,13 @@ class WorkflowRunner:
                 raise ValueError(f"不使用艺术风格库时，候选方案必须为 candidate_concurrency 配置的 {expected_count} 个不同方案。")
             raise ValueError("技能调用结果必须包含五个不同且可生成的风格方案。")
         revision_hash = data.get("task_revision", {}).get("revision_hash")
+        policy_hash = str(data.get("render_policy_hash") or self.policy.sha256())
         for plan in plans:
             provenance = plan.get("provenance") or {}
-            if provenance.get("task_revision_hash") != revision_hash or provenance.get("config_hash") != self.policy.sha256():
+            if provenance.get("task_revision_hash") != revision_hash or provenance.get("config_hash") != policy_hash:
                 raise ValueError("技能调用结果已过期，请重新调用两库后再生成。")
 
         # 生图逻辑：固定内容与品牌色，只注入已通过门禁的五个文本方案。
-        image_binding = self.gateway.router.binding_for_state("initial_candidate_generation")
-        size_decision = resolve_render_size(spec, image_binding.model, self.policy.default_output_size)
-        render_size = size_decision.size
-        # Validate every paid image consumer before the first candidate request;
-        # a later rework must not discover an incompatible size after charging.
-        for state in ("initial_candidate_generation", "self_check_rework", "human_prompt_rework"):
-            validate_render_size(self.gateway.router.binding_for_state(state).model, render_size)
         style_names = {
             item.get("style_id"): item.get("style_name")
             for item in prepared.get("skill_invocations", {}).get("style_library", {}).get("selections", [])
@@ -1268,8 +1293,10 @@ class WorkflowRunner:
         if batch["failed"]:
             raise CandidateBatchError(batch["failed"])
         return {**prepared, "candidates": batch["succeeded"],
-                "render_size": render_size, "render_size_source": size_decision.source,
-                "requested_output_spec": size_decision.requested_spec,
+                "render_size": render_size,
+                "render_size_source": data.get("render_size_source") or "persisted_checkpoint",
+                "requested_output_spec": data.get("requested_output_spec"),
+                "render_policy_hash": policy_hash,
                 "waiting": False,
                 "phase": "candidate_generation_completed"}
 
@@ -1286,7 +1313,8 @@ class WorkflowRunner:
                 "skill_invocation_history": [dict(item) for item in data.get("skill_invocation_history", [])],
                 "skill_invocation_approval": data.get("skill_invocation_approval") or {},
             }
-            return self._render_candidates(data, prepared)
+            boundary = self._freeze_render_boundary(data, prepared)
+            return self._render_candidates(boundary, prepared)
         if action and phase != "waiting_skill_approval":
             raise ValueError("当前不在技能调用人工确认阶段。")
 
@@ -1331,9 +1359,7 @@ class WorkflowRunner:
                 actor=decision_actor,
                 version_id=prepared["skill_invocation_current"].get("version_id"),
             )
-            approved_boundary = {**data, **prepared, "waiting": False,
-                                 "phase": "skill_approved_pending_render"}
-            self.store.checkpoint("initial_candidate_generation", approved_boundary)
+            approved_boundary = self._freeze_render_boundary(data, prepared)
             return self._render_candidates(approved_boundary, prepared)
 
         prepared = self._prepare_skill_invocations(data)
@@ -1343,7 +1369,8 @@ class WorkflowRunner:
         prepared["skill_invocation_approval"] = {
             "version_id": prepared["skill_invocation_current"].get("version_id"), "actor": "system:auto",
         }
-        return self._render_candidates(data, prepared)
+        approved_boundary = self._freeze_render_boundary(data, prepared)
+        return self._render_candidates(approved_boundary, prepared)
 
     def _extract_style(self, image_path: str, prompt: str) -> Any:
         if self.offline_mode:

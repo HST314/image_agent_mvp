@@ -188,6 +188,46 @@ def test_queued_job_exceeding_sla_becomes_retry_safe_without_execution(tmp_path:
     assert registry.get(second["job_id"])["status"] == "stalled"
 
 
+def test_worker_terminalizes_expired_queue_item_without_an_observer(tmp_path: Path) -> None:
+    """The execute boundary enforces the SLA even when nobody polls the job."""
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_executed = threading.Event()
+    second_terminalized = threading.Event()
+    registry = JobRegistry(
+        tmp_path / "jobs",
+        workers=1,
+        queue_sla_seconds=0.05,
+        heartbeat_interval_seconds=0.01,
+    )
+
+    def occupy_worker():
+        first_started.set()
+        assert release_first.wait(2)
+
+    registry.submit("project-1", "first-job", "first", occupy_worker)
+    assert first_started.wait(1)
+    second, _ = registry.submit(
+        "project-2",
+        "second-job",
+        "second",
+        lambda: second_executed.set(),
+        on_event=lambda record: second_terminalized.set() if record["status"] == "stalled" else None,
+    )
+
+    # Deliberately do not call get(), metrics(), submit(), or
+    # active_for_project() while the second job exceeds its queue SLA.
+    time.sleep(0.09)
+    release_first.set()
+
+    assert second_terminalized.wait(1)
+    assert second_executed.is_set() is False
+    record = registry.get(second["job_id"])
+    assert record["status"] == "stalled"
+    assert "started_at" not in record
+    assert [event["type"] for event in record["events"]] == ["queued", "stalled"]
+
+
 def test_running_job_heartbeat_and_executor_metrics_are_observable(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()

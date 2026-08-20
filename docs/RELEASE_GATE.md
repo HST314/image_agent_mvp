@@ -2,7 +2,7 @@
 
 候审版本必须通过完整 `pytest`、静态编译和 `scripts/release_install_gate.py`。后者在源码树外构建 wheel、检查依赖元数据、安装 wheel、执行离线五候选最小流程，并使用锁定依赖再次运行全套测试。离线 fixture 必须可重复执行。
 
-CI 执行器以 `python scripts/release_install_gate.py` 作为唯一安装态入口；仓库托管工作流需由具备 GitHub `workflow` 权限的维护者接线。
+CI 的 Linux 安装态入口为 `python scripts/release_install_gate.py`。仓库托管工作流还必须在 `windows-latest` 上从 `requirements.lock` 全新安装依赖，并运行 `tests/test_windows_portalocker_backend.py`；该测试不 mock `portalocker.lock/unlock`，会实际调用 Windows 后端并验证 `GET /api/projects/{project_id}/branches` 返回 200。两个 job 都是发布阻塞门禁。
 
 真实供应商 smoke 默认禁用，仅允许在受控凭据、明确费用确认和不会重放既有调用的环境中人工启用。CI 日志不得记录密钥或完整供应商载荷。
 

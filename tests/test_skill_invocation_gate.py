@@ -95,12 +95,25 @@ def test_auto_skill_gate_keeps_continuous_five_render_flow(tmp_path: Path, monke
     store = ProjectStore(tmp_path / "projects", "skill-auto")
     store.create(RuntimePolicy(offline_mode=True).snapshot())
     runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    original_image_call = runner._image_call
+    observed_boundaries = []
+
+    def render_after_persisted_boundary(state, prompt, references, *, index=None, size=None):
+        persisted = store.resume()
+        assert persisted is not None
+        observed_boundaries.append((persisted["phase"], persisted["render_size"], size))
+        return original_image_call(state, prompt, references, index=index, size=size)
+
+    monkeypatch.setattr(runner, "_image_call", render_after_persisted_boundary)
 
     result = runner.run(_approved_snapshot(), RunnerOptions(), only_state="initial_candidate_generation")
     assert result["phase"] == "candidate_generation_completed"
     assert result["domain_state"] == "five_render"
     assert len(result["candidates"]) == 5
     assert result["skill_invocation_approval"]["actor"] == "system:auto"
+    assert observed_boundaries == [
+        ("skill_approved_pending_render", "2560x1440", "2560x1440")
+    ] * 5
 
 
 def test_branch_retry_uses_only_candidates_from_the_approved_skill_version(
