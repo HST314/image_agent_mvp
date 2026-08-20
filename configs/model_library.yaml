@@ -7,16 +7,16 @@
 # 新增备选模型时按能力归入对应分组；id 在库内唯一。
 library_id: image-agent-model-library
 text_models:
-  - id: deepseek-v4-flash-260425
-    label: DeepSeek V4 Flash（260425）
-    provider: ark
-    model: deepseek-v4-flash-260425
-    description: 文本推理模型，用于需求澄清与任务书撰写
-    parameters: {}
   - id: deepseek-v4-flash-ga-260731
     label: DeepSeek V4 Flash 正式版
     provider: ark
     model: deepseek-v4-flash-ga-260731
+    description: 文本推理模型，用于需求澄清与任务书撰写
+    parameters: {}
+  - id: deepseek-v4-flash-260425
+    label: DeepSeek V4 Flash（260425）
+    provider: ark
+    model: deepseek-v4-flash-260425
     description: 文本推理模型，用于需求澄清与任务书撰写
     parameters: {}
 vlm_models:
