@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -11,6 +12,9 @@ from typing import Any
 
 
 _SENSITIVE_KEYS = ("api_key", "apikey", "authorization", "access_token", "secret", "cookie")
+_SENSITIVE_VALUE = re.compile(
+    r"(?:bearer\s+\S+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,})", re.I
+)
 _USAGE_SINK: ContextVar[Callable[[ProviderUsageObservation], None] | None] = ContextVar(
     "provider_usage_sink", default=None
 )
@@ -43,8 +47,10 @@ class ProviderUsageObservation:
                 raise ValueError("Cached provider tokens exceed input tokens.")
             if self.token_usage["reasoning_tokens"] > self.token_usage["output_tokens"]:
                 raise ValueError("Reasoning provider tokens exceed output tokens.")
+        if len(self.billing_units) > 64:
+            raise ValueError("Provider billing units exceed the accounting boundary.")
         safe_units = []
-        for item in self.billing_units[:64]:
+        for item in self.billing_units:
             if (
                 not isinstance(item, dict)
                 or not isinstance(item.get("unit"), str)
@@ -154,7 +160,8 @@ def _bounded_json_object(value: Any) -> dict[str, Any]:
         if item is None or isinstance(item, (bool, int, float)):
             return item
         if isinstance(item, str):
-            return item[:256]
+            bounded = item[:256]
+            return "[REDACTED]" if _SENSITIVE_VALUE.search(bounded) else bounded
         if isinstance(item, list):
             return [sanitize(child, depth + 1) for child in item[:64]]
         if isinstance(item, dict):

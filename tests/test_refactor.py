@@ -117,6 +117,21 @@ def test_10b_gateway_persists_provider_usage_without_changing_caller_result(tmp_
     assert usage["token_usage"]["total_tokens"]==5
     assert "api_key" not in usage["raw_usage"]
 
+def test_10c_provider_usage_redacts_sensitive_values_and_rejects_excess_units():
+    observed=ProviderUsageObservation(
+        provider_request_id="provider-2", token_usage=None,
+        billing_units=({"unit":"image","quantity":1,"attributes":{}},),
+        raw_usage={"note":"Bearer sensitive-provider-value"},
+    )
+    assert observed.raw_usage == {"note":"[REDACTED]"}
+    with pytest.raises(ValueError, match="exceed"):
+        ProviderUsageObservation(
+            provider_request_id=None, token_usage=None,
+            billing_units=tuple(
+                {"unit":"image","quantity":1,"attributes":{}} for _ in range(65)
+            ), raw_usage={},
+        )
+
 def test_11_batch_partial_success_retry_and_idempotency(tmp_path: Path):
     store=ProjectStore(tmp_path,"p"); store.create(); calls={}
     def render(i):
