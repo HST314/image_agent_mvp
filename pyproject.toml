@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "image-agent-mvp"
-version = "1.8.0"
+version = "1.8.1"
 description = "Generic Phase 1 image agent core with offline human approval gates."
 requires-python = ">=3.10"
 dependencies = [
