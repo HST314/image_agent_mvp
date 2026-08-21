@@ -837,6 +837,29 @@ async def project_timeline_events(project_id: str, after: int = 0, limit: int = 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/api/projects/{project_id}/usage")
+async def project_usage(project_id: str, after: int = 0, limit: int = 100) -> dict[str, Any]:
+    """Expose a strict, secret-free usage observation stream for the Harness."""
+
+    if after < 0 or not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="游标或分页大小无效。")
+    fields = {
+        "sequence", "timestamp", "usage_id", "request_id", "provider_request_id",
+        "provider", "model", "call_type", "usage_basis", "token_usage",
+        "billing_units", "raw_usage",
+    }
+    try:
+        events = await asyncio.to_thread(lambda: _store(project_id).history())
+        usage = [
+            {key: value for key, value in event.items() if key in fields}
+            for event in events
+            if event.get("type") == "model_usage_recorded"
+        ]
+        return _page(usage, after, limit, cursor="sequence")
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @app.get("/api/projects/{project_id}/traces")
 async def project_traces(project_id: str, after: int = 0, limit: int = 100) -> dict[str, Any]:
     if after < 0 or not 1 <= limit <= 500:

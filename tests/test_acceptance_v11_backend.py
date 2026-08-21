@@ -110,6 +110,28 @@ def test_t29_t30_timeline_cursor_sse_and_trace_redaction(tmp_path: Path, monkeyp
     assert "trace_safe" in raw
 
 
+def test_usage_observation_api_is_paginated_and_secret_free(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, _ = _project(tmp_path, "usage-api")
+    store.events.append(
+        "model_usage_recorded", usage_id="usage_one", request_id="local-one",
+        provider_request_id="provider-one", provider="ark", model="reasoner",
+        call_type="reasoning_llm", usage_basis="tokens",
+        token_usage={"input_tokens": 7, "output_tokens": 3, "cached_input_tokens": 1,
+                     "reasoning_tokens": 2, "total_tokens": 10},
+        billing_units=[], raw_usage={"prompt_tokens": 7, "completion_tokens": 3},
+        api_key="must-not-cross",
+    )
+    client = TestClient(main_front.app)
+
+    first = client.get(f"/api/projects/{store.project_id}/usage", params={"after": 0, "limit": 1})
+    assert first.status_code == 200
+    body = first.json()
+    assert len(body["items"]) == 1 and body["has_more"] is False
+    assert body["items"][0]["token_usage"]["total_tokens"] == 10
+    assert "must-not-cross" not in json.dumps(body)
+
+
 def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
     store, _ = _project(tmp_path)

@@ -14,6 +14,7 @@ from interaction.question_generator import generate_question_card
 from model_router.executor import ModelCallError, ModelExecutor
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRouter
+from model_router.usage import ProviderCallResult, ProviderUsageObservation
 from prompt_engine.context_assembler import CapabilityMismatchError, ContextAssembler, ContextPolicy
 from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
@@ -96,6 +97,22 @@ def test_10_router_hot_reload_role_capability_and_gateway_audit(tmp_path: Path):
     gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
     result=gateway.call("initial_candidate_generation",ModelRole.TEXT_TO_IMAGE_MODEL,lambda route:{"ok":True},messages=[{"role":"user","content":"x"}],variables={},template_id="x",template_version="1",input_refs=[])
     assert result["ok"] and any(e["type"]=="model_config_loaded" for e in store.history())
+
+def test_10b_gateway_persists_provider_usage_without_changing_caller_result(tmp_path: Path):
+    store=ProjectStore(tmp_path,"usage"); store.create(); router=ModelRouter.from_file(Path("configs/model_config.yaml"))
+    gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
+    observed=ProviderUsageObservation(
+        provider_request_id="provider-1",
+        token_usage={"input_tokens":3,"output_tokens":2,"cached_input_tokens":1,"reasoning_tokens":1,"total_tokens":5},
+        billing_units=(), raw_usage={"prompt_tokens":3,"completion_tokens":2,"api_key":"removed"},
+    )
+    result=gateway.call("intake_clarify",ModelRole.REASONING_LLM,
+        lambda route:ProviderCallResult("done",observed),messages=[{"role":"user","content":"x"}],
+        variables={},template_id="usage",template_version="1",input_refs=[])
+    usage=next(event for event in store.history() if event["type"]=="model_usage_recorded")
+    assert result=="done" and usage["provider_request_id"]=="provider-1"
+    assert usage["token_usage"]["total_tokens"]==5
+    assert "api_key" not in usage["raw_usage"]
 
 def test_11_batch_partial_success_retry_and_idempotency(tmp_path: Path):
     store=ProjectStore(tmp_path,"p"); store.create(); calls={}

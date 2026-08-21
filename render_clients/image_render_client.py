@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from model_router.usage import ProviderCallResult
+
 
 class ImageRenderClient:
     """Base render client that accepts already-composed payloads."""
@@ -17,7 +19,9 @@ class ImageRenderClient:
         self.max_retries = max_retries
         self.idempotency_key = idempotency_key
 
-    def render(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def render(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | ProviderCallResult[dict[str, Any]]:
         """Render one image payload and return provider-normalized data."""
 
         raise NotImplementedError

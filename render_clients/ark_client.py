@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from model_router.usage import ProviderCallResult, observation_from_response
 from render_clients.image_render_client import ImageRenderClient
 
 
@@ -31,7 +32,9 @@ class ArkImageRenderClient(ImageRenderClient):
             timeout=timeout, max_retries=max_retries, idempotency_key=idempotency_key,
         )
 
-    def render(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def render(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | ProviderCallResult[dict[str, Any]]:
         """Render one image and normalize the result to a URL payload."""
 
         request_payload = {**payload, "model": payload.get("model") or self.model}
@@ -39,7 +42,9 @@ class ArkImageRenderClient(ImageRenderClient):
             raise RuntimeError("未配置 Ark 凭证；只有显式离线测试客户端可以生成模拟资产。")
         return self._remote_response(request_payload)
 
-    def _remote_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _remote_response(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | ProviderCallResult[dict[str, Any]]:
         """Call Ark through the OpenAI SDK-compatible images endpoint."""
 
         try:
@@ -58,10 +63,24 @@ class ArkImageRenderClient(ImageRenderClient):
             extra_body=payload.get("extra_body", {"watermark": False}),
         )
         first = response.data[0]
-        return {
+        result = {
             "url": first.url,
             "provider": "ark",
             "model": payload["model"],
             "mock": False,
             "raw": response.model_dump(mode="json"),
         }
+        usage = observation_from_response(
+            response,
+            billing_units=(
+                {
+                    "unit": "image",
+                    "quantity": len(response.data),
+                    "attributes": {
+                        "resolution": str(payload.get("size", "2K")),
+                        "model_tier": str(payload["model"]),
+                    },
+                },
+            ),
+        )
+        return result if usage is None else ProviderCallResult(result, usage)

@@ -13,6 +13,7 @@ from storage.project_store import ProjectStore
 from workspace_cli import parser
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRouter
+from model_router.usage import ProviderCallResult
 
 
 def _task() -> ImageTaskCard:
@@ -105,15 +106,20 @@ def test_runtime_skill_degradation_switch_controls_style_fallback(tmp_path: Path
 
 def test_t07_paid_image_sdk_receives_timeout_zero_retry_and_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
     sdk = Mock(); sdk.images.generate.return_value.data = [Mock(url="https://asset")]
-    sdk.images.generate.return_value.model_dump.return_value = {}
+    sdk.images.generate.return_value.model_dump.return_value = {"id": "image-provider-1"}
     constructor = Mock(return_value=sdk)
     monkeypatch.setattr("openai.OpenAI", constructor)
     client = ArkImageRenderClient(api_key="secret", timeout=12.5, max_retries=0,
                                   idempotency_key="idem-1")
-    client.render({"prompt": "x", "model": "m"})
+    result = client.render({"prompt": "x", "model": "m", "size": "2560x1440"})
     kwargs = constructor.call_args.kwargs
     assert kwargs["timeout"] == 12.5 and kwargs["max_retries"] == 0
     assert kwargs["default_headers"] == {"Idempotency-Key": "idem-1"}
+    assert isinstance(result, ProviderCallResult)
+    assert result.usage.billing_units == ({
+        "unit": "image", "quantity": 1,
+        "attributes": {"resolution": "2560x1440", "model_tier": "m"},
+    },)
 
 
 def test_t07_cli_exposes_unknown_query_and_manual_resolution() -> None:
