@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 
-T = TypeVar("T")
 _SENSITIVE_KEYS = ("api_key", "apikey", "authorization", "access_token", "secret", "cookie")
+_USAGE_SINK: ContextVar[Callable[[ProviderUsageObservation], None] | None] = ContextVar(
+    "provider_usage_sink", default=None
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,12 +59,23 @@ class ProviderUsageObservation:
         object.__setattr__(self, "raw_usage", _bounded_json_object(self.raw_usage))
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderCallResult(Generic[T]):
-    """Keep provider accounting attached until the gateway persists it."""
+@contextmanager
+def capture_provider_usage(
+    sink: Callable[[ProviderUsageObservation], None],
+) -> Iterator[None]:
+    """Capture usage beside a call without changing its business return type."""
 
-    value: T
-    usage: ProviderUsageObservation
+    token = _USAGE_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _USAGE_SINK.reset(token)
+
+
+def record_provider_usage(observation: ProviderUsageObservation | None) -> None:
+    sink = _USAGE_SINK.get()
+    if observation is not None and sink is not None:
+        sink(observation)
 
 
 def observation_from_response(

@@ -13,7 +13,7 @@ from storage.project_store import ProjectStore
 from workspace_cli import parser
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRouter
-from model_router.usage import ProviderCallResult
+from model_router.usage import capture_provider_usage
 
 
 def _task() -> ImageTaskCard:
@@ -111,12 +111,14 @@ def test_t07_paid_image_sdk_receives_timeout_zero_retry_and_idempotency(monkeypa
     monkeypatch.setattr("openai.OpenAI", constructor)
     client = ArkImageRenderClient(api_key="secret", timeout=12.5, max_retries=0,
                                   idempotency_key="idem-1")
-    result = client.render({"prompt": "x", "model": "m", "size": "2560x1440"})
+    observed = []
+    with capture_provider_usage(observed.append):
+        result = client.render({"prompt": "x", "model": "m", "size": "2560x1440"})
     kwargs = constructor.call_args.kwargs
     assert kwargs["timeout"] == 12.5 and kwargs["max_retries"] == 0
     assert kwargs["default_headers"] == {"Idempotency-Key": "idem-1"}
-    assert isinstance(result, ProviderCallResult)
-    assert result.usage.billing_units == ({
+    assert result["url"] == "https://asset"
+    assert observed[0].billing_units == ({
         "unit": "image", "quantity": 1,
         "attributes": {"resolution": "2560x1440", "model_tier": "m"},
     },)

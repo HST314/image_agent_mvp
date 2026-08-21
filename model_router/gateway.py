@@ -5,7 +5,7 @@ from uuid import uuid4
 from agent_core.models import ModelRole
 from model_router.executor import ModelExecutor
 from model_router.router import ModelRouter, ModelRoute
-from model_router.usage import ProviderCallResult, ProviderUsageObservation
+from model_router.usage import ProviderUsageObservation, capture_provider_usage
 from storage.project_store import ProjectStore, content_hash
 
 class RuntimeModelGateway:
@@ -34,36 +34,30 @@ class RuntimeModelGateway:
         self.store.events.append("model_config_loaded", state=state, config_hash=self.router.config_hash, binding=snapshot)
         self.store.events.append("model_call_started", state=state, trace_id=trace, idempotency_key=idempotency_key)
         try:
-            observed_usage: ProviderUsageObservation | None = None
-
-            def paid_call() -> Any:
-                nonlocal observed_usage
-                response = invoke(route)
-                if isinstance(response, ProviderCallResult):
-                    observed_usage = response.usage
-                    return response.value
-                return response
-
-            result = self.executor.audited_run(paid_call, prompts=self.store.prompts, audit=audit)
+            observed_usage: list[ProviderUsageObservation] = []
+            with capture_provider_usage(observed_usage.append):
+                result = self.executor.audited_run(
+                    lambda: invoke(route), prompts=self.store.prompts, audit=audit
+                )
             self.store.events.append("model_call_completed", state=state, trace_id=trace, idempotency_key=idempotency_key)
-            if observed_usage is not None:
-                token_usage = observed_usage.token_usage
+            for index, usage in enumerate(observed_usage):
+                token_usage = usage.token_usage
                 self.store.events.append(
                     "model_usage_recorded",
-                    usage_id=f"usage_{content_hash([idempotency_key, binding.model])[:24]}",
+                    usage_id=f"usage_{content_hash([idempotency_key, binding.model, index])[:24]}",
                     request_id=idempotency_key,
-                    provider_request_id=observed_usage.provider_request_id,
+                    provider_request_id=usage.provider_request_id,
                     provider=binding.provider,
                     model=binding.model,
                     call_type=role.value,
                     usage_basis=(
-                        "mixed" if token_usage and observed_usage.billing_units
+                        "mixed" if token_usage and usage.billing_units
                         else "tokens" if token_usage
                         else "image_units"
                     ),
                     token_usage=token_usage,
-                    billing_units=list(observed_usage.billing_units),
-                    raw_usage=observed_usage.raw_usage,
+                    billing_units=list(usage.billing_units),
+                    raw_usage=usage.raw_usage,
                 )
             return result
         except Exception as exc:

@@ -14,7 +14,7 @@ from interaction.question_generator import generate_question_card
 from model_router.executor import ModelCallError, ModelExecutor
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRouter
-from model_router.usage import ProviderCallResult, ProviderUsageObservation
+from model_router.usage import ProviderUsageObservation, record_provider_usage
 from prompt_engine.context_assembler import CapabilityMismatchError, ContextAssembler, ContextPolicy
 from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
@@ -106,8 +106,11 @@ def test_10b_gateway_persists_provider_usage_without_changing_caller_result(tmp_
         token_usage={"input_tokens":3,"output_tokens":2,"cached_input_tokens":1,"reasoning_tokens":1,"total_tokens":5},
         billing_units=(), raw_usage={"prompt_tokens":3,"completion_tokens":2,"api_key":"removed"},
     )
+    def invoke(_route):
+        record_provider_usage(observed)
+        return "done"
     result=gateway.call("intake_clarify",ModelRole.REASONING_LLM,
-        lambda route:ProviderCallResult("done",observed),messages=[{"role":"user","content":"x"}],
+        invoke,messages=[{"role":"user","content":"x"}],
         variables={},template_id="usage",template_version="1",input_refs=[])
     usage=next(event for event in store.history() if event["type"]=="model_usage_recorded")
     assert result=="done" and usage["provider_request_id"]=="provider-1"

@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from agent_core.models import StateBinding
 from model_router.router import PROVIDER_KEY_ENV
-from model_router.usage import ProviderCallResult, observation_from_response
+from model_router.usage import observation_from_response, record_provider_usage
 
 
 DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
@@ -33,18 +33,14 @@ PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
 class TextModelClient(Protocol):
     """Protocol for text-capable model clients."""
 
-    def complete(
-        self, prompt: str, stream_handler: Callable[[str], None] | None = None
-    ) -> str | ProviderCallResult[str]:
+    def complete(self, prompt: str, stream_handler: Callable[[str], None] | None = None) -> str:
         """Return text completion for a prompt."""
 
 
 class VisionLanguageModelClient(Protocol):
     """Protocol for VLM visual inspection clients."""
 
-    def inspect(
-        self, image_url: str, prompt: str
-    ) -> dict[str, object] | ProviderCallResult[dict[str, object]]:
+    def inspect(self, image_url: str, prompt: str) -> dict[str, object]:
         """Return a structured visual inspection payload."""
 
 
@@ -66,9 +62,7 @@ class OpenAICompatibleTextClient:
         self.parameters = parameters or {}
         self.timeout = timeout
 
-    def complete(
-        self, prompt: str, stream_handler: Callable[[str], None] | None = None
-    ) -> str | ProviderCallResult[str]:
+    def complete(self, prompt: str, stream_handler: Callable[[str], None] | None = None) -> str:
         """Call an OpenAI-compatible chat-completions endpoint."""
 
         try:
@@ -108,14 +102,15 @@ class OpenAICompatibleTextClient:
             text = "".join(chunks)
             if not text:
                 raise RuntimeError("推理模型返回了空响应。")
-            return text if usage is None else ProviderCallResult(text, usage)
+            record_provider_usage(usage)
+            return text
 
         response = client.chat.completions.create(**request)
         content = response.choices[0].message.content
         if not content:
             raise RuntimeError("推理模型返回了空响应。")
-        usage = observation_from_response(response)
-        return content if usage is None else ProviderCallResult(content, usage)
+        record_provider_usage(observation_from_response(response))
+        return content
 
 
 class OpenAICompatibleVisionLanguageClient:
@@ -136,9 +131,7 @@ class OpenAICompatibleVisionLanguageClient:
         self.parameters = parameters or {}
         self.timeout = timeout
 
-    def inspect(
-        self, image_url: str, prompt: str
-    ) -> dict[str, object] | ProviderCallResult[dict[str, object]]:
+    def inspect(self, image_url: str, prompt: str) -> dict[str, object]:
         """Call a VLM and parse the expected JSON inspection object."""
 
         try:
@@ -183,8 +176,8 @@ class OpenAICompatibleVisionLanguageClient:
                 payload["confidence"] = float(payload["confidence"])
             except Exception:
                 payload["confidence"] = 0.9
-        usage = observation_from_response(response)
-        return payload if usage is None else ProviderCallResult(payload, usage)
+        record_provider_usage(observation_from_response(response))
+        return payload
 
 
 def build_text_client(binding: StateBinding, *, timeout: float = 180) -> TextModelClient | None:
