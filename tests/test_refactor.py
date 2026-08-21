@@ -115,15 +115,31 @@ def test_10b_gateway_persists_provider_usage_without_changing_caller_result(tmp_
     usage=next(event for event in store.history() if event["type"]=="model_usage_recorded")
     assert result=="done" and usage["provider_request_id"]=="provider-1"
     assert usage["token_usage"]["total_tokens"]==5
-    assert "api_key" not in usage["raw_usage"]
+    assert usage["raw_usage"] == {"prompt_tokens":3,"completion_tokens":2}
 
-def test_10c_provider_usage_redacts_sensitive_values_and_rejects_excess_units():
+def test_10c_provider_usage_only_preserves_allowlisted_metrics_and_rejects_excess_units():
     observed=ProviderUsageObservation(
         provider_request_id="provider-2", token_usage=None,
         billing_units=({"unit":"image","quantity":1,"attributes":{}},),
-        raw_usage={"note":"Bearer sensitive-provider-value"},
+        raw_usage={
+            "prompt_tokens": 7,
+            "completion_tokens": 3,
+            "total_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 2, "password": "hidden"},
+            "completion_tokens_details": {"reasoning_tokens": 1},
+            "note": "Bearer sensitive-provider-value",
+            "password": "plain-password-value",
+            "private_key": "plain-private-key-value",
+            "token": "plain-token-value",
+        },
     )
-    assert observed.raw_usage == {"note":"[REDACTED]"}
+    assert observed.raw_usage == {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "total_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 2},
+        "completion_tokens_details": {"reasoning_tokens": 1},
+    }
     with pytest.raises(ValueError, match="exceed"):
         ProviderUsageObservation(
             provider_request_id=None, token_usage=None,

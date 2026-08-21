@@ -15,6 +15,44 @@ _SENSITIVE_KEYS = ("api_key", "apikey", "authorization", "access_token", "secret
 _SENSITIVE_VALUE = re.compile(
     r"(?:bearer\s+\S+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,})", re.I
 )
+_RAW_USAGE_COUNTERS = frozenset(
+    {
+        "accepted_prediction_tokens",
+        "audio_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "cached_input_tokens",
+        "cached_tokens",
+        "completion_tokens",
+        "image_tokens",
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "reasoning_tokens",
+        "rejected_prediction_tokens",
+        "text_tokens",
+        "total_tokens",
+    }
+)
+_RAW_USAGE_DETAIL_OBJECTS = frozenset(
+    {
+        "completion_tokens_details",
+        "input_tokens_details",
+        "output_tokens_details",
+        "prompt_tokens_details",
+    }
+)
+_RAW_USAGE_DETAIL_COUNTERS = frozenset(
+    {
+        "accepted_prediction_tokens",
+        "audio_tokens",
+        "cached_tokens",
+        "image_tokens",
+        "reasoning_tokens",
+        "rejected_prediction_tokens",
+        "text_tokens",
+    }
+)
 _USAGE_SINK: ContextVar[Callable[[ProviderUsageObservation], None] | None] = ContextVar(
     "provider_usage_sink", default=None
 )
@@ -62,7 +100,7 @@ class ProviderUsageObservation:
                 raise ValueError("Provider billing units exceed the accounting boundary.")
             safe_units.append(safe_item)
         object.__setattr__(self, "billing_units", tuple(safe_units))
-        object.__setattr__(self, "raw_usage", _bounded_json_object(self.raw_usage))
+        object.__setattr__(self, "raw_usage", metric_usage_only(self.raw_usage))
 
 
 @contextmanager
@@ -95,7 +133,7 @@ def observation_from_response(
     raw_usage = _model_dump(getattr(response, "usage", None))
     if not raw_usage and isinstance(dumped.get("usage"), dict):
         raw_usage = dict(dumped["usage"])
-    safe_usage = _bounded_json_object(raw_usage)
+    safe_usage = metric_usage_only(raw_usage)
     token_usage = _token_usage(safe_usage)
     if token_usage is None and not billing_units:
         return None
@@ -146,6 +184,34 @@ def _nonnegative_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def metric_usage_only(value: Any) -> dict[str, Any]:
+    """Return only bounded, numeric provider accounting fields.
+
+    Provider response metadata is untrusted. Unknown keys and malformed counter
+    values are omitted so credentials or arbitrary metadata cannot cross the API
+    boundary merely because a denylist did not anticipate their names.
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    metrics: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _RAW_USAGE_COUNTERS:
+            counter = _nonnegative_int(item)
+            if counter is not None:
+                metrics[key] = counter
+        elif key in _RAW_USAGE_DETAIL_OBJECTS and isinstance(item, dict):
+            details = {
+                detail_key: counter
+                for detail_key, detail_value in item.items()
+                if detail_key in _RAW_USAGE_DETAIL_COUNTERS
+                and (counter := _nonnegative_int(detail_value)) is not None
+            }
+            if details:
+                metrics[key] = details
+    return metrics
 
 
 def _bounded_json_object(value: Any) -> dict[str, Any]:
