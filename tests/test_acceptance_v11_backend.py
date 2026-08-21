@@ -119,7 +119,14 @@ def test_usage_observation_api_is_paginated_and_secret_free(tmp_path: Path, monk
         call_type="reasoning_llm", usage_basis="tokens",
         token_usage={"input_tokens": 7, "output_tokens": 3, "cached_input_tokens": 1,
                      "reasoning_tokens": 2, "total_tokens": 10},
-        billing_units=[], raw_usage={"prompt_tokens": 7, "completion_tokens": 3},
+        billing_units=[], raw_usage={
+            "prompt_tokens": 7,
+            "completion_tokens": 3,
+            "total_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 1, "private_key": "hidden"},
+            "password": "plain-password-value",
+            "token": "plain-token-value",
+        },
         api_key="must-not-cross",
     )
     client = TestClient(main_front.app)
@@ -129,7 +136,15 @@ def test_usage_observation_api_is_paginated_and_secret_free(tmp_path: Path, monk
     body = first.json()
     assert len(body["items"]) == 1 and body["has_more"] is False
     assert body["items"][0]["token_usage"]["total_tokens"] == 10
+    assert body["items"][0]["raw_usage"] == {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "total_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 1},
+    }
     assert "must-not-cross" not in json.dumps(body)
+    assert "plain-password-value" not in json.dumps(body)
+    assert "plain-token-value" not in json.dumps(body)
 
 
 def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(tmp_path: Path, monkeypatch):

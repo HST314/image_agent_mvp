@@ -36,6 +36,7 @@ from agent_core.annotation import compose
 from storage.project_store import CorruptProjectError
 from storage.provider_assets import ArtifactCorruptError, ArtifactNotFoundError
 from diagnostics import run_diagnostics
+from model_router.usage import metric_usage_only
 
 load_dotenv(".env")  # 在程序启动时自动读取当前目录下的 .env 文件
 
@@ -850,11 +851,13 @@ async def project_usage(project_id: str, after: int = 0, limit: int = 100) -> di
     }
     try:
         events = await asyncio.to_thread(lambda: _store(project_id).history())
-        usage = [
-            {key: value for key, value in event.items() if key in fields}
-            for event in events
-            if event.get("type") == "model_usage_recorded"
-        ]
+        usage = []
+        for event in events:
+            if event.get("type") != "model_usage_recorded":
+                continue
+            observation = {key: value for key, value in event.items() if key in fields}
+            observation["raw_usage"] = metric_usage_only(observation.get("raw_usage"))
+            usage.append(observation)
         return _page(usage, after, limit, cursor="sequence")
     except Exception as exc:
         raise _translate_error(exc) from exc
