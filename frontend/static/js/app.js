@@ -19,9 +19,23 @@ import { captureWorkspaceState } from './workspace_state.js';
 
 async function boot() {
   patch({ offline: safeGet('studio-offline') === 'true' });
+  try {
+    const context = await api.runtimeContext();
+    patch({
+      managedByHarness: context.managed_by_harness === true,
+      managedProjectId: context.project_id || null,
+    });
+  } catch (error) {
+    toast(error.message, 'error');
+  }
   bindChrome();
   await loadProjects();
-  goHome();
+  if (state.managedByHarness && state.managedProjectId
+      && state.projects.some((project) => project.project_id === state.managedProjectId)) {
+    await openProject(state.managedProjectId);
+  } else {
+    goHome();
+  }
 }
 
 function safeGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
@@ -46,7 +60,7 @@ function renderNav() {
   const nav = $('#project-list');
   nav.textContent = '';
   if (!state.projects.length) {
-    nav.append(el('div', { class: 'sidebar__empty', text: '还没有工程。创建第一个视觉任务开始工作。' }));
+    nav.append(el('div', { class: 'sidebar__empty', text: state.managedByHarness ? '等待主系统启动当前实例。' : '还没有工程。创建第一个视觉任务开始工作。' }));
     return;
   }
   for (const p of state.projects) {
@@ -201,6 +215,10 @@ const setView = viewSwitcher.setView;
 /* ---- 新建工程对话框 ---- */
 
 function showCreate() {
+  if (state.managedByHarness) {
+    toast('受管实例的任务卡请在主系统中审阅和启动。', 'error');
+    return;
+  }
   const dialog = $('#project-dialog');
   $('#project-form').reset();
   $('#offline').checked = state.offline;
@@ -315,15 +333,15 @@ function collapseSidebar() {
 }
 
 function bindChrome() {
-  $('#new-button').addEventListener('click', showCreate);
+  $('#new-button')?.addEventListener('click', showCreate);
   $('#refresh-button').addEventListener('click', () => {
     if (state.view !== 'workspace') { refreshAuxPage(); return; }
     if (state.current) openProject(state.current.project_id);
     else loadProjects().then(goHome);
   });
-  $('#project-form').addEventListener('submit', createProject);
+  $('#project-form')?.addEventListener('submit', createProject);
   $$('#project-dialog [data-close]').forEach((b) => b.addEventListener('click', () => $('#project-dialog').close()));
-  $('#project-dialog').addEventListener('cancel', (event) => { event.preventDefault(); $('#project-dialog').close(); });
+  $('#project-dialog')?.addEventListener('cancel', (event) => { event.preventDefault(); $('#project-dialog').close(); });
   $$('.topnav__tab').forEach((tab) => tab.addEventListener('click', () => setView(tab.dataset.view)));
   const sidebar = $('#sidebar');
   sidebar.addEventListener('mouseenter', () => applySidebar(true));

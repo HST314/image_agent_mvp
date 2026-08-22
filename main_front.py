@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -18,7 +20,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 import yaml
@@ -54,6 +56,24 @@ BRANCH_NAME_PATTERN = r"^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff._-]{1,6
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 # T10：defer_run 创建时持久化的入站任务卡文件名；jobs 引导路径据此启动首个推进。
 INTAKE_TASK_FILE = "intake_task.json"
+MANAGED_MODE = os.getenv("IMAGE_AGENT_MANAGED_MODE", "0") == "1"
+MANAGED_PROJECT_ID = os.getenv("IMAGE_AGENT_MANAGED_PROJECT_ID", "").strip()
+MANAGED_CONTROL_FILE = os.getenv("IMAGE_AGENT_CONTROL_FILE", "").strip()
+MANAGED_ADAPTER_HEADER = "X-Harness-Adapter-Key"
+
+
+def _managed_adapter_key() -> str:
+    if not MANAGED_MODE or not MANAGED_CONTROL_FILE:
+        return ""
+    try:
+        value = json.loads(Path(MANAGED_CONTROL_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    key = value.get("request_key") if isinstance(value, dict) else None
+    return key if isinstance(key, str) and len(key) >= 32 else ""
+
+
+MANAGED_ADAPTER_KEY = _managed_adapter_key()
 LOGGER = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -480,8 +500,21 @@ def _page(items: list[dict[str, Any]], after: int, limit: int, *, cursor: str) -
 
 
 @app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    return FileResponse(FRONTEND_ROOT / "index.html", media_type="text/html")
+async def index() -> Response:
+    if not MANAGED_MODE:
+        return FileResponse(FRONTEND_ROOT / "index.html", media_type="text/html")
+    html = (FRONTEND_ROOT / "index.html").read_text(encoding="utf-8")
+    for name in ("action", "dialog"):
+        start = f"<!-- standalone-create-{name}-start -->"
+        end = f"<!-- standalone-create-{name}-end -->"
+        before, marker, remainder = html.partition(start)
+        if not marker:
+            continue
+        _, closing, after = remainder.partition(end)
+        if not closing:
+            continue
+        html = before + after
+    return HTMLResponse(html)
 
 
 # 前端模块化静态资源（T35）：仅暴露 frontend/static 下的 js/css，Starlette 内部拒绝路径穿越。
@@ -497,6 +530,14 @@ async def health(response: Response) -> dict[str, Any]:
     if result["status"] != "ok":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return result
+
+
+@app.get("/api/runtime-context")
+async def runtime_context() -> dict[str, Any]:
+    return {
+        "managed_by_harness": MANAGED_MODE,
+        "project_id": MANAGED_PROJECT_ID if MANAGED_MODE else None,
+    }
 
 
 @app.get("/api/projects")
@@ -523,6 +564,47 @@ async def list_projects() -> dict[str, Any]:
 
 @app.post("/api/projects", status_code=status.HTTP_201_CREATED)
 async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
+    if MANAGED_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "MANAGED_BY_HARNESS",
+                "message": "受管实例的任务卡只能由主系统创建，请返回主系统审阅并启动。",
+            },
+        )
+    return await _create_project(body)
+
+
+@app.post("/api/managed/projects", status_code=status.HTTP_201_CREATED)
+async def create_managed_project(
+    body: CreateProjectRequest,
+    request: Request,
+) -> dict[str, Any]:
+    client_host = request.client.host if request.client is not None else ""
+    try:
+        loopback = ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        loopback = False
+    supplied_key = request.headers.get(MANAGED_ADAPTER_HEADER, "")
+    if (
+        not MANAGED_MODE
+        or not MANAGED_PROJECT_ID
+        or not MANAGED_ADAPTER_KEY
+        or body.project_id != MANAGED_PROJECT_ID
+        or not hmac.compare_digest(supplied_key, MANAGED_ADAPTER_KEY)
+        or not loopback
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "MANAGED_BY_HARNESS",
+                "message": "该创建入口仅接受主系统 Adapter 的本机受管请求。",
+            },
+        )
+    return await _create_project(body)
+
+
+async def _create_project(body: CreateProjectRequest) -> dict[str, Any]:
     project_id = _safe_project_id(body.project_id)
     try:
         task = ImageTaskCard.model_validate(body.task_card)

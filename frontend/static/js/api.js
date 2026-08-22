@@ -100,6 +100,7 @@ export function assetIdOf(asset) {
 /* ---- 工程 ---- */
 export const listProjects = () => api('/api/projects');
 export const health = () => api('/api/health');
+export const runtimeContext = () => api('/api/runtime-context');
 export const getProject = (id, { signal, cache = 'default' } = {}) =>
   api(`/api/projects/${encodeURIComponent(id)}`, { signal, cache });
 export const createProject = (payload, { signal } = {}) =>

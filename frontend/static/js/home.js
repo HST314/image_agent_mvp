@@ -9,15 +9,17 @@ export function renderHome(content, { onNew, onOpen }) {
   const hero = el('section', { class: 'hero' });
   const mainPanel = el('div', { class: 'panel hero__main' });
   mainPanel.append(
-    el('span', { class: 'badge', text: '生产工作流' }),
-    el('h2', { text: '从清晰需求到可审计视觉交付' }),
-    el('p', { text: '在一个可恢复的工作台中完成需求澄清、任务确认、五图选择、逐轮质检和最终审批。每一步都保存为后端检查点。' }),
+    el('span', { class: 'badge', text: state.managedByHarness ? '主系统受管实例' : '生产工作流' }),
+    el('h2', { text: state.managedByHarness ? '任务卡由主系统统一管理' : '从清晰需求到可审计视觉交付' }),
+    el('p', { text: state.managedByHarness ? '请在主系统审阅、修改并确认 TaskCard。本工作台只承接已确认实例的创作与审批流程。' : '在一个可恢复的工作台中完成需求澄清、任务确认、五图选择、逐轮质检和最终审批。每一步都保存为后端检查点。' }),
   );
-  const newBtn = el('button', { class: 'btn btn--primary', type: 'button' });
-  newBtn.innerHTML = icons.image;
-  newBtn.append('新建视觉工程');
-  newBtn.addEventListener('click', onNew);
-  mainPanel.append(newBtn);
+  if (!state.managedByHarness) {
+    const newBtn = el('button', { class: 'btn btn--primary', type: 'button' });
+    newBtn.innerHTML = icons.image;
+    newBtn.append('新建视觉工程');
+    newBtn.addEventListener('click', onNew);
+    mainPanel.append(newBtn);
+  }
   const aside = el('aside', { class: 'panel hero__aside' });
   const stat = el('div');
   stat.append(el('div', { class: 'stat-label', text: '现有工程' }), el('div', { class: 'stat-value', text: String(state.projects.length) }));
@@ -43,9 +45,13 @@ export function renderHome(content, { onNew, onOpen }) {
     }
     recent.append(grid);
   } else {
-    const emptyBtn = el('button', { class: 'btn btn--secondary', type: 'button', text: '创建第一个工程' });
-    emptyBtn.addEventListener('click', onNew);
-    recent.append(stateBlock('empty', '尚无创作工程', '准备一份任务卡 JSON，系统会从真实后端工作流开始推进。', emptyBtn));
+    if (state.managedByHarness) {
+      recent.append(stateBlock('empty', '正在等待主系统启动实例', '主系统完成版本校验、凭据与预算门禁后，当前工程会自动出现在这里。'));
+    } else {
+      const emptyBtn = el('button', { class: 'btn btn--secondary', type: 'button', text: '创建第一个工程' });
+      emptyBtn.addEventListener('click', onNew);
+      recent.append(stateBlock('empty', '尚无创作工程', '准备一份任务卡 JSON，系统会从真实后端工作流开始推进。', emptyBtn));
+    }
   }
   content.append(recent);
 }

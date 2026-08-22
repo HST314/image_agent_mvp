@@ -31,6 +31,78 @@ def test_health_and_frontend_are_served(client: TestClient) -> None:
     assert "prefers-reduced-motion" in css.text
 
 
+def test_managed_mode_removes_duplicate_creation_and_rejects_direct_posts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path / "projects")
+    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
+    monkeypatch.setattr(main_front, "MANAGED_PROJECT_ID", "managed-project")
+    monkeypatch.setattr(main_front, "MANAGED_ADAPTER_KEY", "managed-adapter-key-for-tests-12345")
+    managed_client = TestClient(main_front.app, raise_server_exceptions=False)
+    page = managed_client.get("/")
+    assert page.status_code == 200
+    assert 'id="new-button"' not in page.text
+    assert 'id="project-form"' not in page.text
+    context = managed_client.get("/api/runtime-context").json()
+    assert context == {"managed_by_harness": True, "project_id": "managed-project"}
+
+    direct = managed_client.post(
+        "/api/projects",
+        json={"project_id": "managed-project", "task_card": {}, "offline": True},
+    )
+    assert direct.status_code == 409
+    assert direct.json()["detail"]["code"] == "MANAGED_BY_HARNESS"
+
+
+def test_managed_creation_requires_adapter_header_loopback_and_exact_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path / "projects")
+    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
+    monkeypatch.setattr(main_front, "MANAGED_PROJECT_ID", "managed-project")
+    monkeypatch.setattr(main_front, "MANAGED_ADAPTER_KEY", "managed-adapter-key-for-tests-12345")
+    real_ip_address = main_front.ipaddress.ip_address
+    monkeypatch.setattr(
+        main_front.ipaddress,
+        "ip_address",
+        lambda _value: real_ip_address("127.0.0.1"),
+    )
+    managed_client = TestClient(main_front.app, raise_server_exceptions=False)
+    task = {
+        "task_id": "managed-project",
+        "project_id": "managed-project",
+        "source_refs": [{"ref_id": "brief-1", "ref_type": "brief", "excerpt": "测试输入", "source_hash": None}],
+        "deliverable_goal": "生成受管视觉图",
+        "usage_context": "内部审核",
+        "category_ref": {"category_id": "generic", "version": "1"},
+        "known_facts": {},
+        "unknowns": {},
+        "asset_inputs": [],
+        "status": "draft",
+    }
+    rejected = managed_client.post(
+        "/api/managed/projects",
+        json={"project_id": "managed-project", "task_card": task, "offline": True},
+    )
+    assert rejected.status_code == 403
+    assert rejected.json()["detail"]["code"] == "MANAGED_BY_HARNESS"
+
+    created = managed_client.post(
+        "/api/managed/projects",
+        headers={main_front.MANAGED_ADAPTER_HEADER: "managed-adapter-key-for-tests-12345"},
+        json={
+            "project_id": "managed-project",
+            "task_card": task,
+            "offline": True,
+            "defer_run": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["project_id"] == "managed-project"
+
+
 @pytest.mark.parametrize("project_id", ["../escape", "a", "含中文", "bad/id"])
 def test_project_id_rejects_path_traversal(client: TestClient, project_id: str) -> None:
     response = client.get(f"/api/projects/{project_id}")
