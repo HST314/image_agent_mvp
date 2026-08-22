@@ -805,46 +805,126 @@ async def retry_delivery_note(project_id: str) -> dict[str, Any]:
     except Exception as exc: raise _translate_error(exc) from exc
 
 
+def _finalize_checkpoint_candidate(
+    store: ProjectStore,
+    checkpoint: dict[str, Any],
+) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    from agent_core.contracts import DesignDeliveryEnvelopeV1
+    from agent_core.delivery import build_delivery, finalize_delivery_candidate
+
+    snapshot = checkpoint.get("data") or {}
+    asset = snapshot.get("final_asset")
+    frozen = snapshot.get("frozen_delivery")
+    if (
+        not snapshot.get("completed")
+        or not asset
+        or not frozen
+        or frozen.get("asset_sha256") != asset.get("sha256")
+    ):
+        raise ValueError("DELIVERY_NOT_FROZEN")
+    source, record = store.artifacts.resolve(str(asset.get("artifact_id", "")))
+    if record.get("sha256") != asset.get("sha256"):
+        raise ValueError("最终图片与冻结交付记录不一致。")
+    raw_envelope = snapshot.get("delivery_envelope")
+    envelope = (
+        DesignDeliveryEnvelopeV1.model_validate(raw_envelope)
+        if raw_envelope
+        else build_delivery(
+            snapshot,
+            store.project_id,
+            asset,
+            f"project:{store.project_id}:asset:{asset['sha256']}",
+        )
+    )
+    marker = finalize_delivery_candidate(
+        store.root,
+        envelope,
+        source,
+        branch_id=str(checkpoint["branch"]),
+        checkpoint_id=str(checkpoint["checkpoint_id"]),
+        created_at=datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+            "+00:00", "Z"
+        ),
+    )
+    if not any(
+        event.get("type") == "delivery_candidate_finalized"
+        and event.get("bundle_id") == marker["bundle_id"]
+        for event in store.history()
+    ):
+        store.events.append(
+            "delivery_candidate_finalized",
+            bundle_id=marker["bundle_id"],
+            branch=marker["branch_id"],
+            checkpoint_id=marker["checkpoint_id"],
+            asset_sha256=marker["asset_sha256"],
+            files=marker["files"],
+        )
+    return marker
+
+
 @app.post("/api/projects/{project_id}/delivery/finalize")
 async def finalize_project_delivery(project_id: str) -> dict[str, Any]:
-    """Idempotently save the final image and Markdown note to the project delivery folder."""
+    """Idempotently freeze the current branch's image + Markdown candidate."""
     try:
         def execute():
-            from datetime import datetime, timezone
-            from agent_core.contracts import DesignDeliveryEnvelopeV1
-            from agent_core.delivery import build_delivery, finalize_delivery
-
             store = _store(project_id)
             with store.lock():
-                snapshot = store.resume() or {}
-                asset = snapshot.get("final_asset")
-                frozen = snapshot.get("frozen_delivery")
-                if not snapshot.get("completed") or not asset or not frozen or frozen.get("asset_sha256") != asset.get("sha256"):
+                pointer = store.manifest().get("current_checkpoint")
+                if not pointer:
                     raise ValueError("DELIVERY_NOT_FROZEN")
-                source, record = store.artifacts.resolve(str(asset.get("artifact_id", "")))
-                if record.get("sha256") != asset.get("sha256"):
-                    raise ValueError("最终图片与冻结交付记录不一致。")
-                raw_envelope = snapshot.get("delivery_envelope")
-                envelope = (DesignDeliveryEnvelopeV1.model_validate(raw_envelope) if raw_envelope else
-                            build_delivery(snapshot, store.project_id, asset,
-                                           f"project:{store.project_id}:asset:{asset['sha256']}"))
-                files = finalize_delivery(store.root, envelope, source)
+                checkpoint = store.checkpoints.load(str(pointer["checkpoint_id"]))
+                marker = _finalize_checkpoint_candidate(store, checkpoint)
                 marker_path = store.root / "delivery" / "finalized.json"
                 previous = None
                 if marker_path.is_file():
                     try: previous = json.loads(marker_path.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError): previous = None
-                marker = {
-                    "finalized": True,
-                    "asset_sha256": asset["sha256"],
-                    "files": files,
-                    "finalized_at": (previous.get("finalized_at") if previous and previous.get("asset_sha256") == asset["sha256"]
-                                     else datetime.now(timezone.utc).isoformat()),
-                }
                 atomic_json(marker_path, marker)
-                if not previous or previous.get("asset_sha256") != asset["sha256"]:
-                    store.events.append("delivery_finalized", asset_sha256=asset["sha256"], files=files)
+                if not previous or previous.get("bundle_id") != marker["bundle_id"]:
+                    store.events.append(
+                        "delivery_finalized",
+                        bundle_id=marker["bundle_id"],
+                        asset_sha256=marker["asset_sha256"],
+                        files=marker["files"],
+                    )
                 return marker
+        return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/delivery/candidates/finalize")
+async def finalize_project_delivery_candidates(project_id: str) -> dict[str, Any]:
+    """Discover every completed branch and return its immutable candidate once."""
+
+    try:
+        def execute() -> dict[str, Any]:
+            store = _store(project_id)
+            with store.lock():
+                candidates = []
+                for item in store.checkpoints.list():
+                    checkpoint = store.checkpoints.load(item["checkpoint_id"])
+                    snapshot = checkpoint.get("data") or {}
+                    if snapshot.get("completed") is not True:
+                        continue
+                    frozen = snapshot.get("frozen_delivery") or {}
+                    asset = snapshot.get("final_asset") or {}
+                    if frozen.get("asset_sha256") != asset.get("sha256"):
+                        continue
+                    candidates.append(_finalize_checkpoint_candidate(store, checkpoint))
+                return {
+                    "schema_version": "1.0",
+                    "candidates": sorted(
+                        candidates,
+                        key=lambda item: (
+                            item["branch_id"],
+                            item["checkpoint_id"],
+                            item["bundle_id"],
+                        ),
+                    ),
+                }
         return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc

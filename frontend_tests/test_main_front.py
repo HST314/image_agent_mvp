@@ -196,3 +196,69 @@ def test_finalize_delivery_persists_image_and_markdown_idempotently(client: Test
     view = client.get("/api/projects/delivery-project")
     assert view.status_code == 200
     assert view.json()["delivery_status"]["asset_sha256"] == asset["sha256"]
+
+
+def test_finalize_delivery_candidates_keeps_completed_branches_independent(
+    client: TestClient,
+) -> None:
+    store = main_front.ProjectStore(main_front.PROJECTS_ROOT, "branch-delivery-project")
+    store.create()
+
+    def completed_snapshot(color: str, task_fit: str) -> dict[str, object]:
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (40, 30), color).save(image_bytes, "PNG")
+        asset = store.artifacts.save_bytes(image_bytes.getvalue(), metadata={"kind": "final"})
+        snapshot: dict[str, object] = {
+            "completed": True,
+            "task_card": {
+                "task_id": "task-branch-delivery",
+                "deliverable_goal": task_fit,
+            },
+            "style_selections": [{"task_fit": task_fit}],
+            "final_asset": asset,
+            "frozen_delivery": {"asset_sha256": asset["sha256"]},
+        }
+        snapshot["delivery_envelope"] = build_delivery(
+            snapshot,
+            store.project_id,
+            asset,
+            f"project:{store.project_id}:asset:{asset['sha256']}",
+        ).model_dump(mode="json")
+        return snapshot
+
+    with store.lock():
+        main_checkpoint = store.checkpoint(
+            "final_approval", completed_snapshot("purple", "主分支视觉")
+        )
+        store.branch_from(main_checkpoint, name="variant-blue", mode="rerun_stage")
+        store.checkpoint("final_approval", completed_snapshot("blue", "蓝色分支视觉"))
+
+    first = client.post(
+        "/api/projects/branch-delivery-project/delivery/candidates/finalize"
+    )
+    assert first.status_code == 200, first.text
+    candidates = first.json()["candidates"]
+    # The forked branch preserves its inherited frozen checkpoint and then
+    # adds a new bundle when its final pixels change; neither may overwrite
+    # the main-branch candidate.
+    assert len(candidates) == 3
+    assert {item["branch_id"] for item in candidates} == {"main", "variant-blue"}
+    assert len({item["bundle_id"] for item in candidates}) == 3
+    for candidate in candidates:
+        assert set(candidate["files"]) == {"image", "markdown", "json"}
+        assert candidate["image"]["width"] == 40
+        assert candidate["image"]["height"] == 30
+        for relative in candidate["files"].values():
+            assert (store.root / relative).is_file()
+
+    replay = client.post(
+        "/api/projects/branch-delivery-project/delivery/candidates/finalize"
+    )
+    assert replay.status_code == 200
+    assert replay.json()["candidates"] == candidates
+    events = [
+        event
+        for event in store.history()
+        if event.get("type") == "delivery_candidate_finalized"
+    ]
+    assert len(events) == 3
