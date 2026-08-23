@@ -46,10 +46,11 @@ print('INSTALLED_UI_OK')
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(target), env.get("PYTHONPATH")]))
     result = subprocess.run(
         [sys.executable, "-c", script],
-        check=True,
+        check=False,
         cwd=outside,
         env=env,
         capture_output=True,
         text=True,
     )
+    assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "INSTALLED_UI_OK"

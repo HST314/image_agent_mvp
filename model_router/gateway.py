@@ -8,6 +8,46 @@ from model_router.router import ModelRouter, ModelRoute
 from model_router.usage import ProviderUsageObservation, capture_provider_usage
 from storage.project_store import ProjectStore, content_hash
 
+
+def unresolved_model_call_actions(store: ProjectStore) -> list[dict[str, Any]]:
+    """Project unresolved paid-call outcomes without loading a model route."""
+
+    events = store.history()
+    resolved = {
+        event["idempotency_key"]
+        for event in events
+        if event.get("type") == "model_call_unknown_resolved"
+    }
+    return [
+        {
+            "idempotency_key": event["idempotency_key"],
+            "trace_id": event["trace_id"],
+            "actions": ["retry_after_confirmation", "abandon"],
+        }
+        for event in events
+        if event.get("type") == "model_call_unknown"
+        and event["idempotency_key"] not in resolved
+    ]
+
+
+def resolve_unknown_model_call(
+    store: ProjectStore, idempotency_key: str, action: str, actor: str
+) -> None:
+    if action not in {"retry_after_confirmation", "abandon"} or not actor:
+        raise ValueError("无效的人工处置。")
+    unresolved = {
+        item["idempotency_key"] for item in unresolved_model_call_actions(store)
+    }
+    if idempotency_key not in unresolved:
+        raise ValueError("未知态不存在或已经处置，未重复执行。")
+    store.events.append(
+        "model_call_unknown_resolved",
+        idempotency_key=idempotency_key,
+        action=action,
+        actor=actor,
+        resolved=True,
+    )
+
 class RuntimeModelGateway:
     def __init__(self, store: ProjectStore, router: ModelRouter, executor: ModelExecutor[Any] | None = None, *, offline_mode: bool = False) -> None:
         self.store, self.router, self.executor, self.offline_mode = store, router, executor or ModelExecutor(), offline_mode
@@ -68,18 +108,8 @@ class RuntimeModelGateway:
             raise
 
     def resolve_unknown(self, idempotency_key: str, action: str, actor: str) -> None:
-        if action not in {"retry_after_confirmation", "abandon"} or not actor:
-            raise ValueError("无效的人工处置。")
-        unresolved = {item["idempotency_key"] for item in self.unknown_actions()}
-        if idempotency_key not in unresolved:
-            raise ValueError("未知态不存在或已经处置，未重复执行。")
-        self.store.events.append("model_call_unknown_resolved", idempotency_key=idempotency_key,
-                                 action=action, actor=actor, resolved=True)
+        resolve_unknown_model_call(self.store, idempotency_key, action, actor)
 
     def unknown_actions(self) -> list[dict[str, Any]]:
         """API/UI projection for unresolved paid-call outcomes."""
-        events = self.store.history()
-        resolved = {e["idempotency_key"] for e in events if e.get("type") == "model_call_unknown_resolved"}
-        return [{"idempotency_key": e["idempotency_key"], "trace_id": e["trace_id"],
-                 "actions": ["retry_after_confirmation", "abandon"]}
-                for e in events if e.get("type") == "model_call_unknown" and e["idempotency_key"] not in resolved]
+        return unresolved_model_call_actions(self.store)

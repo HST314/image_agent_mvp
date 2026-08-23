@@ -80,7 +80,7 @@ def test_saved_markdown_is_exact_source_of_truth_and_updates_structured_goal() -
 def test_save_then_approve_never_regenerates_over_user_markdown(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "taskbook-regression")
     store.create(RuntimePolicy(offline_mode=True).snapshot())
-    runner = WorkflowRunner(store, ROOT / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, ROOT / "tests/fixtures/model_config.yaml", offline_mode=True)
     task_card = _task().model_copy(update={"unknowns": {}}).model_dump(mode="json")
 
     initial = runner._confirmation({"task_card": task_card}, {})

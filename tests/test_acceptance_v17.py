@@ -1,4 +1,4 @@
-"""v1.7.7 release gate: immutable mode and a real offline browser journey."""
+"""v1.7.7 release gate: immutable mode and a browser journey with test doubles."""
 from __future__ import annotations
 
 import socket
@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 import main_front
 import agent_core.workflow_runner as workflow_runner
+
+pytestmark = pytest.mark.usefixtures("offline_frontend_runtime")
 
 
 TASK = {
@@ -30,7 +32,9 @@ TASK = {
 def test_existing_project_mode_comes_only_from_immutable_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path / "projects")
     client = TestClient(main_front.app, raise_server_exceptions=False)
-    created = client.post("/api/projects", json={"project_id": "v17-contract", "task_card": TASK, "offline": True})
+    created = client.post(
+        "/api/projects", json={"project_id": "v17-contract", "task_card": TASK}
+    )
     assert created.status_code == 201
 
     # Existing-project commands no longer accept a caller-selected mode.
@@ -42,7 +46,7 @@ def test_existing_project_mode_comes_only_from_immutable_snapshot(tmp_path: Path
 
 
 @pytest.mark.browser
-def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
+def test_browser_to_final_acceptance_uses_zero_real_providers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selenium = pytest.importorskip("selenium")
@@ -60,7 +64,7 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
     def forbidden(name: str):
         def call(*_args, **_kwargs):
             provider_calls.append(name)
-            raise AssertionError(f"offline browser flow called real provider: {name}")
+            raise AssertionError(f"browser test-double flow called real provider: {name}")
         return call
 
     monkeypatch.setattr(workflow_runner, "build_text_client", forbidden("text"))
@@ -101,9 +105,7 @@ def test_offline_checkbox_to_final_acceptance_uses_zero_real_providers(
         driver.find_element(By.ID, "creative-goal").send_keys("广告 海报")
         driver.find_element(By.ID, "usage-scene").send_keys("内部审核")
         driver.find_element(By.ID, "target-group").send_keys("审核人员")
-        checkbox = driver.find_element(By.ID, "offline")
-        if not checkbox.is_selected():
-            checkbox.click()
+        assert not driver.find_elements(By.ID, "offline")
         click_button("创建并启动")
         wait.until(lambda d: not d.find_element(By.ID, "project-dialog").get_attribute("open"))
 

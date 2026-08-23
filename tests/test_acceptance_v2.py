@@ -16,7 +16,7 @@ from storage.project_store import ProjectStore, atomic_json
 
 
 def test_t02_every_policy_field_has_consumer():
-    policy = RuntimePolicy.from_file("configs/runtime.yaml")
+    policy = RuntimePolicy.from_file("tests/fixtures/runtime.yaml")
     assert set(RuntimePolicy.model_fields) == set(policy.consumer_matrix())
 
 

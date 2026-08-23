@@ -34,7 +34,7 @@ def _card(requires_free_text=True):
 def _runner(tmp_path, *, offline=True):
     store = ProjectStore(tmp_path, "loop-project")
     store.create()
-    return WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=offline)
+    return WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=offline)
 
 
 def test_other_option_requires_concrete_free_text(tmp_path):

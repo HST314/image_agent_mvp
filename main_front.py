@@ -10,7 +10,6 @@ import hmac
 import ipaddress
 import json
 import logging
-import mimetypes
 import os
 import re
 import hashlib
@@ -28,7 +27,7 @@ from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore, atomic_json
 
-from configs.env_loader import load_dotenv  # 引入 .env 加载器
+from configs.managed_runtime import ManagedRuntime, optional_environment_path
 from configs.runtime_policy import RuntimePolicy
 from skills.errors import ResourceError
 from agent_core.jobs import JobNotFoundError, JobRegistry
@@ -37,14 +36,16 @@ from storage.project_store import CorruptProjectError
 from storage.provider_assets import ArtifactCorruptError, ArtifactNotFoundError
 from diagnostics import run_diagnostics
 from model_router.usage import metric_usage_only
-
-load_dotenv(".env")  # 在程序启动时自动读取当前目录下的 .env 文件
+from model_router.gateway import (
+    resolve_unknown_model_call,
+    unresolved_model_call_actions,
+)
 
 APP_ROOT = Path(__file__).resolve().parent
 FRONTEND_ROOT = APP_ROOT / "frontend"
 PROJECTS_ROOT = Path(os.getenv("IMAGE_AGENT_FRONT_PROJECTS_ROOT", FRONTEND_ROOT / "data" / "projects")).resolve()
-MODEL_CONFIG = Path(os.getenv("IMAGE_AGENT_MODEL_CONFIG", APP_ROOT / "configs" / "model_config.yaml")).resolve()
-RUNTIME_POLICY_PATH = Path(os.getenv("IMAGE_AGENT_RUNTIME_POLICY", APP_ROOT / "configs" / "runtime.yaml")).resolve()
+MODEL_CONFIG = optional_environment_path("IMAGE_AGENT_MODEL_CONFIG")
+RUNTIME_POLICY_PATH = optional_environment_path("IMAGE_AGENT_RUNTIME_POLICY")
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
@@ -103,7 +104,6 @@ class StrictRequest(BaseModel):
 class CreateProjectRequest(StrictRequest):
     project_id: str = Field(min_length=2, max_length=64)
     task_card: dict[str, Any]
-    offline: bool = False
     # T10（契约 §7）：True 时仅持久化工程与入站任务卡并立即返回，首个工作流
     # 推进交由 POST /api/projects/{id}/jobs 以异步 job 执行，前端不再长时间等待。
     defer_run: bool = False
@@ -199,13 +199,17 @@ def _existing_store(project_id: str) -> ProjectStore:
 
 
 def _global_policy() -> RuntimePolicy:
-    return RuntimePolicy.from_file(RUNTIME_POLICY_PATH)
+    return _managed_runtime().policy
 
 
-def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
-    if not MODEL_CONFIG.is_file():
-        raise RuntimeError("模型配置文件不存在，请设置 IMAGE_AGENT_MODEL_CONFIG。")
-    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline)
+def _managed_runtime() -> ManagedRuntime:
+    return ManagedRuntime.from_paths(MODEL_CONFIG, RUNTIME_POLICY_PATH)
+
+
+def _runner(store: ProjectStore) -> WorkflowRunner:
+    return WorkflowRunner(
+        store, _managed_runtime().model_config_path, offline_mode=False
+    )
 
 
 def _project_policy(store: ProjectStore) -> RuntimePolicy:
@@ -214,11 +218,15 @@ def _project_policy(store: ProjectStore) -> RuntimePolicy:
     if not policy_file.is_file():
         raise FileNotFoundError(f"工程运行策略不存在：{store.project_id}")
     payload = json.loads(policy_file.read_text(encoding="utf-8"))
-    return RuntimePolicy.model_validate(payload["policy"])
+    policy = RuntimePolicy.model_validate(payload["policy"])
+    if policy.offline_mode:
+        raise RuntimeError("Offline projects cannot run through the managed API.")
+    return policy
 
 
 def _project_runner(store: ProjectStore) -> WorkflowRunner:
-    return _runner(store, _project_policy(store).offline_mode)
+    _project_policy(store)
+    return _runner(store)
 
 
 def _options(body: AdvanceRequest) -> RunnerOptions:
@@ -263,7 +271,7 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
             "history": history,
             "capabilities": _capabilities(manifest, snapshot),
             "resource_events": [e for e in history if e.get("type") == "resource_degraded"],
-            "unknown_actions": _gateway_for_store(store).unknown_actions(),
+            "unknown_actions": unresolved_model_call_actions(store),
             "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
             "active_job": JOBS.active_for_project(store.project_id),
             "delivery_status": delivery_status,
@@ -307,10 +315,6 @@ def _job_operation(body: AdvanceRequest) -> str:
     if body.final_approved or body.manual_action == "accept_current":
         return "确认最终图像"
     return "推进工作流"
-
-def _gateway_for_store(store: ProjectStore):
-    return _project_runner(store).gateway
-
 
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     """仅把生产快照已有等待原因映射为 UI 动作，不执行或替代状态迁移。"""
@@ -476,8 +480,17 @@ app.mount("/static", StaticFiles(directory=FRONTEND_ROOT / "static"), name="stat
 
 @app.get("/api/health")
 async def health(response: Response) -> dict[str, Any]:
+    if MODEL_CONFIG is None or RUNTIME_POLICY_PATH is None:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "degraded",
+            "checks": [{"name": "model_router", "status": "error", "error_code": "MODEL_ROUTER_UNAVAILABLE"}],
+        }
     result = await asyncio.to_thread(
-        run_diagnostics, projects_root=PROJECTS_ROOT, model_config=MODEL_CONFIG,
+        run_diagnostics,
+        projects_root=PROJECTS_ROOT,
+        model_config=MODEL_CONFIG,
+        runtime_policy=RUNTIME_POLICY_PATH,
         app_root=APP_ROOT, job_registry=JOBS,
     )
     if result["status"] != "ok":
@@ -566,14 +579,15 @@ async def _create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            policy = _global_policy().model_copy(update={"offline_mode": body.offline})
-            store.create(policy.snapshot())
+            store.create(_global_policy().snapshot())
             if body.defer_run:
                 # T10（契约 §7）：仅持久化工程与入站任务卡，立即返回视图（不做任何
                 # 模型调用）；首个工作流推进由 POST /api/projects/{id}/jobs 异步执行。
                 atomic_json(store.root / INTAKE_TASK_FILE, task.model_dump(mode="json"))
                 return _project_view(store)
-            _runner(store, body.offline).run({"task_card": task.model_dump(mode="json")}, RunnerOptions())
+            _runner(store).run(
+                {"task_card": task.model_dump(mode="json")}, RunnerOptions()
+            )
             return _project_view(store)
 
         return await asyncio.to_thread(execute)
@@ -999,7 +1013,11 @@ async def project_traces(project_id: str, after: int = 0, limit: int = 100) -> d
 @app.get("/api/projects/{project_id}/unknown-actions")
 async def get_unknown_actions(project_id: str) -> dict[str, Any]:
     try:
-        return {"items": await asyncio.to_thread(lambda: _gateway_for_store(_store(project_id)).unknown_actions())}
+        return {
+            "items": await asyncio.to_thread(
+                lambda: unresolved_model_call_actions(_store(project_id))
+            )
+        }
     except Exception as exc:
         raise _translate_error(exc) from exc
 
@@ -1007,9 +1025,9 @@ async def get_unknown_actions(project_id: str) -> dict[str, Any]:
 async def resolve_unknown_action(project_id: str, idempotency_key: str, body: UnknownResolutionRequest) -> dict[str, Any]:
     try:
         def execute():
-            gateway = _gateway_for_store(_store(project_id))
-            gateway.resolve_unknown(idempotency_key, body.action, body.actor)
-            return {"items": gateway.unknown_actions()}
+            store = _store(project_id)
+            resolve_unknown_model_call(store, idempotency_key, body.action, body.actor)
+            return {"items": unresolved_model_call_actions(store)}
         return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc

@@ -6,7 +6,6 @@ export const state = {
   projects: [],
   current: null,      // 当前工程视图（GET /api/projects/{id} 的响应）
   job: null,          // 进行中的后台 job（长任务期间页面仍可操作）
-  offline: false,
   managedByHarness: false,
   managedProjectId: null,
   view: 'workspace',  // 顶部导航当前视图：workspace / status

@@ -14,7 +14,7 @@ from configs.runtime_policy import RuntimePolicy
 from main_front import _capabilities
 from storage.project_store import ProjectStore
 
-CONFIG = Path(__file__).parents[1] / "configs/model_config.yaml"
+CONFIG = Path(__file__).parents[1] / "tests/fixtures/model_config.yaml"
 
 
 def _task() -> dict:

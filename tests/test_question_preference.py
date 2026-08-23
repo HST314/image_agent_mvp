@@ -14,7 +14,7 @@ from interaction.confirmation_builder import specification_from_task
 from interaction.question_generator import generate_question_card
 from storage.project_store import ProjectStore
 
-CONFIG = Path(__file__).parents[1] / "configs/model_config.yaml"
+CONFIG = Path(__file__).parents[1] / "tests/fixtures/model_config.yaml"
 
 
 def _task(unknowns=None, known_facts=None) -> ImageTaskCard:

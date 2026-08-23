@@ -20,7 +20,11 @@ def _png(color: str, size: tuple[int, int] = (4, 4)) -> bytes:
 
 
 @pytest.fixture()
-def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_frontend_runtime: None,
+) -> TestClient:
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path / "projects")
     monkeypatch.setattr(
         WorkflowRunner,

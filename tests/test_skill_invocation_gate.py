@@ -43,7 +43,7 @@ def test_manual_skill_gate_retries_with_avoidance_and_renders_only_after_approva
     )
     store = ProjectStore(tmp_path / "projects", "skill-gate")
     store.create(policy.snapshot())
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
 
     first = runner.run(_approved_snapshot(), RunnerOptions(), only_state="initial_candidate_generation")
     assert first["phase"] == "waiting_skill_approval"
@@ -94,7 +94,7 @@ def test_auto_skill_gate_keeps_continuous_five_render_flow(tmp_path: Path, monke
     monkeypatch.chdir(tmp_path)
     store = ProjectStore(tmp_path / "projects", "skill-auto")
     store.create(RuntimePolicy(offline_mode=True).snapshot())
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
     original_image_call = runner._image_call
     observed_boundaries = []
 
@@ -127,7 +127,7 @@ def test_branch_retry_uses_only_candidates_from_the_approved_skill_version(
     )
     store = ProjectStore(tmp_path / "projects", "skill-version-branch")
     store.create(policy.snapshot())
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
 
     waiting_v1 = runner.run(_approved_snapshot(), RunnerOptions(), only_state="initial_candidate_generation")
     v1_gate_checkpoint = store.manifest()["current_checkpoint"]["checkpoint_id"]
@@ -167,7 +167,9 @@ def test_branch_retry_uses_only_candidates_from_the_approved_skill_version(
 
 
 def test_retryable_five_render_failure_recovers_via_api_without_reinvoking_skills(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_frontend_runtime: None,
 ) -> None:
     """Approved skill provenance survives a transient render failure and /retry."""
     monkeypatch.chdir(tmp_path)
@@ -179,7 +181,7 @@ def test_retryable_five_render_failure_recovers_via_api_without_reinvoking_skill
     )
     store = ProjectStore(projects, "skill-render-recovery")
     store.create(policy.snapshot())
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
     waiting = runner.run(_approved_snapshot(), RunnerOptions(), only_state="initial_candidate_generation")
 
     original_image_call = runner._image_call

@@ -11,6 +11,8 @@ from PIL import Image
 import main_front
 from agent_core.delivery import build_delivery
 
+pytestmark = pytest.mark.usefixtures("offline_frontend_runtime")
+
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -49,7 +51,7 @@ def test_managed_mode_removes_duplicate_creation_and_rejects_direct_posts(
 
     direct = managed_client.post(
         "/api/projects",
-        json={"project_id": "managed-project", "task_card": {}, "offline": True},
+        json={"project_id": "managed-project", "task_card": {}},
     )
     assert direct.status_code == 409
     assert direct.json()["detail"]["code"] == "MANAGED_BY_HARNESS"
@@ -84,7 +86,7 @@ def test_managed_creation_requires_adapter_header_loopback_and_exact_project(
     }
     rejected = managed_client.post(
         "/api/managed/projects",
-        json={"project_id": "managed-project", "task_card": task, "offline": True},
+        json={"project_id": "managed-project", "task_card": task},
     )
     assert rejected.status_code == 403
     assert rejected.json()["detail"]["code"] == "MANAGED_BY_HARNESS"
@@ -95,7 +97,6 @@ def test_managed_creation_requires_adapter_header_loopback_and_exact_project(
         json={
             "project_id": "managed-project",
             "task_card": task,
-            "offline": True,
             "defer_run": True,
         },
     )
@@ -137,7 +138,7 @@ def test_asset_endpoint_hides_unindexed_file(client: TestClient) -> None:
     assert response.json()["detail"] == "图片资源不存在。"
 
 
-def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) -> None:
+def test_fake_provider_project_stops_at_a_real_waiting_checkpoint(client: TestClient) -> None:
     task = {
         "task_id": "task-web-test",
         "project_id": "web-test",
@@ -150,7 +151,9 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
         "asset_inputs": [],
         "status": "draft",
     }
-    response = client.post("/api/projects", json={"project_id": "web-test", "task_card": task, "offline": True})
+    response = client.post(
+        "/api/projects", json={"project_id": "web-test", "task_card": task}
+    )
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["snapshot"]["state"] == "intake_clarify"

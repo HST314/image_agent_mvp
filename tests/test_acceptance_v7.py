@@ -15,7 +15,7 @@ def task_payload():
 def test_clean_external_workspace_real_runner_to_frozen_delivery(tmp_path: Path, monkeypatch):
     clean = tmp_path / "clean-install"; clean.mkdir(); monkeypatch.chdir(clean)
     store = ProjectStore(tmp_path / "projects", "p"); store.create()
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
     state = runner.run({"task_card": task_payload()}, RunnerOptions(), only_state="intake_clarify")
     state = runner.run(state, RunnerOptions(task_approved=True, actor="owner"), only_state="confirmation_build")
     state = runner.run(state, RunnerOptions(), only_state="initial_candidate_generation")
@@ -40,14 +40,14 @@ def test_clean_external_workspace_real_runner_to_frozen_delivery(tmp_path: Path,
 
 def test_public_initial_render_gateway_rejects_reference_leaks(tmp_path: Path):
     store = ProjectStore(tmp_path, "p"); store.create()
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
     with pytest.raises(ValueError, match="STYLE_REFERENCE_LEAK"):
         runner._image_call("initial_candidate_generation", "safe", ["file:///style.png"])
 
 
 def test_production_error_event_uses_non_retryable_matrix(tmp_path: Path):
     store = ProjectStore(tmp_path, "p"); store.create()
-    runner = WorkflowRunner(store, Path(__file__).parents[1] / "configs/model_config.yaml", offline_mode=True)
+    runner = WorkflowRunner(store, Path(__file__).parents[1] / "tests/fixtures/model_config.yaml", offline_mode=True)
     with pytest.raises(Exception):
         runner.run({"task_card":task_payload(), "task_specification":{"bad":True}}, RunnerOptions(), only_state="confirmation_build")
     error = store.manifest()["failed_step"]["error"]

@@ -92,14 +92,14 @@ def test_09_i2i_current_first_and_capability():
     with pytest.raises(CapabilityMismatchError): ContextAssembler(ContextPolicy("image",supports_multiple_images=False)).assemble(objective="o",specification="s",constraints=[],current_input="i",references=refs)
 
 def test_10_router_hot_reload_role_capability_and_gateway_audit(tmp_path: Path):
-    store=ProjectStore(tmp_path,"p"); store.create(); router=ModelRouter.from_file(Path("configs/model_config.yaml"))
+    store=ProjectStore(tmp_path,"p"); store.create(); router=ModelRouter.from_file(Path("tests/fixtures/model_config.yaml"))
     with pytest.raises(ValueError): router.validate_capability("self_check_inspection",role=ModelRole.TEXT_TO_IMAGE_MODEL)
     gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
     result=gateway.call("initial_candidate_generation",ModelRole.TEXT_TO_IMAGE_MODEL,lambda route:{"ok":True},messages=[{"role":"user","content":"x"}],variables={},template_id="x",template_version="1",input_refs=[])
     assert result["ok"] and any(e["type"]=="model_config_loaded" for e in store.history())
 
 def test_10b_gateway_persists_provider_usage_without_changing_caller_result(tmp_path: Path):
-    store=ProjectStore(tmp_path,"usage"); store.create(); router=ModelRouter.from_file(Path("configs/model_config.yaml"))
+    store=ProjectStore(tmp_path,"usage"); store.create(); router=ModelRouter.from_file(Path("tests/fixtures/model_config.yaml"))
     gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
     observed=ProviderUsageObservation(
         provider_request_id="provider-1",

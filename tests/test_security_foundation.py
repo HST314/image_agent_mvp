@@ -26,7 +26,7 @@ def test_t01_contract_fixtures():
 
 
 def test_t02_runtime_policy_is_strict_and_snapshotted(tmp_path: Path):
-    policy = RuntimePolicy.from_file("configs/runtime.yaml")
+    policy = RuntimePolicy.from_file("tests/fixtures/runtime.yaml")
     with pytest.raises(ValidationError):
         RuntimePolicy.model_validate({**policy.snapshot(), "not_wired": True})
     store = ProjectStore(tmp_path, "p")

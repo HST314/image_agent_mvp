@@ -60,14 +60,6 @@ export function renderProject(view, { autostartBootstrap = false, autostartRerun
 
   const actor = getActor();
 
-  const projectOffline = view.runtime_policy?.offline_mode === true;
-  if (projectOffline) {
-    const banner = el('div', { class: 'offline-banner', role: 'status' });
-    banner.append(el('span', { 'aria-hidden': 'true' }), el('span', {}, [el('strong', { text: '离线测试模式：' }), '生成结果为模拟资产，不可用于最终交付。']));
-    banner.firstChild.innerHTML = icons.info;
-    content.append(banner);
-  }
-
   /* ===== 实时进度 ===== */
   const progressSection = sectionPanel('创作进度', `当前分支 ${manifest.current_branch || 'main'} · 检查点 ${manifest.current_checkpoint?.sequence || 0}`);
   const stepper = el('div', { class: 'stepper', 'aria-label': '工作流进度' });
@@ -902,10 +894,9 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
 
 function renderDeliveryStage(panel, view, { projectId }) {
   const snapshot = view.snapshot || {};
-  const rehearsal = snapshot.offline_rehearsal_completed === true;
   const asset = snapshot.final_asset;
-  if (rehearsal || !asset) {
-    panel.append(stateBlock('empty', '离线演练已完成最终验收', '模拟资产只用于流程验收，不会保存为正式交付文件。'));
+  if (!asset) {
+    panel.append(stateBlock('empty', '最终交付尚未生成', '完成创作与人工确认后可在此查看交付文件。'));
     return;
   }
   const url = api.assetUrl(projectId, asset);

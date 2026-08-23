@@ -19,7 +19,7 @@ def test_seedream_accepts_minimum_dimensions() -> None:
 
 
 def test_runtime_default_is_provider_valid() -> None:
-    policy = RuntimePolicy.from_file(Path(__file__).parents[1] / "configs/runtime.yaml")
+    policy = RuntimePolicy.from_file(Path(__file__).parents[1] / "tests/fixtures/runtime.yaml")
     assert policy.default_output_size == "2560x1440"
 
 

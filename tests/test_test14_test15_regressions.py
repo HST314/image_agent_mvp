@@ -13,7 +13,7 @@ from storage.project_store import ProjectStore, atomic_json
 from agent_core.models import ReferenceImage
 
 
-CONFIG = Path(__file__).parents[1] / "configs/model_config.yaml"
+CONFIG = Path(__file__).parents[1] / "tests/fixtures/model_config.yaml"
 
 
 def cultural_wall_task() -> dict:

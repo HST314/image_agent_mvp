@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 import main_front
 
+pytestmark = pytest.mark.usefixtures("offline_frontend_runtime")
+
 # 任务文本需命中品类库记录名（适配器按精确出现计分），沿用验收测试的"广告/海报"语料。
 TASK = {
     "task_id": "task-web-contract",
@@ -30,14 +32,16 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(main_front.app, raise_server_exceptions=False)
 
 
-def _create_offline(client: TestClient) -> dict:
-    response = client.post("/api/projects", json={"project_id": "web-contract", "task_card": TASK, "offline": True})
+def _create_with_fake_provider(client: TestClient) -> dict:
+    response = client.post(
+        "/api/projects", json={"project_id": "web-contract", "task_card": TASK}
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
 
 def test_taskbook_approval_roundtrip_via_web(client: TestClient) -> None:
-    view = _create_offline(client)
+    view = _create_with_fake_provider(client)
     snapshot = view["snapshot"]
     # 离线无澄清问题，直接停在任务书确认门。
     assert snapshot["state"] == "confirmation_build"
@@ -58,7 +62,7 @@ def test_taskbook_approval_roundtrip_via_web(client: TestClient) -> None:
 
 
 def test_edited_markdown_at_confirmation_stage_invalidates_approval(client: TestClient) -> None:
-    view = _create_offline(client)
+    view = _create_with_fake_provider(client)
     markdown = view["snapshot"]["task_markdown"]
     edited = client.post(
         "/api/projects/web-contract/advance",
@@ -77,7 +81,7 @@ def test_edited_markdown_at_confirmation_stage_invalidates_approval(client: Test
 def test_markdown_edit_routing_boundary_after_approval(client: TestClient) -> None:
     """记录 v1.7.3 路由边界：确认门之后 advance 不会回流任务书状态，编辑被忽略。
     若验收要求"确认后仍可修订任务书"，需要后端在 T13/T14 域补充回灌路由。"""
-    view = _create_offline(client)
+    view = _create_with_fake_provider(client)
     approved = client.post(
         "/api/projects/web-contract/advance",
         json={"task_approved": True, "actor": "web-user"},
@@ -95,7 +99,7 @@ def test_markdown_edit_routing_boundary_after_approval(client: TestClient) -> No
 
 
 def test_task_approval_requires_actor(client: TestClient) -> None:
-    _create_offline(client)
+    _create_with_fake_provider(client)
     response = client.post(
         "/api/projects/web-contract/advance",
         json={"task_approved": True},

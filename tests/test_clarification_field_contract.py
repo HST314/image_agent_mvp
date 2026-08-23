@@ -88,7 +88,7 @@ def test_invalid_model_field_is_discarded_and_local_question_fills_gap() -> None
 def test_category_answer_alias_migrates_to_internal_id_and_clears_unknown(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "field-contract-project")
     store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     skill = CategorySkill(
         category_id="wall",
         version="1",
@@ -116,7 +116,7 @@ def test_category_answer_alias_migrates_to_internal_id_and_clears_unknown(tmp_pa
 def test_answer_record_reconciles_legacy_display_field_to_internal_id(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "field-contract-project")
     store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     task = _task({"library_required_input_1": _unknown("成品尺寸与展开尺寸")})
     card = QuestionCard(task_id=task.task_id, questions=[QuestionItem(
         question_id="legacy-question",
@@ -148,7 +148,7 @@ def test_answer_record_reconciles_legacy_display_field_to_internal_id(tmp_path: 
 def test_five_unique_blockers_advance_after_exactly_five_answers(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "field-contract-project")
     store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     unknowns = {
         f"library_required_input_{index}": _unknown(label)
         for index, label in enumerate([
@@ -188,7 +188,7 @@ def test_five_unique_blockers_advance_after_exactly_five_answers(tmp_path: Path)
 def test_budget_exhaustion_is_recoverable_and_safe_defaults_are_explicit(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "field-contract-project")
     store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     task = _task({
         "library_required_input_1": _unknown("尺寸"),
         "optional_finish": _unknown("表面处理", safe=True),

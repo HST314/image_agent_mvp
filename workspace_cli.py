@@ -11,12 +11,10 @@ from calibrator.calibration_loop import ManualAction
 from interaction.presenter import Presenter
 from storage.project_store import ProjectStore
 from agent_core.models import QuestionCard
-from configs.runtime_policy import RuntimePolicy
+from configs.managed_runtime import ManagedRuntime
 
 
 def _flow_options(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--model-config", type=Path, default=Path(__file__).parent / "configs/model_config.yaml")
-    command.add_argument("--offline", action="store_true", help="显式离线测试模式（模拟图不可最终交付）")
     command.add_argument("--selected-id", help="从五张候选图中选择的编号")
     command.add_argument("--manual-action", choices=("execute", "edit_and_execute", "skip", "end", "accept_current", "add_rounds", "human_tune_best"),
                          help="上限处置：accept_current/end/add_rounds/human_tune_best")
@@ -76,24 +74,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     view = Presenter(args.debug)
     try:
         if args.command == "new":
+            runtime = ManagedRuntime.from_environment()
             task = json.loads(args.task.read_text(encoding="utf-8"))
-            policy = RuntimePolicy.from_file(Path(__file__).parent / "configs/runtime.yaml").model_copy(update={"offline_mode": args.offline})
-            store.create(policy.snapshot())
+            store.create(runtime.policy.snapshot())
             with store.lock():
-                runner = WorkflowRunner(store, args.model_config, offline_mode=args.offline, output=print)
+                runner = WorkflowRunner(
+                    store, runtime.model_config_path, offline_mode=False, output=print
+                )
                 result = runner.run({"task_card": task}, _options(args))
             _present_result(view, result)
             if result.get("waiting"): print("流程已安全暂停；补充所需选择后运行 resume。")
         elif args.command == "resume":
+            runtime = ManagedRuntime.from_environment()
+            _require_managed_project(store)
             with store.lock():
                 snapshot = store.resume()
                 if snapshot is None: raise ValueError("工程还没有可恢复节点。")
-                result = WorkflowRunner(store, args.model_config, offline_mode=args.offline, output=print).run(snapshot, _options(args))
+                result = WorkflowRunner(
+                    store, runtime.model_config_path, offline_mode=False, output=print
+                ).run(snapshot, _options(args))
             _present_result(view, result)
             print("已从检查点的下一状态继续执行。" if not result.get("waiting") else "已恢复到人工等待点，未重复已完成的付费调用。")
         elif args.command == "retry":
+            runtime = ManagedRuntime.from_environment()
+            _require_managed_project(store)
             with store.lock():
-                runner = WorkflowRunner(store, args.model_config, offline_mode=args.offline)
+                runner = WorkflowRunner(store, runtime.model_config_path, offline_mode=False)
                 result_box: list[dict[str, object]] = []
                 store.retry(lambda state, snapshot: result_box.append(runner.run(snapshot, _options(args), only_state=state)))
             print("已从上一成功点创建新分支，并调用真实失败状态处理器。")
@@ -102,10 +108,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 branch = store.branch_from(args.checkpoint, name=args.name)
                 print(f"已创建新分支 {branch}，原历史未修改。")
                 if args.continue_run:
-                    WorkflowRunner(store, args.model_config, offline_mode=args.offline).run(store.resume(), _options(args))
+                    runtime = ManagedRuntime.from_environment()
+                    _require_managed_project(store)
+                    WorkflowRunner(
+                        store, runtime.model_config_path, offline_mode=False
+                    ).run(store.resume(), _options(args))
         elif args.command == "unknown":
-            gateway = WorkflowRunner(store, Path(__file__).parent / "configs/model_config.yaml",
-                                     offline_mode=RuntimePolicy.model_validate(json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]).offline_mode).gateway
+            runtime = ManagedRuntime.from_environment()
+            _require_managed_project(store)
+            gateway = WorkflowRunner(
+                store, runtime.model_config_path, offline_mode=False
+            ).gateway
             if args.action:
                 if not args.idempotency_key or not args.actor: raise ValueError("处置未知态必须提供 key 与 actor。")
                 gateway.resolve_unknown(args.idempotency_key, args.action, args.actor)
@@ -122,6 +135,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         message = str(exc) if args.debug else "流程未完成；详细错误已写入工程事件。"
         print(f"{message}\n已有进度保存在工程目录，可修正后使用 resume 或 retry。")
         return 2
+
+
+def _require_managed_project(store: ProjectStore) -> None:
+    policy_path = store.root / "runtime_policy.json"
+    payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    if bool(payload.get("policy", {}).get("offline_mode")):
+        raise RuntimeError("Offline projects cannot run through the managed CLI.")
 
 def _present_result(view: Presenter, result: dict[str, object]) -> None:
     if result.get("question_card"):

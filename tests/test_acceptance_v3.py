@@ -30,7 +30,7 @@ def test_t04_production_candidate_path_returns_structured_resource_error(tmp_pat
                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
     policy = RuntimePolicy(offline_mode=True, allow_skill_degradation=False)
     store = ProjectStore(tmp_path, "p"); store.create(policy.snapshot())
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     monkeypatch.setattr("skills.category_library_adapter.CategoryLibraryAdapter.__init__",
                         Mock(side_effect=FileNotFoundError("missing")))
     # No explicit category: the new front-loaded category matcher must surface
@@ -53,7 +53,7 @@ def test_runtime_skill_degradation_switch_controls_category_fallback(
     blocked_store.create(RuntimePolicy(
         offline_mode=True, allow_skill_degradation=False,
     ).snapshot())
-    blocked = WorkflowRunner(blocked_store, Path("configs/model_config.yaml"), offline_mode=True)
+    blocked = WorkflowRunner(blocked_store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     with pytest.raises(ResourceError):
         blocked._load_category_skill(_task().model_copy(update={"category_ref": None}))
 
@@ -61,7 +61,7 @@ def test_runtime_skill_degradation_switch_controls_category_fallback(
     fallback_store.create(RuntimePolicy(
         offline_mode=True, allow_skill_degradation=True,
     ).snapshot())
-    fallback = WorkflowRunner(fallback_store, Path("configs/model_config.yaml"), offline_mode=True)
+    fallback = WorkflowRunner(fallback_store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     skill, score = fallback._load_category_skill(
         _task().model_copy(update={"category_ref": None})
     )
@@ -80,7 +80,7 @@ def test_runtime_skill_degradation_switch_controls_style_fallback(tmp_path: Path
         offline_mode=True, allow_skill_degradation=False,
         style_library_root=str(missing),
     ).snapshot())
-    blocked = WorkflowRunner(blocked_store, Path("configs/model_config.yaml"), offline_mode=True)
+    blocked = WorkflowRunner(blocked_store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     with pytest.raises(ResourceError):
         blocked._runtime_style_library()
 
@@ -89,7 +89,7 @@ def test_runtime_skill_degradation_switch_controls_style_fallback(tmp_path: Path
         offline_mode=True, allow_skill_degradation=True,
         style_library_root=str(missing),
     ).snapshot())
-    fallback = WorkflowRunner(fallback_store, Path("configs/model_config.yaml"), offline_mode=True)
+    fallback = WorkflowRunner(fallback_store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     library, root = fallback._runtime_style_library()
     assert root != missing and len(library.records()) >= 5
     assert any(
@@ -129,7 +129,7 @@ def test_t07_cli_exposes_unknown_query_and_manual_resolution() -> None:
 def test_t07_unknown_resolution_survives_refresh_and_rejects_double_click(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "p"); store.create(RuntimePolicy(offline_mode=True).snapshot())
     store.events.append("model_call_unknown", idempotency_key="k", trace_id="trace", possible_charge=True)
-    gateway = RuntimeModelGateway(store, ModelRouter.from_file(Path("configs/model_config.yaml")), offline_mode=True)
+    gateway = RuntimeModelGateway(store, ModelRouter.from_file(Path("tests/fixtures/model_config.yaml")), offline_mode=True)
     assert gateway.unknown_actions()[0]["idempotency_key"] == "k"
     gateway.resolve_unknown("k", "abandon", "owner")
     assert gateway.unknown_actions() == []

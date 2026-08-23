@@ -42,7 +42,6 @@ const PHASE_LABELS = {
   clarification_completed: '澄清已完成',
   master_selected: '主图已选定',
   round_checkpointed: '质检轮次已保存',
-  offline_rehearsal_completed: '离线演练已完成',
 };
 
 export function phaseLabel(phase) {
@@ -140,7 +139,6 @@ const FIELD_LABELS = {
   candidate_concurrency: '候选图并发数',
   default_output_size: '默认出图尺寸',
   watermark: '水印',
-  offline_mode: '离线模式',
   model_timeout_seconds: '模型超时时间',
   image_api_base_url: '图像接口地址',
   response_format: '图片返回格式',

@@ -11,6 +11,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from model_router.router import ModelRouter
+from configs.runtime_policy import RuntimePolicy
 from storage.project_store import EventStore
 
 LOGGER = logging.getLogger(__name__)
@@ -28,14 +29,24 @@ def _probe(name: str, code: str, trace_id: str, check: Callable[[], Any]) -> dic
         return {"name": name, "status": "error", "error_code": code}
 
 
-def run_diagnostics(*, projects_root: Path, model_config: Path, app_root: Path,
-                    job_registry: object) -> dict[str, object]:
+def run_diagnostics(
+    *,
+    projects_root: Path,
+    model_config: Path,
+    runtime_policy: Path,
+    app_root: Path,
+    job_registry: object,
+) -> dict[str, object]:
     """Run local readiness probes without exposing paths, credentials, or exceptions."""
     trace_id = f"trace_{uuid4().hex}"
 
     def model_route() -> None:
+        policy = RuntimePolicy.from_file(runtime_policy)
+        if policy.offline_mode:
+            raise ValueError("managed runtime cannot enable test mode")
         router = ModelRouter.from_file(model_config)
         router.validate_required_bindings()
+        router.validate_managed_bindings()
 
     def jobs() -> dict[str, Any]:
         if not getattr(job_registry, "is_ready")():
@@ -73,7 +84,7 @@ def run_diagnostics(*, projects_root: Path, model_config: Path, app_root: Path,
 
     def resources() -> None:
         required = (
-            app_root / "configs" / "runtime.yaml",
+            runtime_policy,
             app_root / "skills" / "category_skills" / "index.json",
             app_root / "skills" / "style_cards" / "index.json",
             app_root / "prompt_engine" / "templates" / "render_prompt.md",

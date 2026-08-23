@@ -17,7 +17,6 @@ test('phase 全量映射为中文，未知 phase 不泄露英文', () => {
   assert.equal(phaseLabel('waiting_skill_approval'), '等待技能调用人工确认');
   assert.equal(phaseLabel('skill_approved_pending_render'), '技能调用已放行，等待生成主图');
   assert.equal(phaseLabel('terminated_without_delivery'), '已终止且不交付');
-  assert.equal(phaseLabel('offline_rehearsal_completed'), '离线演练已完成');
   assert.equal(phaseLabel('some_future_phase'), '阶段未知');
   assert.equal(phaseLabel(''), '—');
   assert.equal(phaseLabel(null), '—');

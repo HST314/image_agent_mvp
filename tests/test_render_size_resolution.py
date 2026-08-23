@@ -89,7 +89,7 @@ def test_reasoning_model_output_format_alias_is_resolved() -> None:
 def test_candidate_generation_freezes_task_size_and_cache_scope(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "square-project")
     store.create({"offline_mode": True})
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     revision_hash = "revision-square"
     prepared = _prepared(runner, revision_hash)
     boundary = runner._freeze_render_boundary({
@@ -111,7 +111,7 @@ def test_partial_failure_retry_reuses_persisted_size_and_successful_slots(
 ) -> None:
     store = ProjectStore(tmp_path, "square-retry")
     store.create({"offline_mode": True})
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     revision_hash = "revision-square-retry"
     prepared = _prepared(runner, revision_hash)
     waiting = {

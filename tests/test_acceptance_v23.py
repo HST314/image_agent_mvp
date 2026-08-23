@@ -22,6 +22,8 @@ import main_front
 from agent_core.jobs import JobRegistry
 from agent_core.workflow_runner import WorkflowRunner
 
+pytestmark = pytest.mark.usefixtures("offline_frontend_runtime")
+
 TASK = {
     "task_id": "task-v23",
     "project_id": "v23-project",
@@ -55,7 +57,7 @@ def _wait_job(client: TestClient, job_id: str, timeout: float = 20.0) -> dict:
 
 
 def _create(client: TestClient, project_id: str, **extra) -> dict:
-    payload = {"project_id": project_id, "task_card": TASK, "offline": True, **extra}
+    payload = {"project_id": project_id, "task_card": TASK, **extra}
     response = client.post("/api/projects", json=payload)
     assert response.status_code == 201, response.text
     return response.json()

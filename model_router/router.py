@@ -78,7 +78,7 @@ class ModelRouter:
         key_env = PROVIDER_KEY_ENV.get(binding.provider)
         mock = binding.provider == "offline"
         if key_env and not os.getenv(key_env) and not mock:
-            raise RuntimeError(f"{state} 缺少远程模型凭证；仅显式 offline 配置允许模拟运行。")
+            raise RuntimeError(f"{state} 缺少远程模型凭证。")
         return ModelRoute(binding=binding, mock=mock, key_env=key_env)
 
     def validate_capability(self, state: str, *, role: ModelRole, needs_images: int = 0) -> StateBinding:
@@ -99,3 +99,15 @@ class ModelRouter:
                 raise ValueError(
                     f"State '{state}' must use role '{expected_role.value}', got '{binding.model_role.value}'."
                 )
+
+    def validate_managed_bindings(self) -> None:
+        """Reject test-only providers at the managed product boundary."""
+
+        offline_states = sorted(
+            state for state, binding in self._bindings.items() if binding.provider == "offline"
+        )
+        if offline_states:
+            raise ValueError(
+                "Managed Image Agent model bindings cannot use the offline provider: "
+                + ", ".join(offline_states)
+            )

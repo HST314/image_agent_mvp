@@ -25,7 +25,7 @@ def _asset_store(tmp_path: Path) -> tuple[ProjectStore, dict]:
 @pytest.mark.parametrize("consumer", ["self_check_inspection", "self_check_rework", "human_prompt_rework"])
 def test_provider_boundary_never_receives_artifact_uri(tmp_path: Path, consumer: str, monkeypatch) -> None:
     store, asset = _asset_store(tmp_path)
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=False)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=False)
     captured = []
     def direct_call(state, role, invoke, **kwargs):
         binding = runner.gateway.router.binding_for_state(state)
@@ -64,7 +64,7 @@ def test_provider_boundary_reports_missing_and_corrupt_artifacts(tmp_path: Path)
 
 def test_master_selection_is_an_independent_persisted_fact(tmp_path: Path) -> None:
     store, asset = _asset_store(tmp_path)
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     candidates = [{**asset, "id": f"candidate-{index}"} for index in range(1, 6)]
     result = runner.run({"state":"master_candidate_selection", "candidates":candidates},
                         RunnerOptions(selected_id="candidate-4", actor="tester"),

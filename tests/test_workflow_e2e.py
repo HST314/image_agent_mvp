@@ -8,7 +8,7 @@ from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore, content_hash
-from workspace_cli import main
+from workspace_cli import parser
 import pytest
 from agent_core.workflow import SelfCheckPolicy, InvalidTransitionError
 from calibrator.calibration_loop import CalibrationLoop
@@ -30,28 +30,21 @@ def task_payload():
             "known_facts":{"主体":"产品"}, "unknowns":{}}
 
 
-def test_cli_new_resume_and_registry(tmp_path: Path, capsys):
-    task = tmp_path / "task.json"; task.write_text(json.dumps(task_payload()), encoding="utf-8")
-    root = tmp_path / "projects"
-    assert main(["--projects-root", str(root), "new", "p", "--task", str(task), "--offline"]) == 0
-    first_stdout = capsys.readouterr().out
-    assert "创作任务书" in first_stdout and "流程已安全暂停" in first_stdout
-    assert "请选择一张作为当前主图" not in first_stdout  # 未确认任务书不得进入付费生图步骤
-    assert "candidate_index" not in first_stdout and "sha256" not in first_stdout
-    store = ProjectStore(root, "p")
-    assert store.manifest()["current_checkpoint"]["state"] == "confirmation_build"
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
-    assert set(runner.handlers) == set(runner.ORDER)
-    assert main(["--projects-root", str(root), "resume", "p", "--offline"]) == 0
-    resumed_stdout = capsys.readouterr().out
-    assert "人工等待点" in resumed_stdout
-    assert not any(e["type"] == "model_call_started" for e in store.history())
+def test_cli_rejects_private_config_and_offline_product_switches(tmp_path: Path):
+    task = tmp_path / "task.json"
+    task.write_text(json.dumps(task_payload()), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        parser().parse_args(["new", "p", "--task", str(task), "--offline"])
+    with pytest.raises(SystemExit):
+        parser().parse_args(
+            ["new", "p", "--task", str(task), "--model-config", "private.yaml"]
+        )
 
 
 def test_retry_calls_real_failed_handler_on_new_branch(tmp_path: Path):
     store = ProjectStore(tmp_path, "p"); store.create(); store.checkpoint("confirmation_build", {"state":"confirmation_build"})
     store.fail_step("initial_candidate_generation", {"message":"provider"})
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     called = []
     runner.handlers["initial_candidate_generation"] = lambda data, options: called.append(data["state"]) or {"candidates":[]}
     store.retry(lambda state, snapshot: runner.run(snapshot, RunnerOptions(), only_state=state))
@@ -61,7 +54,7 @@ def test_retry_calls_real_failed_handler_on_new_branch(tmp_path: Path):
 
 def test_manual_resume_reuses_inspection(tmp_path: Path):
     store = ProjectStore(tmp_path, "p"); store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     data = {"state":"master_candidate_selection", "master_asset":{"uri":"u","sha256":"h"},
             "task_specification":{"task_id":"t","version":1,"facts":[],"parent_hash":None,"content_hash":"s"},
             "self_check_policy":{"termination":"fix","release":"manual","fixed_rounds":1}}
@@ -122,7 +115,7 @@ def test_completed_asset_is_latest_checked_in_all_policy_combinations(tmp_path: 
 
 def test_self_check_to_final_approval_accepts_only_audited_checked_asset(tmp_path: Path):
     store = ProjectStore(tmp_path, "final-e2e"); store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     asset = normalize_image_asset({"uri":"https://images.example/final.png", "provider":"ark", "model":"seedream"})
     base = {"state":"master_candidate_selection", "master_asset":asset,
             "task_specification":{"task_id":"t","version":1,"facts":[],"parent_hash":None,"content_hash":"s"},
@@ -145,7 +138,7 @@ def test_self_check_to_final_approval_accepts_only_audited_checked_asset(tmp_pat
 
 def test_runner_streams_round_to_user_and_checkpoint_clarification(tmp_path: Path):
     store = ProjectStore(tmp_path, "stream"); store.create(); output = []
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True, output=output.append)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True, output=output.append)
     data = {"master_asset":normalize_image_asset({"uri":"mock://base","mock":True,"provider":"offline","model":"fake"}),
             "task_specification":{"task_id":"t","version":1,"facts":[],"parent_hash":None,"content_hash":"s"},
             "self_check_policy":{"termination":"fix","release":"auto","fixed_rounds":2}}
@@ -155,7 +148,7 @@ def test_runner_streams_round_to_user_and_checkpoint_clarification(tmp_path: Pat
 
 def test_clarification_budget_and_fingerprints_survive_resume(tmp_path: Path):
     store = ProjectStore(tmp_path, "clarify"); store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     unknowns = {
         "output_spec":{"impact":"影响构图","blocking":True,"has_safe_default":False},
         "asset_rules":{"impact":"影响素材合规","blocking":True,"has_safe_default":False},
@@ -240,7 +233,7 @@ def test_cached_blocked_inspection_executes_rework_and_inspects_new_asset(
 
 def test_human_rework_invalidates_old_inspection_and_stays_in_human_tune(tmp_path: Path):
     store = ProjectStore(tmp_path, "rework"); store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     old = normalize_image_asset({"uri":"https://x/old","provider":"ark","model":"m"})
     data = {"state":"self_check_iteration", "asset":old, "current_asset":old,
             "calibration_status":"completed", "termination_satisfied":True, "termination_reason":"pass",
@@ -251,7 +244,7 @@ def test_human_rework_invalidates_old_inspection_and_stays_in_human_tune(tmp_pat
 
 def test_runner_rejects_illegal_transition(tmp_path: Path):
     store = ProjectStore(tmp_path, "illegal"); store.create()
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     with pytest.raises(InvalidTransitionError):
         runner.run({"state":"intake_clarify"}, RunnerOptions(), only_state="final_approval")
 

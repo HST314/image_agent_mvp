@@ -16,7 +16,6 @@ import { createAuxPageRefresher, createViewSwitcher } from './viewswitch.js';
 import { captureWorkspaceState } from './workspace_state.js';
 
 async function boot() {
-  patch({ offline: safeGet('studio-offline') === 'true' });
   try {
     const context = await api.runtimeContext();
     patch({
@@ -35,9 +34,6 @@ async function boot() {
     goHome();
   }
 }
-
-function safeGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
-function safeSet(key, value) { try { localStorage.setItem(key, value); } catch { /* ignore */ } }
 
 async function loadProjects() {
   try {
@@ -206,7 +202,6 @@ function showCreate() {
   }
   const dialog = $('#project-dialog');
   $('#project-form').reset();
-  $('#offline').checked = state.offline;
   $('#project-error').textContent = '';
   $('#task-error').textContent = '';
   $('#create-button').disabled = false;
@@ -294,11 +289,9 @@ async function createProject(event) {
     styleTone: $('#style-tone').value,
     deliverySpec: $('#delivery-spec').value,
   });
-  patch({ offline: $('#offline').checked });
-  safeSet('studio-offline', String(state.offline));
   /* T10（契约 §7/Q10-A）：等待创建接口前已经关闭弹窗并切至工作台等待态；
    * 创建成功后再用权威工程视图接管并异步启动首个 job。 */
-  await projectCreator.start({ project_id: id, task_card: task, offline: state.offline, defer_run: true });
+  await projectCreator.start({ project_id: id, task_card: task, defer_run: true });
 }
 
 /* ---- 全局接线 ---- */

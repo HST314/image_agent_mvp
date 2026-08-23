@@ -22,7 +22,7 @@ from configs.runtime_policy import RuntimePolicy
 from skills.category_library_adapter import CategoryLibraryAdapter
 from storage.project_store import ProjectStore
 
-CONFIG = Path(__file__).parents[1] / "configs/model_config.yaml"
+CONFIG = Path(__file__).parents[1] / "tests/fixtures/model_config.yaml"
 LIBRARY = Path(__file__).parents[1] / "skills/category_libraries/advertising_category_library_v2.json"
 
 

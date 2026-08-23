@@ -31,7 +31,7 @@ def _generic_task() -> ImageTaskCard:
 def test_generic_offline_task_uses_approved_fallback_skill(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "test2")
     store.create(RuntimePolicy(offline_mode=True).snapshot())
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     task = _generic_task()
     spec = specification_from_task(task)
     revision = {"revision_hash": "approved-revision"}
@@ -63,7 +63,7 @@ def test_five_way_offline_generation_keeps_prompt_log_valid(tmp_path: Path) -> N
     """The five candidate workers share one atomic prompt audit log."""
     store = ProjectStore(tmp_path, "five-way")
     store.create(RuntimePolicy(offline_mode=True).snapshot())
-    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    runner = WorkflowRunner(store, Path("tests/fixtures/model_config.yaml"), offline_mode=True)
     task = _generic_task()
     specification = specification_from_task(task)
 
