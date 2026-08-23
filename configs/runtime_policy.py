@@ -59,6 +59,9 @@ class RuntimePolicy(BaseModel):
     offline_mode: bool = False
     allow_skill_degradation: bool = False
     style_library_root: str = "agent-library"
+    source_config_revision: str | None = None
+    config_hash: str | None = None
+    generated_at: str | None = None
 
     CONSUMERS: ClassVar[dict[str, str]] = {
         "max_auto_questions": "interaction.question_generator",
@@ -79,6 +82,9 @@ class RuntimePolicy(BaseModel):
         "offline_mode": "model_router.gateway",
         "allow_skill_degradation": "agent_core.workflow_runner(resource fallback gates)",
         "style_library_root": "skills.style_library",
+        "source_config_revision": "harness.task_config(materialization metadata)",
+        "config_hash": "harness.task_config(materialization integrity)",
+        "generated_at": "harness.task_config(materialization audit)",
     }
 
     def consumer_matrix(self) -> dict[str, str]:

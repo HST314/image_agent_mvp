@@ -153,7 +153,10 @@ def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(
     client = TestClient(main_front.app)
 
     schema = client.get(f"/api/projects/{store.project_id}/settings/schema").json()
-    assert set(schema["properties"]) == set(RuntimePolicy.CONSUMERS) - {"skill_invocation"}
+    assert set(schema["properties"]) == set(RuntimePolicy.CONSUMERS) - {
+        "skill_invocation",
+        *main_front.MATERIALIZATION_METADATA_FIELDS,
+    }
     assert schema["scope"] == "new_project_or_confirmed_revision"
     assert all(item["consumer"] for item in schema["properties"].values())
 
@@ -215,3 +218,48 @@ def test_global_settings_update_runtime_yaml_and_current_project_branch(tmp_path
     })
     assert created.status_code == 201, created.text
     assert created.json()["runtime_policy"]["category_constraint"]["release"] == "manual"
+
+
+def test_managed_instance_rejects_global_policy_writeback(tmp_path: Path, monkeypatch):
+    runtime_path = tmp_path / "runtime.yaml"
+    runtime_path.write_text(
+        yaml.safe_dump(RuntimePolicy().snapshot(), allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    before = runtime_path.read_bytes()
+    monkeypatch.setattr(main_front, "RUNTIME_POLICY_PATH", runtime_path)
+    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
+    client = TestClient(main_front.app)
+
+    response = client.post(
+        "/api/settings/policy",
+        json={
+            "policy": RuntimePolicy(watermark=True).snapshot(),
+            "actor": "owner",
+            "confirmed": True,
+            "project_id": None,
+        },
+    )
+
+    assert response.status_code == 403
+    assert runtime_path.read_bytes() == before
+
+
+def test_managed_instance_rejects_project_policy_writeback(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, _ = _project(tmp_path, "managed-policy")
+    before = (store.root / "runtime_policy.json").read_bytes()
+    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
+    client = TestClient(main_front.app)
+
+    response = client.post(
+        f"/api/projects/{store.project_id}/policy",
+        json={
+            "policy": RuntimePolicy(watermark=True).snapshot(),
+            "actor": "owner",
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 403
+    assert (store.root / "runtime_policy.json").read_bytes() == before

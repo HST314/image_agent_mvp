@@ -413,6 +413,9 @@ class ModelConfig(StrictBaseModel):
 
     model_config_id: str
     state_bindings: list[StateBinding]
+    source_config_revision: str | None = None
+    config_hash: str | None = None
+    generated_at: str | None = None
 
 
 class TraceError(StrictBaseModel):

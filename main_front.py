@@ -60,6 +60,11 @@ MANAGED_MODE = os.getenv("IMAGE_AGENT_MANAGED_MODE", "0") == "1"
 MANAGED_PROJECT_ID = os.getenv("IMAGE_AGENT_MANAGED_PROJECT_ID", "").strip()
 MANAGED_CONTROL_FILE = os.getenv("IMAGE_AGENT_CONTROL_FILE", "").strip()
 MANAGED_ADAPTER_HEADER = "X-Harness-Adapter-Key"
+MATERIALIZATION_METADATA_FIELDS = {
+    "source_config_revision",
+    "config_hash",
+    "generated_at",
+}
 
 
 def _managed_adapter_key() -> str:
@@ -71,6 +76,14 @@ def _managed_adapter_key() -> str:
         return ""
     key = value.get("request_key") if isinstance(value, dict) else None
     return key if isinstance(key, str) and len(key) >= 32 else ""
+
+
+def _require_private_config_write() -> None:
+    if MANAGED_MODE:
+        raise HTTPException(
+            status_code=403,
+            detail="受管实例配置由 Harness 任务快照固定，不能从 Image Agent 回写。",
+        )
 
 
 MANAGED_ADAPTER_KEY = _managed_adapter_key()
@@ -238,10 +251,13 @@ def _write_global_policy(policy: RuntimePolicy) -> None:
 
 def _settings_schema(current: dict[str, Any], *, scope: str, risk: str) -> dict[str, Any]:
     schema = RuntimePolicy.model_json_schema()
-    properties = {name: schema["properties"][name] for name in RuntimePolicy.CONSUMERS
-                  if name != "skill_invocation"}
+    properties = {
+        name: schema["properties"][name]
+        for name in RuntimePolicy.CONSUMERS
+        if name != "skill_invocation" and name not in MATERIALIZATION_METADATA_FIELDS
+    }
     for name, consumer in RuntimePolicy.CONSUMERS.items():
-        if name == "skill_invocation":
+        if name == "skill_invocation" or name in MATERIALIZATION_METADATA_FIELDS:
             continue
         properties[name]["consumer"] = consumer
         properties[name]["effect"] = scope
@@ -1074,6 +1090,7 @@ async def global_settings_schema() -> dict[str, Any]:
 async def revise_global_policy(body: GlobalPolicyRevisionRequest) -> dict[str, Any]:
     """Update global defaults and, when supplied, revise the current project too."""
     try:
+        _require_private_config_write()
         if not body.confirmed:
             raise PermissionError("全局配置修订需要人工确认。")
         policy = RuntimePolicy.model_validate(body.policy)
@@ -1103,6 +1120,7 @@ async def revise_global_policy(body: GlobalPolicyRevisionRequest) -> dict[str, A
 @app.post("/api/projects/{project_id}/policy")
 async def revise_project_policy(project_id: str, body: PolicyRevisionRequest) -> dict[str, Any]:
     try:
+        _require_private_config_write()
         def execute():
             store = _store(project_id)
             policy = RuntimePolicy.model_validate(body.policy)
@@ -1133,6 +1151,7 @@ async def get_model_settings() -> dict[str, Any]:
 async def update_model_settings(body: ModelBindingsUpdateRequest) -> dict[str, Any]:
     """保存各阶段模型绑定：仅接受模型库中与阶段能力匹配的条目，原子改写后热加载生效。"""
     try:
+        _require_private_config_write()
         if not body.confirmed:
             raise PermissionError("模型设置修订需要人工确认。")
 

@@ -135,7 +135,7 @@ def apply_bindings(
         )
     ordered = [bindings[state] for state in REQUIRED_STATE_ROLES if state in bindings]
     ordered.extend(binding for state, binding in bindings.items() if state not in REQUIRED_STATE_ROLES)
-    return ModelConfig(model_config_id=config.model_config_id, state_bindings=ordered)
+    return config.model_copy(update={"state_bindings": ordered})
 
 
 def write_model_config(path: str | Path, config: ModelConfig) -> None:

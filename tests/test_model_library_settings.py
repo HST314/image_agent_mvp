@@ -119,3 +119,22 @@ def test_model_settings_post_rewrites_config_with_capability_check(client: TestC
         "bindings": {"initial_candidate_generation": image_id}, "actor": "tester", "confirmed": False,
     })
     assert rejected.status_code in {409, 503}
+
+
+def test_managed_instance_rejects_model_config_writeback(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = main_front.MODEL_CONFIG.read_bytes()
+    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
+
+    response = client.post(
+        "/api/settings/models",
+        json={
+            "bindings": {"intake_clarify": "unused"},
+            "actor": "tester",
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 403
+    assert main_front.MODEL_CONFIG.read_bytes() == before
