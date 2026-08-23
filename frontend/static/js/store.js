@@ -9,7 +9,7 @@ export const state = {
   offline: false,
   managedByHarness: false,
   managedProjectId: null,
-  view: 'workspace',  // 顶部导航当前视图：workspace / status / settings（T1）
+  view: 'workspace',  // 顶部导航当前视图：workspace / status
 };
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }

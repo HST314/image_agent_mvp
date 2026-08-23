@@ -11,7 +11,7 @@ import {
 const BACKEND_CAPABILITIES = [
   'retry', 'approve_category_constraint', 'retry_category_constraint',
   'answer_clarification', 'apply_clarification_safe_defaults',
-  'adjust_clarification_budget', 'continue_clarification_after_budget_change',
+  'continue_clarification_after_budget_change',
   'answer_taskbook_revision', 'apply_taskbook_scope_boundaries',
   'regenerate_taskbook', 'edit_taskbook',
   'select_master', 'review_calibration',
@@ -50,7 +50,7 @@ test('waiting_clarification_review → 可恢复的 clarify 舞台', () => {
   const v = view(
     { state: 'intake_clarify', phase: 'waiting_clarification_review' },
     {},
-    ['answer_clarification', 'adjust_clarification_budget'],
+    ['answer_clarification'],
   );
   const result = deriveView(v);
   assert.equal(result.stage, 'clarify');

@@ -984,25 +984,3 @@ class ProjectStore:
 
     def history(self) -> list[dict[str, Any]]:
         return self.events.read_all()
-
-    def revise_policy(self, policy: dict[str, Any], *, confirmed: bool, actor: str) -> str:
-        """Configuration changes are auditable branches, never in-place edits."""
-        if not confirmed or not actor:
-            raise PermissionError("配置修订需要人工确认和操作者身份。")
-        pointer = self.manifest().get("current_checkpoint")
-        if not pointer:
-            raise ValueError("配置修订前必须存在安全检查点。")
-        branches_path = self.root / "branches.json"
-        branches = json.loads(branches_path.read_text(encoding="utf-8"))
-        active = self.manifest()["current_branch"]
-        current = json.loads((self.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
-        branches["branches"][active].update(runtime_policy=current, runtime_policy_hash=content_hash(current))
-        atomic_json(branches_path, branches)
-        branch = self.branch_from(pointer["checkpoint_id"], name=f"policy-{content_hash(policy)[:8]}")
-        branches = json.loads(branches_path.read_text(encoding="utf-8"))
-        branches["branches"][branch].update(runtime_policy=policy, runtime_policy_hash=content_hash(policy))
-        atomic_json(branches_path, branches)
-        atomic_json(self.root / "runtime_policy.json", {"policy": policy, "sha256": content_hash(policy)})
-        self.events.append("runtime_policy_revised", branch=branch, actor=actor,
-                           policy_hash=content_hash(policy), confirmed=True)
-        return branch

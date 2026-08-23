@@ -1,5 +1,4 @@
-/* 应用入口：顶部导航视图切换、可折叠工程目录、新建工程对话框与全局接线（T1）。
- * T2/T3：状态页（statuspage.js）与设置页（settings.js）真实页面接线。 */
+/* 应用入口：顶部导航视图切换、可折叠工程目录、新建工程对话框与全局接线。 */
 
 import { $, $$, el, toast, sectionPanel } from './dom.js';
 import { state, patch } from './store.js';
@@ -8,7 +7,6 @@ import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
 import { renderProject, stopJobTracking } from './project.js';
 import { renderStatusPage } from './statuspage.js';
-import { renderSettingsPage } from './settings.js';
 import { createNavigator, viewOperations } from './jobrunner.js';
 import { createImmediateProjectFlow } from './createflow.js';
 import { buildNewProjectTask } from './createform.js';
@@ -75,17 +73,16 @@ function renderNav() {
   }
 }
 
-/* ---- 顶部导航视图切换（T1 框架；T2 状态页 / T3 设置页真实渲染） ---- */
+/* ---- 顶部导航视图切换 ---- */
 
-/* 当前挂载的非工作区页面（状态/设置），含实时订阅；切页/导航/回首页时 dispose。 */
+/* 当前挂载的非工作区状态页，含实时订阅；切页/导航/回首页时 dispose。 */
 let activePage = null;
 function leavePage() {
   activePage?.dispose?.();
   activePage = null;
 }
 
-/* 渲染状态页/设置页（契约 §4/§5）：基于当前工程视图（工作区最近加载的
- * state.current）；未打开工程时由页面自身渲染空态。 */
+/* 渲染状态页：基于当前工程视图；未打开工程时由页面自身渲染空态。 */
 function renderPage(view) {
   leavePage();
   const content = $('#content');
@@ -96,18 +93,6 @@ function renderPage(view) {
       openStream: current
         ? (after, { signal } = {}) => api.streamTimelineEvents(current.project_id, { after, signal })
         : null,
-    });
-  } else if (view === 'settings') {
-    activePage = renderSettingsPage(content, state.current, {
-      onSaved(projectView) {
-        /* 保存全局默认；存在当前工程时，同步接管后端返回的策略修订分支。 */
-        viewOperations.begin();
-        if (projectView) {
-          patch({ current: projectView });
-          setTopContext({ projectId: projectView.project_id, branch: projectView.manifest?.current_branch });
-        }
-        if (state.view === 'settings') renderPage('settings');
-      },
     });
   }
 }

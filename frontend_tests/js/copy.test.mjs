@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   hasCJK, phaseLabel, capabilityLabel, terminationReasonLabel, fieldLabel,
-  policyEntries, mechanismLabel, candidateLabel, jobStatusLabel,
+  mechanismLabel, candidateLabel, jobStatusLabel,
   errorText, validationText, localizeFactLabelsInMarkdown, taskbookDisplayMarkdown,
 } from '../../frontend/static/js/copy.js';
 import { formatError } from '../../frontend/static/js/api.js';
@@ -59,47 +59,6 @@ test('字段名映射：已知中文化、中文键原样、未知英文键兜�
   assert.equal(fieldLabel('brand_color'), '其他信息'); // 未收录英文键不上屏
   assert.equal(fieldLabel('brand_color', '补充信息'), '补充信息');
   assert.equal(fieldLabel(''), '其他信息');
-});
-
-/* ---- 运行策略 ---- */
-
-test('运行策略键值中文化：嵌套拍平、枚举与布尔值映射（契约 §8 基线）', () => {
-  const entries = policyEntries({
-    max_auto_questions: 3,
-    self_check: { termination: 'fix', fixed_rounds: 2, max_rounds: 4, stop_early_on_pass: false, release: 'auto' },
-    response_format: 'b64_json',
-    watermark: true,
-    offline_mode: false,
-    future_switch: true,
-  });
-  const byKey = Object.fromEntries(entries.map((e) => [e.key, e]));
-  assert.equal(byKey.max_auto_questions.label, '自动提问上限');
-  assert.equal(byKey.max_auto_questions.valueText, '3');
-  assert.equal(byKey['self_check.termination'].label, '自检终止方式');
-  assert.equal(byKey['self_check.termination'].valueText, '固定轮次');
-  assert.equal(byKey['self_check.fixed_rounds'].label, '固定自检轮次');
-  assert.equal(byKey['self_check.stop_early_on_pass'].valueText, '关闭');
-  assert.equal(byKey['self_check.release'].valueText, '自动放行');
-  assert.equal(byKey.response_format.valueText, 'Base64 数据');
-  assert.equal(byKey.watermark.valueText, '开启');
-  assert.equal(byKey.future_switch.label, '其他策略项'); // 未收录英文键不上屏
-  assert.equal(byKey.future_switch.valueText, '开启');
-  // 契约 §8 常用组/高级组基线键全部有中文名
-  const contractKeys = [
-    'max_auto_questions', 'clarification_total_budget', 'self_check.termination',
-    'self_check.fixed_rounds', 'self_check.max_rounds', 'self_check.stop_early_on_pass',
-    'self_check.release', 'candidate_concurrency', 'default_output_size', 'watermark',
-    'offline_mode', 'model_timeout_seconds', 'image_api_base_url', 'response_format',
-    'max_render_retries', 'allow_skill_degradation', 'style_library_root', 'stream_model_output',
-  ];
-  const full = Object.fromEntries(policyEntries({
-    max_auto_questions: 1, clarification_total_budget: 1, candidate_concurrency: 1,
-    default_output_size: '2K', watermark: false, offline_mode: false, model_timeout_seconds: 60,
-    image_api_base_url: 'https://example', response_format: 'url', max_render_retries: 0,
-    allow_skill_degradation: true, style_library_root: '/x', stream_model_output: false,
-    self_check: { termination: 'solo', fixed_rounds: 1, max_rounds: 1, stop_early_on_pass: true, release: 'manual' },
-  }).map((e) => [e.key, e.label]));
-  for (const key of contractKeys) assert.ok(hasCJK(full[key] || ''), `契约键缺中文名：${key}`);
 });
 
 /* ---- 风格机制 / 候选 / 任务状态 ---- */

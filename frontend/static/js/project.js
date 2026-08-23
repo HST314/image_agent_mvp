@@ -1,6 +1,5 @@
 /* 工作台视图（契约 §3）：创作进度卡 + 当前阶段工作区。
- * T2/T3 起，工程信息/最近活动/原始任务迁入状态页（statuspage.js），运行策略
- * 迁入设置页（settings.js），工作台不再展示这四张卡片。
+ * 工程信息、最近活动和原始任务位于只读状态页（statuspage.js）。
  * 长任务一律经后台 job + SSE 序号续传，页面在长任务期间保持可操作（T35）。 */
 
 import { $, el, toast, stateBlock, icons, sectionPanel } from './dom.js';
@@ -179,11 +178,7 @@ function renderStage(panel, view, derived, ctx) {
       renderStageSkeleton(panel, 'clarify', boundary, jobRunner);
       return;
     }
-    renderClarify(panel, view, {
-      projectId,
-      jobRunner,
-      onOpenSettings: () => document.querySelector('[data-view="settings"]')?.click(),
-    });
+    renderClarify(panel, view, { projectId, jobRunner });
     return;
   }
   if (stage === 'taskbook') {

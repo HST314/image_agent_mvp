@@ -1,12 +1,12 @@
 /* 顶部导航视图切换决策（T1 布局总框架）：纯逻辑核心。DOM 与网络全部由
  * app.js 注入，本模块不触碰 document/fetch，可在 Node 下直接做
- * 「状态/设置页 → 慢工程 GET → 重点击当前页签」交错回归测试（H1 竞态修复的
+ * 「状态页 → 慢工程 GET → 重点击当前页签」交错回归测试（H1 竞态修复的
  * 视图侧闭合：最新页签意图必须能中止在途工程导航）。
- * T2/T3 起 renderPage 渲染真实状态页/设置页（原为占位页）。 */
+ * renderPage 渲染真实只读状态页。 */
 
 import { VIEWS } from './topnav.js';
 
-/* 状态/设置页刷新控制器：刷新 GET 与应用级操作世代绑定，同时锁定发起时的
+/* 状态页刷新控制器：刷新 GET 与应用级操作世代绑定，同时锁定发起时的
  * 页签和工程。仅检查页签不足以防止 A 工程慢响应在用户打开 B、再回到同一
  * 页签后覆盖 B；三重守卫确保迟到响应只能更新原工程的原页面。 */
 export function createAuxPageRefresher(deps, registry) {
@@ -58,7 +58,7 @@ export function createViewSwitcher(deps) {
     setView(view) {
       if (!VIEWS.includes(view)) return;
       if (view === getState().view) {
-        /* 状态/设置页上重点击当前页签 = 留在本页的最新意图：中止在途的工程
+        /* 状态页上重点击当前页签 = 留在本页的最新意图：中止在途的工程
          * 导航（侧栏慢 GET 尚未返回），其迟到响应不得把界面切回工作区（H1）。
          * 工作区视图可能挂着进行中的 job 跟踪循环，同页签点击不得中止，
          * 直接忽略。 */

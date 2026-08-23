@@ -11,13 +11,12 @@
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
   <div class="app" id="app">
-    <!-- T1 布局总框架：顶部导航栏（工作区/状态/设置 + 工程名·分支标识），无汉堡按钮 -->
+    <!-- 顶部导航栏只保留创作工作区和任务状态；运行配置由主系统在启动前固化。 -->
     <header class="topnav">
       <div class="topnav__brand"><div class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M5 19 19 5M7 5h12v12M5 9v10h10"/></svg></div><strong>Image Agent</strong></div>
       <nav class="topnav__tabs" aria-label="主导航">
         <button type="button" class="topnav__tab" data-view="workspace" aria-current="page">工作区</button>
         <button type="button" class="topnav__tab" data-view="status">状态</button>
-        <button type="button" class="topnav__tab" data-view="settings">设置</button>
       </nav>
       <div class="topnav__context">
         <span class="topnav__project" id="topnav-project" hidden><strong id="topnav-project-name"></strong><button type="button" class="badge badge--info topnav__branch" id="topnav-branch" title="查看并切换分支">分支 main</button></span>
@@ -69,15 +68,6 @@
         <button type="button" class="btn btn--danger" data-unknown="abandon">放弃调用</button>
       </div>
     </div>
-  </template>
-
-  <!-- 运行策略修订模板：确认后总是创建新分支，旧分支保持不变。 -->
-  <template id="tpl-policy-section">
-    <section class="panel section policy-section">
-      <div class="section__head"><div><h3>运行策略</h3><p>修改策略会创建新分支，仅影响该分支后续运行；旧分支保持不变。</p></div></div>
-      <dl class="kv policy-section__values"></dl>
-      <button type="button" class="btn btn--secondary" data-revise-policy>确认并修订策略</button>
-    </section>
   </template>
 
   <script type="module" src="/static/js/app.js"></script>

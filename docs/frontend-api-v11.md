@@ -28,16 +28,9 @@ never construct a checkpoint identifier or send a filesystem path.
 
 The maximum page size is 500. Negative cursors and invalid limits return 422.
 
-## Settings
+## Runtime configuration
 
-- `GET /api/settings/schema` returns the global `runtime.yaml` defaults without
-  requiring an opened project.
-- `POST /api/settings/policy` atomically updates the global defaults. When
-  `project_id` is supplied it also creates and applies an audited policy branch
-  for that currently opened project.
-- `GET /api/projects/{project_id}/settings/schema` returns the Pydantic-derived
-  field schema, nested definitions, current values, production consumer for each
-  setting, and its effect scope.
-- `POST /api/projects/{project_id}/policy` validates the same strict schema.
-  A change requires `confirmed=true` and a non-empty actor, creates a new audit
-  branch, and never mutates the existing branch in place.
+Runtime and model configuration is immutable for the lifetime of a managed
+instance. The service exposes no settings, policy-write, model-binding, or
+credential-management route. The parent process supplies the materialized
+configuration paths before startup.

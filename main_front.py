@@ -14,7 +14,6 @@ import mimetypes
 import os
 import re
 import hashlib
-import threading
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -23,7 +22,6 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-import yaml
 
 from agent_core.models import ImageTaskCard
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
@@ -46,9 +44,7 @@ APP_ROOT = Path(__file__).resolve().parent
 FRONTEND_ROOT = APP_ROOT / "frontend"
 PROJECTS_ROOT = Path(os.getenv("IMAGE_AGENT_FRONT_PROJECTS_ROOT", FRONTEND_ROOT / "data" / "projects")).resolve()
 MODEL_CONFIG = Path(os.getenv("IMAGE_AGENT_MODEL_CONFIG", APP_ROOT / "configs" / "model_config.yaml")).resolve()
-MODEL_LIBRARY = Path(os.getenv("IMAGE_AGENT_MODEL_LIBRARY", APP_ROOT / "configs" / "model_library.yaml")).resolve()
 RUNTIME_POLICY_PATH = Path(os.getenv("IMAGE_AGENT_RUNTIME_POLICY", APP_ROOT / "configs" / "runtime.yaml")).resolve()
-GLOBAL_POLICY_LOCK = threading.RLock()
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
@@ -60,11 +56,6 @@ MANAGED_MODE = os.getenv("IMAGE_AGENT_MANAGED_MODE", "0") == "1"
 MANAGED_PROJECT_ID = os.getenv("IMAGE_AGENT_MANAGED_PROJECT_ID", "").strip()
 MANAGED_CONTROL_FILE = os.getenv("IMAGE_AGENT_CONTROL_FILE", "").strip()
 MANAGED_ADAPTER_HEADER = "X-Harness-Adapter-Key"
-MATERIALIZATION_METADATA_FIELDS = {
-    "source_config_revision",
-    "config_hash",
-    "generated_at",
-}
 
 
 def _managed_adapter_key() -> str:
@@ -76,14 +67,6 @@ def _managed_adapter_key() -> str:
         return ""
     key = value.get("request_key") if isinstance(value, dict) else None
     return key if isinstance(key, str) and len(key) >= 32 else ""
-
-
-def _require_private_config_write() -> None:
-    if MANAGED_MODE:
-        raise HTTPException(
-            status_code=403,
-            detail="受管实例配置由 Harness 任务快照固定，不能从 Image Agent 回写。",
-        )
 
 
 MANAGED_ADAPTER_KEY = _managed_adapter_key()
@@ -162,25 +145,9 @@ class BranchRequest(StrictRequest):
 class BranchSwitchRequest(StrictRequest):
     checkpoint_id: str = Field(pattern=r"^checkpoint_[0-9a-f]{24}$")
 
-class PolicyRevisionRequest(StrictRequest):
-    policy: dict[str, Any]
-    actor: str = Field(min_length=1, max_length=128)
-    confirmed: bool
-
-class GlobalPolicyRevisionRequest(PolicyRevisionRequest):
-    project_id: str | None = Field(default=None, min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
-
 class UnknownResolutionRequest(StrictRequest):
     action: Literal["retry_after_confirmation", "abandon"]
     actor: str = Field(min_length=1, max_length=128)
-
-
-class ModelBindingsUpdateRequest(StrictRequest):
-    """设置页「模型」标签页保存：阶段 → 模型库条目 id；后端强制能力匹配。"""
-
-    bindings: dict[str, str]
-    actor: str = Field(min_length=1, max_length=128)
-    confirmed: bool
 
 
 @app.middleware("http")
@@ -233,36 +200,6 @@ def _existing_store(project_id: str) -> ProjectStore:
 
 def _global_policy() -> RuntimePolicy:
     return RuntimePolicy.from_file(RUNTIME_POLICY_PATH)
-
-
-def _write_global_policy(policy: RuntimePolicy) -> None:
-    """Atomically replace the global defaults consumed by every new project."""
-    RUNTIME_POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp = RUNTIME_POLICY_PATH.with_name(f".{RUNTIME_POLICY_PATH.name}.{uuid4().hex}.tmp")
-    try:
-        with temp.open("w", encoding="utf-8", newline="\n") as stream:
-            yaml.safe_dump(policy.snapshot(), stream, allow_unicode=True, sort_keys=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temp.replace(RUNTIME_POLICY_PATH)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def _settings_schema(current: dict[str, Any], *, scope: str, risk: str) -> dict[str, Any]:
-    schema = RuntimePolicy.model_json_schema()
-    properties = {
-        name: schema["properties"][name]
-        for name in RuntimePolicy.CONSUMERS
-        if name != "skill_invocation" and name not in MATERIALIZATION_METADATA_FIELDS
-    }
-    for name, consumer in RuntimePolicy.CONSUMERS.items():
-        if name == "skill_invocation" or name in MATERIALIZATION_METADATA_FIELDS:
-            continue
-        properties[name]["consumer"] = consumer
-        properties[name]["effect"] = scope
-    return {"schema_version": "1", "scope": scope, "risk": risk,
-            "properties": properties, "$defs": schema.get("$defs", {}), "current": current}
 
 
 def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
@@ -390,7 +327,7 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
     if phase == "waiting_clarification":
         return ["answer_clarification"]
     if phase == "waiting_clarification_review":
-        actions = ["answer_clarification", "adjust_clarification_budget"]
+        actions = ["answer_clarification"]
         if snapshot.get("clarification_safe_default_fields"):
             actions.append("apply_clarification_safe_defaults")
         if int(snapshot.get("clarification_remaining_budget") or 0) > 0:
@@ -1058,116 +995,6 @@ async def project_traces(project_id: str, after: int = 0, limit: int = 100) -> d
     except Exception as exc:
         raise _translate_error(exc) from exc
 
-
-@app.get("/api/projects/{project_id}/settings/schema")
-async def project_settings_schema(project_id: str) -> dict[str, Any]:
-    try:
-        store = _store(project_id)
-        current = json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
-        return _settings_schema(
-            current,
-            scope="new_project_or_confirmed_revision",
-            risk="修改现有工程会创建审计分支并使后续结果重新确认。",
-        )
-    except Exception as exc:
-        raise _translate_error(exc) from exc
-
-
-@app.get("/api/settings/schema")
-async def global_settings_schema() -> dict[str, Any]:
-    """Expose global defaults without requiring an opened project."""
-    try:
-        return _settings_schema(
-            _global_policy().snapshot(),
-            scope="global_and_current_project_revision",
-            risk="保存会立即更新全局默认；若指定当前工程，还会创建策略修订分支。",
-        )
-    except Exception as exc:
-        raise _translate_error(exc) from exc
-
-
-@app.post("/api/settings/policy")
-async def revise_global_policy(body: GlobalPolicyRevisionRequest) -> dict[str, Any]:
-    """Update global defaults and, when supplied, revise the current project too."""
-    try:
-        _require_private_config_write()
-        if not body.confirmed:
-            raise PermissionError("全局配置修订需要人工确认。")
-        policy = RuntimePolicy.model_validate(body.policy)
-        store = _existing_store(body.project_id) if body.project_id else None
-
-        def execute() -> dict[str, Any]:
-            with GLOBAL_POLICY_LOCK:
-                previous = _global_policy()
-                branch = None
-                try:
-                    _write_global_policy(policy)
-                    if store is not None:
-                        with store.lock():
-                            branch = store.revise_policy(
-                                policy.snapshot(), confirmed=body.confirmed, actor=body.actor,
-                            )
-                except Exception:
-                    _write_global_policy(previous)
-                    raise
-            project = _project_view(store) if store is not None else None
-            return {"scope": "global", "policy": policy.snapshot(), "branch": branch, "project": project}
-
-        return await asyncio.to_thread(execute)
-    except Exception as exc:
-        raise _translate_error(exc) from exc
-
-@app.post("/api/projects/{project_id}/policy")
-async def revise_project_policy(project_id: str, body: PolicyRevisionRequest) -> dict[str, Any]:
-    try:
-        _require_private_config_write()
-        def execute():
-            store = _store(project_id)
-            policy = RuntimePolicy.model_validate(body.policy)
-            with store.lock():
-                branch = store.revise_policy(policy.snapshot(), confirmed=body.confirmed, actor=body.actor)
-            return {"branch": branch, "project": _project_view(store)}
-        return await asyncio.to_thread(execute)
-    except Exception as exc:
-        raise _translate_error(exc) from exc
-
-
-def _model_settings_view() -> dict[str, Any]:
-    from model_router.library import load_config, load_library, settings_view
-
-    return settings_view(load_library(MODEL_LIBRARY), load_config(MODEL_CONFIG))
-
-
-@app.get("/api/settings/models")
-async def get_model_settings() -> dict[str, Any]:
-    """模型库备选池 + 各阶段当前绑定（设置页「模型」标签页数据源）。"""
-    try:
-        return await asyncio.to_thread(_model_settings_view)
-    except Exception as exc:
-        raise _translate_error(exc) from exc
-
-
-@app.post("/api/settings/models")
-async def update_model_settings(body: ModelBindingsUpdateRequest) -> dict[str, Any]:
-    """保存各阶段模型绑定：仅接受模型库中与阶段能力匹配的条目，原子改写后热加载生效。"""
-    try:
-        _require_private_config_write()
-        if not body.confirmed:
-            raise PermissionError("模型设置修订需要人工确认。")
-
-        def execute() -> dict[str, Any]:
-            from model_router.library import apply_bindings, load_config, load_library, write_model_config
-
-            with GLOBAL_POLICY_LOCK:
-                config = load_config(MODEL_CONFIG)
-                updated = apply_bindings(load_library(MODEL_LIBRARY), config, dict(body.bindings))
-                write_model_config(MODEL_CONFIG, updated)
-            LOGGER.info("model bindings updated by %s: %s", body.actor, sorted(body.bindings))
-            return _model_settings_view()
-
-        return await asyncio.to_thread(execute)
-    except Exception as exc:
-        raise _translate_error(exc) from exc
 
 @app.get("/api/projects/{project_id}/unknown-actions")
 async def get_unknown_actions(project_id: str) -> dict[str, Any]:

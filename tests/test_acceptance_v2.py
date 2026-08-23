@@ -15,16 +15,9 @@ from agent_core.models import CandidateAsset
 from storage.project_store import ProjectStore, atomic_json
 
 
-def test_t02_every_policy_field_has_consumer_and_revision_needs_confirmation(tmp_path: Path):
+def test_t02_every_policy_field_has_consumer():
     policy = RuntimePolicy.from_file("configs/runtime.yaml")
     assert set(RuntimePolicy.model_fields) == set(policy.consumer_matrix())
-    store = ProjectStore(tmp_path, "p"); store.create(policy.snapshot())
-    store.checkpoint("safe", {"ok": True})
-    with pytest.raises(PermissionError):
-        store.revise_policy(policy.snapshot(), confirmed=False, actor="owner")
-    branch = store.revise_policy({**policy.snapshot(), "watermark": True}, confirmed=True, actor="owner")
-    assert branch.startswith("policy-")
-    assert any(e["type"] == "runtime_policy_revised" for e in store.history())
 
 
 def test_t03_installed_resources_are_declared():

@@ -1,4 +1,4 @@
-/* T1 视图切换的 H1 交错回归：状态/设置页 → 慢工程 GET → 重点击当前页签。
+/* T1 视图切换的 H1 交错回归：状态页 → 慢工程 GET → 重点击当前页签。
  * 真实 createNavigator（app.js 侧栏接线同一实现）+ 真实 createViewSwitcher
  * （app.js 顶栏接线同一实现），GET 手工 settle，精确编排返回顺序。 */
 import { test } from 'node:test';
@@ -41,9 +41,9 @@ function fakeApp(registry, initialView = 'status') {
   };
 }
 
-test('状态/设置页→慢工程 GET→重点击当前页签：中止在途导航，迟到 GET 不得切回工作区', async () => {
+test('状态页→慢工程 GET→重点击当前页签：中止在途导航，迟到 GET 不得切回工作区', async () => {
   const registry = createOperationRegistry();
-  const app = fakeApp(registry, 'status'); // 已在「状态」状态/设置页
+  const app = fakeApp(registry, 'status');
 
   // 侧栏点击某工程 → 慢 GET in-flight（视图仍停留在状态页）
   const opening = app.nav.openProject('p1');
@@ -52,7 +52,7 @@ test('状态/设置页→慢工程 GET→重点击当前页签：中止在途导
 
   // GET 返回前再次点击「状态」页签 = 留在本页的最新意图
   app.switcher.setView('status');
-  assert.equal(app.calls.leaves, 1, '同状态/设置页签重点击必须中止在途工程导航');
+  assert.equal(app.calls.leaves, 1, '同状态页签重点击必须中止在途工程导航');
   assert.equal(app.calls.gets[0].signal.aborted, true, '在途 GET 应立即中止');
   assert.equal(app.state.view, 'status');
   assert.deepEqual(app.calls.tabs, [], '同页签点击不重复置激活态');
@@ -65,7 +65,7 @@ test('状态/设置页→慢工程 GET→重点击当前页签：中止在途导
   assert.equal(app.calls.notified.length, 0, '被中止的导航不得 toast 打扰');
 });
 
-test('对照：状态/设置页打开工程后未再点击页签，GET 返回正常进入工作区', async () => {
+test('对照：状态页打开工程后未再点击页签，GET 返回正常进入工作区', async () => {
   const registry = createOperationRegistry();
   const app = fakeApp(registry, 'status');
 
@@ -91,22 +91,22 @@ test('工作区同页签点击为忽略操作：不得中止在途工程导航�
   assert.deepEqual(app.calls.rendered, ['p1']);
 });
 
-test('状态/设置页间切换仍中止在途工程导航（原 H1 语义不退化）', async () => {
+test('已移除的设置视图不能接管在途导航', async () => {
   const registry = createOperationRegistry();
   const app = fakeApp(registry, 'status');
 
   const opening = app.nav.openProject('p1');
-  app.switcher.setView('settings'); // 状态 → 设置：离开本页的正常切换
-  assert.equal(app.calls.leaves, 1);
-  assert.equal(app.calls.gets[0].signal.aborted, true);
-  assert.equal(app.state.view, 'settings');
-  assert.deepEqual(app.calls.tabs, ['settings']);
-  assert.deepEqual(app.calls.pages, ['settings']);
+  app.switcher.setView('settings');
+  assert.equal(app.calls.leaves, 0);
+  assert.equal(app.calls.gets[0].signal.aborted, false);
+  assert.equal(app.state.view, 'status');
+  assert.deepEqual(app.calls.tabs, []);
+  assert.deepEqual(app.calls.pages, []);
 
-  app.settleGet(0, { project_id: 'p1' }); // 迟到响应丢弃
+  app.settleGet(0, { project_id: 'p1' }); // 非法视图未改变导航世代，响应正常接管工作区
   await opening;
-  assert.deepEqual(app.calls.rendered, []);
-  assert.equal(app.state.view, 'settings');
+  assert.deepEqual(app.calls.rendered, ['p1']);
+  assert.equal(app.state.view, 'workspace');
 });
 
 test('切回工作区：有当前工程则重新打开，无当前工程则回首页', async () => {
@@ -119,7 +119,7 @@ test('切回工作区：有当前工程则重新打开，无当前工程则回�
   assert.equal(app.calls.gets.length, 0);
 
   // 有当前工程 → patch 视图 + 激活页签 + 经真实导航入口重开
-  app.state.view = 'settings';
+  app.state.view = 'status';
   app.state.current = { project_id: 'p9' };
   app.switcher.setView('workspace');
   assert.equal(app.calls.home, 1);
@@ -132,14 +132,14 @@ test('切回工作区：有当前工程则重新打开，无当前工程则回�
   await Promise.resolve();
 });
 
-test('离开工作区前捕获当前工程 UI 状态，辅助页之间切换不重复捕获', () => {
+test('离开工作区前捕获当前工程 UI 状态，同状态页点击不重复捕获', () => {
   const registry = createOperationRegistry();
   const app = fakeApp(registry, 'workspace');
   app.state.current = { project_id: 'p1' };
 
   app.switcher.setView('status');
   assert.deepEqual(app.calls.captured, ['p1']);
-  app.switcher.setView('settings');
+  app.switcher.setView('status');
   assert.deepEqual(app.calls.captured, ['p1']);
 });
 
@@ -188,7 +188,7 @@ test('辅助页刷新：A 慢响应不得在切到 B 并返回同页签后覆盖
 });
 
 test('辅助页刷新：连续刷新只接受最新世代，且拒绝响应工程 ID 不匹配', async () => {
-  const app = fakeAuxPage('A', 'settings');
+  const app = fakeAuxPage('A', 'status');
   const first = app.refresher.refresh();
   const second = app.refresher.refresh();
   assert.equal(app.calls.gets[0].signal.aborted, true);
@@ -205,6 +205,6 @@ test('辅助页刷新：连续刷新只接受最新世代，且拒绝响应工�
   app.calls.gets[2].resolve({ project_id: 'A', marker: 'fresh' });
   await third;
   assert.equal(app.state.current.marker, 'fresh');
-  assert.deepEqual(app.calls.pages, [{ view: 'settings', project: 'A' }]);
+  assert.deepEqual(app.calls.pages, [{ view: 'status', project: 'A' }]);
   assert.equal(app.calls.lists, 3);
 });

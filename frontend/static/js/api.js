@@ -127,18 +127,6 @@ export async function* streamTimelineEvents(id, { after = 0, limit = 200, signal
   }
 }
 
-/* T3：设置页表单数据源（契约 §5——字段清单/类型/约束取自后端，前端不硬编码）。 */
-export const getSettingsSchema = (id, { signal } = {}) =>
-  api(`/api/projects/${encodeURIComponent(id)}/settings/schema`, { signal });
-export const getGlobalSettingsSchema = ({ signal } = {}) =>
-  api('/api/settings/schema', { signal, cache: 'no-store' });
-
-/* 设置页「模型」标签页：模型库备选池 + 各阶段绑定读取/保存。 */
-export const getModelSettings = ({ signal } = {}) =>
-  api('/api/settings/models', { signal, cache: 'no-store' });
-export const saveModelBindings = (payload) =>
-  api('/api/settings/models', { method: 'POST', body: JSON.stringify(payload) });
-
 /* ---- 推进（同步，仅用于不触发付费模型调用的动作） ---- */
 export const advance = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/advance`, { method: 'POST', body: JSON.stringify(payload) });
 export const retryProject = (id, payload) => api(`/api/projects/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify(payload) });
@@ -211,17 +199,13 @@ export async function trackJob(jobId, { onEvent, onDone, signal, pollMs = 1500 }
 export const submitAnnotation = (id, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/annotations`, { method: 'POST', body: JSON.stringify(payload) });
 
-/* ---- 质检分流 / 交付 / 策略 / 未知调用 ---- */
+/* ---- 质检分流 / 交付 / 未知调用 ---- */
 export const qualityDisposition = (id, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/quality-disposition`, { method: 'POST', body: JSON.stringify(payload) });
 export const retryDeliveryNote = (id) =>
   api(`/api/projects/${encodeURIComponent(id)}/delivery/retry`, { method: 'POST', body: '{}' });
 export const finalizeDelivery = (id) =>
   api(`/api/projects/${encodeURIComponent(id)}/delivery/finalize`, { method: 'POST', body: '{}' });
-export const revisePolicy = (id, payload) =>
-  api(`/api/projects/${encodeURIComponent(id)}/policy`, { method: 'POST', body: JSON.stringify(payload) });
-export const reviseGlobalPolicy = (payload) =>
-  api('/api/settings/policy', { method: 'POST', body: JSON.stringify(payload) });
 export const resolveUnknown = (id, key, payload) =>
   api(`/api/projects/${encodeURIComponent(id)}/unknown-actions/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify(payload) });
 export const branchFrom = (id, payload) =>

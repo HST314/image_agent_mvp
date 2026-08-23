@@ -19,13 +19,10 @@ CSS_DIR = ROOT / "frontend" / "static" / "css"
 EXPECTED_JS = {
     "app.js", "api.js", "dom.js", "markdown.js", "store.js", "states.js",
     "home.js", "project.js", "taskbook.js", "clarify.js", "gallery.js",
-    "annotate.js", "history.js", "settings.js", "jobrunner.js",
+    "annotate.js", "history.js", "jobrunner.js",
     "copy.js", "topnav.js", "viewswitch.js", "stepstatus.js",
     "createflow.js", "createform.js",
-    # T2 状态页 / T3 设置页
-    "statuspage.js", "eventlog.js", "policyform.js",
-    # 设置页「模型」标签页（模型库备选 + 阶段绑定）
-    "modelsettings.js",
+    "statuspage.js", "eventlog.js",
     # T9 进度卡只读快照与历史分支
     "snapshots.js",
     # 分支查看/切换界面（顶栏分支徽章入口）
@@ -66,8 +63,7 @@ def test_index_shell_references_module_entry(client: TestClient) -> None:
     page = client.get("/")
     assert page.status_code == 200
     assert 'type="module" src="/static/js/app.js"' in page.text
-    # 生产恢复控件模板仍在首屏 HTML 中（保持 v4 安装态验收口径）。
-    assert "data-revise-policy" in page.text
+    assert 'data-view="settings"' not in page.text
     assert "data-unknown" in page.text
 
 

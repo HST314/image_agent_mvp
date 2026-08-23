@@ -10,10 +10,10 @@ from interaction.confirmation_builder import specification_from_task
 from render_clients.ark_client import ArkImageRenderClient
 from skills.errors import ResourceError
 from storage.project_store import ProjectStore
-from workspace_cli import parser
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRouter
 from model_router.usage import capture_provider_usage
+from workspace_cli import parser
 
 
 def _task() -> ImageTaskCard:
@@ -24,12 +24,6 @@ def _task() -> ImageTaskCard:
         "category_ref": {"category_id": "generic", "version": "1"},
         "known_facts": {}, "unknowns": {}, "asset_inputs": [], "status": "draft",
     })
-
-
-def test_t02_cli_exposes_confirmed_policy_revision() -> None:
-    args = parser().parse_args(["revise-policy", "p", "--policy", "policy.json",
-                                "--actor", "owner", "--confirm"])
-    assert args.confirm and args.actor == "owner"
 
 
 def test_t04_production_candidate_path_returns_structured_resource_error(tmp_path: Path,

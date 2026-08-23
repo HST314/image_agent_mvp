@@ -63,7 +63,7 @@ export function buildClarificationSubmission(card, answersByQuestion) {
   };
 }
 
-export function renderClarify(container, view, { projectId, jobRunner, onOpenSettings = () => {} }) {
+export function renderClarify(container, view, { projectId, jobRunner }) {
   const card = view.snapshot?.question_card || { questions: [] };
   const questions = card.questions || [];
   const budgetReview = view.snapshot?.phase === 'waiting_clarification_review';
@@ -231,12 +231,6 @@ export function renderClarify(container, view, { projectId, jobRunner, onOpenSet
         { intent: 'clarification-safe-defaults', operation: '应用澄清安全默认值' },
       ));
       actions.append(defaults);
-    }
-    if (capabilities.includes('adjust_clarification_budget')) {
-      const settings = el('button', { type: 'button', class: 'btn btn--secondary',
-        text: '去设置调整问题预算' });
-      settings.addEventListener('click', onOpenSettings);
-      actions.append(settings);
     }
     if (capabilities.includes('continue_clarification_after_budget_change')) {
       const continueButton = el('button', { type: 'button', class: 'btn btn--primary',

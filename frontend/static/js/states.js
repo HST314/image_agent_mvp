@@ -30,7 +30,6 @@ export const CAPABILITY_ACTIONS = {
   retry_category_constraint: { id: 'retry_category_constraint', label: '重新匹配品类', kind: 'job' },
   answer_clarification: { id: 'answer_clarification', label: '提交答案并继续', kind: 'job' },
   apply_clarification_safe_defaults: { id: 'apply_clarification_safe_defaults', label: '采用允许的安全默认', kind: 'job' },
-  adjust_clarification_budget: { id: 'adjust_clarification_budget', label: '调整澄清预算', kind: 'ui' },
   continue_clarification_after_budget_change: { id: 'continue_clarification_after_budget_change', label: '按新预算继续', kind: 'job' },
   answer_taskbook_revision: { id: 'answer_taskbook_revision', label: '提交补充内容', kind: 'job' },
   apply_taskbook_scope_boundaries: { id: 'apply_taskbook_scope_boundaries', label: '应用明确默认或范围边界', kind: 'job' },

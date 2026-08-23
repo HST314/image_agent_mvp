@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
 from fastapi.testclient import TestClient
 
 import main_front
@@ -147,119 +146,15 @@ def test_usage_observation_api_is_paginated_and_secret_free(tmp_path: Path, monk
     assert "plain-token-value" not in json.dumps(body)
 
 
-def test_t31_settings_schema_only_exposes_wired_fields_and_revision_is_a_branch(tmp_path: Path, monkeypatch):
+def test_private_configuration_routes_are_removed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
-    store, _ = _project(tmp_path)
-    client = TestClient(main_front.app)
-
-    schema = client.get(f"/api/projects/{store.project_id}/settings/schema").json()
-    assert set(schema["properties"]) == set(RuntimePolicy.CONSUMERS) - {
-        "skill_invocation",
-        *main_front.MATERIALIZATION_METADATA_FIELDS,
-    }
-    assert schema["scope"] == "new_project_or_confirmed_revision"
-    assert all(item["consumer"] for item in schema["properties"].values())
-
-    policy = RuntimePolicy(offline_mode=True, watermark=True).snapshot()
-    changed = client.post(f"/api/projects/{store.project_id}/policy", json={"policy": policy, "actor": "owner", "confirmed": True})
-    assert changed.status_code == 200
-    assert changed.json()["branch"].startswith("policy-")
-    assert any(event["type"] == "runtime_policy_revised" for event in store.history())
-    policy_branch_head = changed.json()["project"]["manifest"]["current_checkpoint"]["checkpoint_id"]
-    assert changed.json()["project"]["runtime_policy"]["watermark"] is True
-    original_head = next(item for item in store.branches()["items"] if item["name"] == "main")["checkpoints"][-1]["checkpoint_id"]
-    assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": original_head}).json()["current_branch"] == "main"
-    assert client.get(f"/api/projects/{store.project_id}").json()["runtime_policy"]["watermark"] is False
-    assert client.post(f"/api/projects/{store.project_id}/branches/switch", json={"checkpoint_id": policy_branch_head}).json()["current_branch"].startswith("policy-")
-
-
-def test_global_settings_update_runtime_yaml_and_current_project_branch(tmp_path: Path, monkeypatch):
-    projects = tmp_path / "projects"
-    runtime_path = tmp_path / "configs" / "runtime.yaml"
-    runtime_path.parent.mkdir(parents=True)
-    runtime_path.write_text(
-        yaml.safe_dump(RuntimePolicy(offline_mode=True).snapshot(), allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(main_front, "PROJECTS_ROOT", projects)
-    monkeypatch.setattr(main_front, "RUNTIME_POLICY_PATH", runtime_path)
-    store, _ = _project(projects, "global-settings-current")
-    client = TestClient(main_front.app)
-
-    schema = client.get("/api/settings/schema")
-    assert schema.status_code == 200
-    assert schema.json()["scope"] == "global_and_current_project_revision"
-
-    policy = RuntimePolicy(
-        offline_mode=True,
-        category_constraint={"release": "manual"},
-        watermark=True,
-    ).snapshot()
-    changed = client.post("/api/settings/policy", json={
-        "policy": policy,
-        "actor": "owner",
-        "confirmed": True,
-        "project_id": store.project_id,
-    })
-    assert changed.status_code == 200, changed.text
-    body = changed.json()
-    assert body["branch"].startswith("policy-")
-    assert body["project"]["runtime_policy"]["category_constraint"]["release"] == "manual"
-    assert RuntimePolicy.from_file(runtime_path).category_constraint.release == "manual"
-
-    task = {
-        "task_id": "task-global-new", "project_id": "global-settings-new",
-        "source_refs": [{"ref_id": "brief", "ref_type": "brief", "excerpt": "文化墙", "source_hash": None}],
-        "deliverable_goal": "设计文化墙", "usage_context": "室内展陈",
-        "known_facts": {}, "unknowns": {}, "asset_inputs": [], "status": "draft",
-    }
-    created = client.post("/api/projects", json={
-        "project_id": "global-settings-new", "task_card": task, "offline": True, "defer_run": True,
-    })
-    assert created.status_code == 201, created.text
-    assert created.json()["runtime_policy"]["category_constraint"]["release"] == "manual"
-
-
-def test_managed_instance_rejects_global_policy_writeback(tmp_path: Path, monkeypatch):
-    runtime_path = tmp_path / "runtime.yaml"
-    runtime_path.write_text(
-        yaml.safe_dump(RuntimePolicy().snapshot(), allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-    before = runtime_path.read_bytes()
-    monkeypatch.setattr(main_front, "RUNTIME_POLICY_PATH", runtime_path)
-    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
-    client = TestClient(main_front.app)
-
-    response = client.post(
-        "/api/settings/policy",
-        json={
-            "policy": RuntimePolicy(watermark=True).snapshot(),
-            "actor": "owner",
-            "confirmed": True,
-            "project_id": None,
-        },
-    )
-
-    assert response.status_code == 403
-    assert runtime_path.read_bytes() == before
-
-
-def test_managed_instance_rejects_project_policy_writeback(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
-    store, _ = _project(tmp_path, "managed-policy")
+    store, _ = _project(tmp_path, "immutable-policy")
     before = (store.root / "runtime_policy.json").read_bytes()
-    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
     client = TestClient(main_front.app)
 
-    response = client.post(
-        f"/api/projects/{store.project_id}/policy",
-        json={
-            "policy": RuntimePolicy(watermark=True).snapshot(),
-            "actor": "owner",
-            "confirmed": True,
-        },
-    )
-
-    assert response.status_code == 403
+    assert client.get("/api/settings/schema").status_code == 404
+    assert client.get("/api/settings/models").status_code == 404
+    assert client.post("/api/settings/policy", json={}).status_code == 404
+    assert client.get(f"/api/projects/{store.project_id}/settings/schema").status_code == 404
+    assert client.post(f"/api/projects/{store.project_id}/policy", json={}).status_code == 404
     assert (store.root / "runtime_policy.json").read_bytes() == before

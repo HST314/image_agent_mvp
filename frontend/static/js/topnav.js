@@ -3,7 +3,7 @@
 
 import { $, $$ } from './dom.js';
 
-export const VIEWS = ['workspace', 'status', 'settings'];
+export const VIEWS = ['workspace', 'status'];
 
 /** 高亮当前视图页签（aria-current=page），其余移除。 */
 export function markActiveTab(view) {
