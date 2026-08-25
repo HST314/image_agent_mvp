@@ -11,7 +11,8 @@ from calibrator.calibration_loop import ManualAction
 from interaction.presenter import Presenter
 from storage.project_store import ProjectStore
 from agent_core.models import QuestionCard
-from configs.managed_runtime import ManagedRuntime
+from configs.managed_runtime import ManagedRuntime, optional_environment_path
+from configs.runtime_policy import RuntimePolicy
 
 
 def _flow_options(command: argparse.ArgumentParser) -> None:
@@ -76,30 +77,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "new":
             runtime = ManagedRuntime.from_environment()
             task = json.loads(args.task.read_text(encoding="utf-8"))
-            store.create(runtime.policy.snapshot())
+            store.create(
+                runtime.policy.snapshot(), config_binding=runtime.branch_binding()
+            )
             with store.lock():
-                runner = WorkflowRunner(
-                    store, runtime.model_config_path, offline_mode=False, output=print
-                )
+                runner = _runner(store, runtime, output=print)
                 result = runner.run({"task_card": task}, _options(args))
             _present_result(view, result)
             if result.get("waiting"): print("流程已安全暂停；补充所需选择后运行 resume。")
         elif args.command == "resume":
-            runtime = ManagedRuntime.from_environment()
+            runtime = _runtime_for_store(store)
             _require_managed_project(store)
             with store.lock():
                 snapshot = store.resume()
                 if snapshot is None: raise ValueError("工程还没有可恢复节点。")
-                result = WorkflowRunner(
-                    store, runtime.model_config_path, offline_mode=False, output=print
-                ).run(snapshot, _options(args))
+                result = _runner(store, runtime, output=print).run(snapshot, _options(args))
             _present_result(view, result)
             print("已从检查点的下一状态继续执行。" if not result.get("waiting") else "已恢复到人工等待点，未重复已完成的付费调用。")
         elif args.command == "retry":
-            runtime = ManagedRuntime.from_environment()
+            runtime = _runtime_for_store(store)
             _require_managed_project(store)
             with store.lock():
-                runner = WorkflowRunner(store, runtime.model_config_path, offline_mode=False)
+                runner = _runner(store, runtime)
                 result_box: list[dict[str, object]] = []
                 store.retry(lambda state, snapshot: result_box.append(runner.run(snapshot, _options(args), only_state=state)))
             print("已从上一成功点创建新分支，并调用真实失败状态处理器。")
@@ -108,17 +107,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 branch = store.branch_from(args.checkpoint, name=args.name)
                 print(f"已创建新分支 {branch}，原历史未修改。")
                 if args.continue_run:
-                    runtime = ManagedRuntime.from_environment()
+                    runtime = _runtime_for_store(store)
                     _require_managed_project(store)
-                    WorkflowRunner(
-                        store, runtime.model_config_path, offline_mode=False
-                    ).run(store.resume(), _options(args))
+                    _runner(store, runtime).run(store.resume(), _options(args))
         elif args.command == "unknown":
-            runtime = ManagedRuntime.from_environment()
+            runtime = _runtime_for_store(store)
             _require_managed_project(store)
-            gateway = WorkflowRunner(
-                store, runtime.model_config_path, offline_mode=False
-            ).gateway
+            gateway = _runner(store, runtime).gateway
             if args.action:
                 if not args.idempotency_key or not args.actor: raise ValueError("处置未知态必须提供 key 与 actor。")
                 gateway.resolve_unknown(args.idempotency_key, args.action, args.actor)
@@ -142,6 +137,59 @@ def _require_managed_project(store: ProjectStore) -> None:
     payload = json.loads(policy_path.read_text(encoding="utf-8"))
     if bool(payload.get("policy", {}).get("offline_mode")):
         raise RuntimeError("Offline projects cannot run through the managed CLI.")
+
+
+def _runtime_for_store(store: ProjectStore) -> ManagedRuntime:
+    binding = store.active_config_binding()
+    base = ManagedRuntime.from_paths(
+        optional_environment_path("IMAGE_AGENT_MODEL_CONFIG"),
+        optional_environment_path("IMAGE_AGENT_RUNTIME_POLICY"),
+    )
+    revision_id = binding.get("runtime_config_revision_id")
+    if revision_id is None:
+        runtime = base.with_policy(RuntimePolicy.model_validate(binding["runtime_policy"]))
+    else:
+        local_root = store.root / "runtime-config"
+        external_root = optional_environment_path("IMAGE_AGENT_CONFIG_ROOT")
+        if (local_root / "revisions" / str(revision_id)).is_dir():
+            runtime = ManagedRuntime.from_revision(
+                local_root, str(revision_id), base=base, managed=True
+            )
+        elif external_root is not None and (
+            external_root / "revisions" / str(revision_id)
+        ).is_dir():
+            runtime = ManagedRuntime.from_revision(
+                external_root, str(revision_id), base=base, managed=True
+            )
+        elif revision_id == "cfg-inst-r000001":
+            runtime = base.with_policy(
+                RuntimePolicy.model_validate(binding["runtime_policy"])
+            )
+        else:
+            raise RuntimeError("The active branch runtime revision is unavailable.")
+    runtime.assert_branch_binding(binding)
+    return runtime
+
+
+def _runner(
+    store: ProjectStore,
+    runtime: ManagedRuntime,
+    *,
+    output=None,
+) -> WorkflowRunner:
+    return WorkflowRunner(
+        store,
+        runtime.model_config_path,
+        offline_mode=False,
+        output=output,
+        policy=runtime.policy,
+        runtime_config_revision_id=runtime.revision_id,
+        task_config_revision_id=runtime.task_config_revision_id,
+        runtime_config_sha256=runtime.runtime_config_sha256,
+        model_config_sha256=runtime.model_config_sha256,
+        config_hash=runtime.config_hash,
+        effective_from_state=runtime.branch_binding()["effective_from_state"],
+    )
 
 def _present_result(view: Presenter, result: dict[str, object]) -> None:
     if result.get("question_card"):

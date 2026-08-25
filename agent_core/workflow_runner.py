@@ -38,6 +38,13 @@ from storage.assets import normalize_image_asset
 from storage.provider_assets import ProviderImageAdapter
 from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
+from configs.runtime_revision import (
+    canonical_json_bytes,
+    canonical_yaml_bytes,
+    effective_runtime,
+    revision_content_hash,
+    sha256_bytes,
+)
 from model_router.executor import ModelExecutor
 from skills.errors import ResourceError
 from calibrator.structured_inspection import parse_with_one_repair, InspectionOutputError
@@ -89,17 +96,65 @@ class WorkflowRunner:
         "ready_for_final_approval": "final_approval",
     }
 
-    def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
-                 output: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        store: ProjectStore,
+        config: Path,
+        *,
+        offline_mode: bool = False,
+        output: Callable[[str], None] | None = None,
+        policy: RuntimePolicy | None = None,
+        runtime_config_revision_id: str = "cfg-inst-r000001",
+        task_config_revision_id: str = "task-config-r000001",
+        runtime_config_sha256: str | None = None,
+        model_config_sha256: str | None = None,
+        config_hash: str | None = None,
+        effective_from_state: str = "initial",
+    ) -> None:
         self.store = store
         policy_file = store.root / "runtime_policy.json"
         stored = json.loads(policy_file.read_text(encoding="utf-8")).get("policy", {}) if policy_file.exists() else {}
-        self.policy = RuntimePolicy.model_validate(stored) if stored else RuntimePolicy(offline_mode=offline_mode)
+        self.policy = policy or (
+            RuntimePolicy.model_validate(stored) if stored else RuntimePolicy(offline_mode=offline_mode)
+        )
         if stored and self.policy.offline_mode != offline_mode:
             raise ValueError("工程真实/离线模式已在创建时固化，运行中不可切换。")
+        model_bytes = Path(config).read_bytes()
+        source_model_sha = sha256_bytes(model_bytes)
+        if model_config_sha256 is not None and model_config_sha256 != source_model_sha:
+            raise ValueError("模型配置与活动配置修订的哈希不一致。")
+        active_model_sha = model_config_sha256 or source_model_sha
+        actual_runtime_sha = runtime_config_sha256 or sha256_bytes(
+            canonical_yaml_bytes(effective_runtime(self.policy))
+        )
+        active_config_hash = config_hash or revision_content_hash(
+            actual_runtime_sha, active_model_sha
+        )
+        policy_snapshot = self.policy.snapshot()
+        self.config_binding = {
+            "runtime_config_revision_id": runtime_config_revision_id,
+            "task_config_revision_id": task_config_revision_id,
+            "runtime_policy": policy_snapshot,
+            "runtime_policy_hash": sha256_bytes(canonical_json_bytes(policy_snapshot)),
+            "runtime_config_sha256": actual_runtime_sha,
+            "model_config_hash": active_model_sha,
+            "config_hash": active_config_hash,
+            "effective_from_state": effective_from_state,
+        }
         executor = ModelExecutor(max_attempts=self.policy.max_render_retries + 1,
                                  timeout=self.policy.model_timeout_seconds)
-        self.gateway = RuntimeModelGateway(store, ModelRouter.from_file(config), executor, offline_mode=offline_mode)
+        self.gateway = RuntimeModelGateway(
+            store,
+            ModelRouter.from_file(
+                config,
+                expected_sha256=source_model_sha,
+                config_hash=active_config_hash,
+                revision_id=runtime_config_revision_id,
+                branch_id=store.read_manifest()["current_branch"],
+            ),
+            executor,
+            offline_mode=offline_mode,
+        )
         self.offline_mode = offline_mode
         self.output = output or (lambda _: None)
         self.presenter = Presenter()
@@ -134,6 +189,7 @@ class WorkflowRunner:
 
     def run(self, snapshot: dict[str, Any] | None, options: RunnerOptions, *, only_state: str | None = None) -> dict[str, Any]:
         with self.store.lock():
+            self.store.ensure_active_config_binding(self.config_binding)
             return self._run_locked(snapshot, options, only_state=only_state)
 
     def _run_locked(self, snapshot: dict[str, Any] | None, options: RunnerOptions, *, only_state: str | None = None) -> dict[str, Any]:
