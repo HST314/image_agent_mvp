@@ -51,12 +51,27 @@ def main() -> None:
         run(sys.executable, "-m", "pip", "install", str(wheel), "--target", str(wheel_target), cwd=outside)
         runner_e2e = r'''
 from pathlib import Path
-import configs
+import json
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from storage.project_store import ProjectStore
 import model_router.executor
 
-config = Path(configs.__file__).with_name("model_config.yaml")
+config = Path.cwd() / "model_config.json"
+config.write_text(json.dumps({
+    "model_config_id": "release-offline-fixture",
+    "state_bindings": [
+        {"state": state, "model_role": role, "provider": "fixture", "model": model,
+         "parameters": {}, "fallback_model": None}
+        for state, role, model in (
+            ("intake_clarify", "reasoning_llm", "fixture-text"),
+            ("confirmation_build", "reasoning_llm", "fixture-text"),
+            ("initial_candidate_generation", "text_to_image_model", "fixture-image"),
+            ("self_check_inspection", "vision_language_model", "fixture-vision"),
+            ("self_check_rework", "text_to_image_model", "fixture-image"),
+            ("human_prompt_rework", "text_to_image_model", "fixture-image"),
+        )
+    ],
+}), encoding="utf-8")
 task = {"task_id":"wheel", "project_id":"installed", "source_refs":[{"ref_id":"brief","ref_type":"text"}],
         "deliverable_goal":"海报", "usage_context":"手机", "known_facts":{"主体":"产品"}, "unknowns":{}}
 
