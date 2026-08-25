@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,27 +42,67 @@ class ModelRoute:
 class ModelRouter:
     """Resolve model bindings for workflow states."""
 
-    def __init__(self, config: ModelConfig, *, source_path: Path | None = None, config_hash: str = "") -> None:
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        source_path: Path | None = None,
+        source_sha256: str = "",
+        config_hash: str = "",
+        revision_id: str | None = None,
+        branch_id: str | None = None,
+    ) -> None:
         self._bindings = {binding.state: binding for binding in config.state_bindings}
         self.source_path = source_path
+        self.source_sha256 = source_sha256
         self.config_hash = config_hash
+        self.revision_id = revision_id
+        self.branch_id = branch_id
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "ModelRouter":
+    def from_file(
+        cls,
+        path: str | Path,
+        *,
+        expected_sha256: str | None = None,
+        config_hash: str | None = None,
+        revision_id: str | None = None,
+        branch_id: str | None = None,
+    ) -> "ModelRouter":
         """Load model routing from a JSON or YAML config file."""
 
         config_path = Path(path)
-        raw_text = config_path.read_text(encoding="utf-8")
+        if config_path.is_symlink() or not config_path.is_file():
+            raise ValueError("Model configuration path is missing or unsafe.")
+        raw_bytes = config_path.read_bytes()
+        actual_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        if expected_sha256 is not None and actual_sha256 != expected_sha256:
+            raise ValueError("Model configuration failed immutable revision validation.")
+        raw_text = raw_bytes.decode("utf-8")
         if config_path.suffix.lower() == ".json":
             payload = json.loads(raw_text)
         else:
             payload = yaml.safe_load(raw_text)
-        import hashlib
-        return cls(ModelConfig.model_validate(payload), source_path=config_path, config_hash=hashlib.sha256(raw_text.encode()).hexdigest())
+        return cls(
+            ModelConfig.model_validate(payload),
+            source_path=config_path,
+            source_sha256=actual_sha256,
+            config_hash=config_hash or actual_sha256,
+            revision_id=revision_id,
+            branch_id=branch_id,
+        )
 
     def reload_at_boundary(self) -> "ModelRouter":
-        """Reload only at a workflow state or iteration boundary."""
-        return self.from_file(self.source_path) if self.source_path else self
+        """Revalidate only the same immutable revision at a workflow boundary."""
+        if self.source_path is None:
+            return self
+        return self.from_file(
+            self.source_path,
+            expected_sha256=self.source_sha256,
+            config_hash=self.config_hash,
+            revision_id=self.revision_id,
+            branch_id=self.branch_id,
+        )
 
     def binding_for_state(self, state: str) -> StateBinding:
         """Return the configured binding for a state."""
