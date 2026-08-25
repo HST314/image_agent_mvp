@@ -105,6 +105,14 @@ export const getProject = (id, { signal, cache = 'default' } = {}) =>
   api(`/api/projects/${encodeURIComponent(id)}`, { signal, cache });
 export const createProject = (payload, { signal } = {}) =>
   api('/api/projects', { method: 'POST', body: JSON.stringify(payload), signal });
+export const runtimeStatus = (id, { signal } = {}) =>
+  api(`/api/projects/${encodeURIComponent(id)}/runtime-status`, { signal, cache: 'no-store' });
+export const getRuntimeSettings = (id, { signal } = {}) =>
+  api(`/api/projects/${encodeURIComponent(id)}/runtime-settings`, { signal, cache: 'no-store' });
+export const reviseRuntimeSettings = (id, payload, { signal } = {}) =>
+  api(`/api/projects/${encodeURIComponent(id)}/runtime-settings`, {
+    method: 'POST', body: JSON.stringify(payload), signal,
+  });
 /* T10：时间线增量拉取（契约 §7——实时状态只来自后端真实事件，不做前端假状态）。 */
 export const getTimeline = (id, { after = 0, limit = 100, signal } = {}) =>
   api(`/api/projects/${encodeURIComponent(id)}/timeline?after=${after}&limit=${limit}`, { signal });

@@ -23,6 +23,7 @@ EXPECTED_JS = {
     "copy.js", "topnav.js", "viewswitch.js", "stepstatus.js",
     "createflow.js", "createform.js",
     "statuspage.js", "eventlog.js",
+    "settingspage.js", "parentbridge.js",
     # T9 进度卡只读快照与历史分支
     "snapshots.js",
     # 分支查看/切换界面（顶栏分支徽章入口）
@@ -63,7 +64,8 @@ def test_index_shell_references_module_entry(client: TestClient) -> None:
     page = client.get("/")
     assert page.status_code == 200
     assert 'type="module" src="/static/js/app.js"' in page.text
-    assert 'data-view="settings"' not in page.text
+    assert 'data-view="settings"' in page.text
+    assert "当前任务设置" in page.text
     assert "data-unknown" in page.text
 
 

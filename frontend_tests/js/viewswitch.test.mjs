@@ -91,22 +91,22 @@ test('工作区同页签点击为忽略操作：不得中止在途工程导航�
   assert.deepEqual(app.calls.rendered, ['p1']);
 });
 
-test('已移除的设置视图不能接管在途导航', async () => {
+test('当前任务设置页可接管在途导航并阻止迟到工程响应', async () => {
   const registry = createOperationRegistry();
   const app = fakeApp(registry, 'status');
 
   const opening = app.nav.openProject('p1');
   app.switcher.setView('settings');
-  assert.equal(app.calls.leaves, 0);
-  assert.equal(app.calls.gets[0].signal.aborted, false);
-  assert.equal(app.state.view, 'status');
-  assert.deepEqual(app.calls.tabs, []);
-  assert.deepEqual(app.calls.pages, []);
+  assert.equal(app.calls.leaves, 1);
+  assert.equal(app.calls.gets[0].signal.aborted, true);
+  assert.equal(app.state.view, 'settings');
+  assert.deepEqual(app.calls.tabs, ['settings']);
+  assert.deepEqual(app.calls.pages, ['settings']);
 
-  app.settleGet(0, { project_id: 'p1' }); // 非法视图未改变导航世代，响应正常接管工作区
+  app.settleGet(0, { project_id: 'p1' });
   await opening;
-  assert.deepEqual(app.calls.rendered, ['p1']);
-  assert.equal(app.state.view, 'workspace');
+  assert.deepEqual(app.calls.rendered, []);
+  assert.equal(app.state.view, 'settings');
 });
 
 test('切回工作区：有当前工程则重新打开，无当前工程则回首页', async () => {

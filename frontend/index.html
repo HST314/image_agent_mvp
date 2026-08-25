@@ -11,12 +11,12 @@
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
   <div class="app" id="app">
-    <!-- 顶部导航栏只保留创作工作区和任务状态；运行配置由主系统在启动前固化。 -->
     <header class="topnav">
       <div class="topnav__brand"><div class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M5 19 19 5M7 5h12v12M5 9v10h10"/></svg></div><strong>Image Agent</strong></div>
       <nav class="topnav__tabs" aria-label="主导航">
         <button type="button" class="topnav__tab" data-view="workspace" aria-current="page">工作区</button>
-        <button type="button" class="topnav__tab" data-view="status">状态</button>
+        <button type="button" class="topnav__tab" data-view="settings">当前任务设置</button>
+        <button type="button" class="topnav__tab topnav__status-tab" data-view="status">状态<span class="topnav__alert-dot" id="status-alert" aria-label="存在需要处理的异常" hidden></span></button>
       </nav>
       <div class="topnav__context">
         <span class="topnav__project" id="topnav-project" hidden><strong id="topnav-project-name"></strong><button type="button" class="badge badge--info topnav__branch" id="topnav-branch" title="查看并切换分支">分支 main</button></span>
@@ -25,12 +25,14 @@
       </div>
     </header>
     <div class="app-body">
-      <!-- 左侧项目目录栏：默认收成窄条只留图标，悬停或点击展开（Q1-A） -->
+      <!-- standalone-create-sidebar-start -->
+      <!-- 左侧项目目录栏仅属于独立模式；受管模式由主系统统一导航。 -->
       <aside class="sidebar" id="sidebar" aria-label="工程导航">
         <button type="button" class="sidebar__toggle" id="sidebar-toggle" aria-expanded="false" aria-label="展开或收起工程目录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
         <p class="sidebar__title">最近工程</p><nav id="project-list" class="project-list" aria-label="工程列表"><div class="sidebar__empty">正在读取工程…</div></nav>
         <div class="sidebar__footer"><div class="system-state"><span class="dot" id="health-dot"></span><span id="health-text">正在连接服务</span></div></div>
       </aside>
+      <!-- standalone-create-sidebar-end -->
       <main class="main" id="main" tabindex="-1">
         <div class="content" id="content" aria-live="polite"></div>
       </main>

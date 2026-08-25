@@ -7,13 +7,17 @@ import { STATE_LABELS } from './states.js';
 import { renderHome } from './home.js';
 import { renderProject, stopJobTracking } from './project.js';
 import { renderStatusPage } from './statuspage.js';
+import { renderRuntimeSettingsPage } from './settingspage.js';
+import { createParentBridge } from './parentbridge.js';
 import { createNavigator, viewOperations } from './jobrunner.js';
 import { createImmediateProjectFlow } from './createflow.js';
 import { buildNewProjectTask } from './createform.js';
 import { renderJobProgress } from './history.js';
-import { markActiveTab, setTopContext } from './topnav.js';
+import { markActiveTab, setStatusAlert, setTopContext } from './topnav.js';
 import { createAuxPageRefresher, createViewSwitcher } from './viewswitch.js';
 import { captureWorkspaceState } from './workspace_state.js';
+
+let parentBridge = null;
 
 async function boot() {
   try {
@@ -21,28 +25,61 @@ async function boot() {
     patch({
       managedByHarness: context.managed_by_harness === true,
       managedProjectId: context.project_id || null,
+      taskId: context.task_id || null,
+      instanceId: context.instance_id || null,
+      capabilities: context.capabilities || {},
+      bridgeProtocolVersion: context.bridge_protocol_version || null,
     });
+    if (context.managed_by_harness) {
+      $('#app').classList.add('app--managed');
+      parentBridge = createParentBridge({
+        instanceId: context.instance_id,
+        protocolVersion: context.bridge_protocol_version,
+      });
+    }
   } catch (error) {
     toast(error.message, 'error');
   }
   bindChrome();
-  await loadProjects();
-  if (state.managedByHarness && state.managedProjectId
-      && state.projects.some((project) => project.project_id === state.managedProjectId)) {
+  if (state.managedByHarness && state.managedProjectId) {
+    await loadHealth();
     await openProject(state.managedProjectId);
+    void refreshManagedStatusAlert();
   } else {
+    await loadProjects();
     goHome();
   }
 }
 
+async function loadHealth() {
+  try {
+    const health = await api.health();
+    patch({ health });
+    const ready = health.status === 'ok';
+    if ($('#health-text')) $('#health-text').textContent = ready ? '服务已就绪' : '服务部分降级';
+    if ($('#health-dot')) $('#health-dot').style.background = ready ? 'var(--success)' : 'var(--warning)';
+  } catch (error) {
+    patch({ health: { status: 'degraded' } });
+    if ($('#health-text')) $('#health-text').textContent = '服务未连接';
+    if ($('#health-dot')) $('#health-dot').style.background = 'var(--danger)';
+    toast(error.message, 'error');
+  }
+  updateStatusAlert();
+}
+
 async function loadProjects() {
+  if (state.managedByHarness) {
+    await loadHealth();
+    return;
+  }
   try {
     const [health, data] = await Promise.all([api.health(), api.listProjects()]);
-    patch({ projects: data.items });
+    patch({ projects: data.items, health });
     const ready = health.status === 'ok';
     $('#health-text').textContent = ready ? '服务已就绪' : '服务部分降级';
     $('#health-dot').style.background = ready ? 'var(--success)' : 'var(--warning)';
   } catch (error) {
+    patch({ health: { status: 'degraded' } });
     $('#health-text').textContent = '服务未连接';
     $('#health-dot').style.background = 'var(--danger)';
     toast(error.message, 'error');
@@ -52,6 +89,7 @@ async function loadProjects() {
 
 function renderNav() {
   const nav = $('#project-list');
+  if (!nav) return;
   nav.textContent = '';
   if (!state.projects.length) {
     nav.append(el('div', { class: 'sidebar__empty', text: state.managedByHarness ? '等待主系统启动当前实例。' : '还没有工程。创建第一个视觉任务开始工作。' }));
@@ -83,14 +121,76 @@ function renderPage(view) {
   leavePage();
   const content = $('#content');
   content.textContent = '';
-  if (view === 'status') {
+  if (view === 'settings') {
+    const current = state.current;
+    activePage = renderRuntimeSettingsPage(content, current, {
+      managed: state.managedByHarness,
+      editable: state.capabilities.edit_runtime_settings === true,
+    }, {
+      load: (options) => state.managedByHarness
+        ? requireParentBridge().getSettings()
+        : api.getRuntimeSettings(current.project_id, options),
+      propose: (payload) => requireParentBridge().proposeSettings(payload),
+      confirm: (payload) => requireParentBridge().confirmSettings(payload),
+      revise: (payload, options) => api.reviseRuntimeSettings(current.project_id, payload, options),
+      onApplied: async () => {
+        const fresh = await api.getProject(current.project_id, { cache: 'no-store' });
+        patch({ current: fresh });
+        setTopContext({ projectId: fresh.project_id, branch: fresh.manifest?.current_branch });
+        updateStatusAlert(fresh);
+        renderNav();
+        toast('当前任务设置修订已保存。');
+        if (state.view === 'settings' && state.current?.project_id === fresh.project_id) {
+          renderPage('settings');
+        }
+      },
+    });
+  } else if (view === 'status') {
     const current = state.current;
     activePage = renderStatusPage(content, current, {
       openStream: current
         ? (after, { signal } = {}) => api.streamTimelineEvents(current.project_id, { after, signal })
         : null,
+      loadRuntimeStatus: current
+        ? ({ signal } = {}) => api.runtimeStatus(current.project_id, { signal })
+        : null,
+      loadManagedSettings: state.managedByHarness && parentBridge?.supported
+        ? () => parentBridge.getSettings()
+        : null,
+      onManagedSettings: (settings) => updateStatusAlert(
+        current,
+        Boolean(settings.pending_application?.last_error),
+      ),
+      health: state.health,
     });
   }
+}
+
+function requireParentBridge() {
+  if (!parentBridge?.supported) throw new Error('当前页面未建立可信的主系统设置连接。');
+  return parentBridge;
+}
+
+async function refreshManagedStatusAlert() {
+  if (!parentBridge?.supported) return;
+  try {
+    const settings = await parentBridge.getSettings();
+    updateStatusAlert(state.current, Boolean(settings.pending_application?.last_error));
+  } catch {
+    updateStatusAlert(state.current, true);
+  }
+}
+
+function updateStatusAlert(view = state.current, externalAbnormal) {
+  if (typeof externalAbnormal === 'boolean') patch({ externalStatusAbnormal: externalAbnormal });
+  const failed = Boolean(view?.manifest?.failed_step);
+  const unresolved = Array.isArray(view?.unknown_actions) && view.unknown_actions.length > 0;
+  setStatusAlert(state.health?.status !== 'ok' || failed || unresolved || state.externalStatusAbnormal);
+}
+
+function renderCurrentProject(view, options) {
+  renderProject(view, options);
+  updateStatusAlert(view);
 }
 
 const auxPageRefresher = createAuxPageRefresher({
@@ -134,7 +234,7 @@ async function reconcileWorkspace(cached) {
       patch({ current: fresh });
       return;
     }
-    renderProject(fresh);
+    renderCurrentProject(fresh);
     renderNav();
   } catch (error) {
     if (!controller.signal.aborted) toast(error.message, 'error');
@@ -151,7 +251,11 @@ function goHome() {
   patch({ current: null, view: 'workspace' });
   markActiveTab('workspace');
   setTopContext({});
-  renderHome($('#content'), { onNew: showCreate, onOpen: openProject });
+  if (state.managedByHarness) {
+    $('#content').append(sectionPanel('等待当前任务', '请从主系统任务面板重新打开此 Image 工作项。'));
+  } else {
+    renderHome($('#content'), { onNew: showCreate, onOpen: openProject });
+  }
   renderNav();
 }
 
@@ -161,7 +265,7 @@ function goHome() {
  * T2/T3：导航意图同时卸载状态/设置页的实时订阅（leavePage）。 */
 const navigation = createNavigator({
   getProject: (id, opts) => api.getProject(id, opts),
-  renderProject,
+  renderProject: renderCurrentProject,
   afterOpen: () => { renderNav(); collapseSidebar(); },
   notify: toast,
 });
@@ -187,7 +291,7 @@ const viewSwitcher = createViewSwitcher({
   },
   renderCachedWorkspace: (view) => {
     leavePage();
-    renderProject(view);
+    renderCurrentProject(view);
   },
   reconcileWorkspace,
 });
@@ -241,7 +345,7 @@ const projectCreator = createImmediateProjectFlow({
   showCreated(view, pending) {
     pending?.busyRegion?.removeAttribute('aria-busy');
     $('#create-button').disabled = false;
-    renderProject(view, { autostartBootstrap: true });
+    renderCurrentProject(view, { autostartBootstrap: true });
     renderNav();
     collapseSidebar();
     void loadProjects();
@@ -300,6 +404,7 @@ async function createProject(event) {
 let sidebarPinned = false;
 
 function applySidebar(hover) {
+  if (!$('#sidebar')) return;
   const expanded = sidebarPinned || hover;
   $('#app').classList.toggle('sidebar-expanded', expanded);
   $('#sidebar-toggle').setAttribute('aria-expanded', String(expanded));
@@ -322,9 +427,9 @@ function bindChrome() {
   $('#project-dialog')?.addEventListener('cancel', (event) => { event.preventDefault(); $('#project-dialog').close(); });
   $$('.topnav__tab').forEach((tab) => tab.addEventListener('click', () => setView(tab.dataset.view)));
   const sidebar = $('#sidebar');
-  sidebar.addEventListener('mouseenter', () => applySidebar(true));
-  sidebar.addEventListener('mouseleave', () => applySidebar(false));
-  $('#sidebar-toggle').addEventListener('click', () => { sidebarPinned = !sidebarPinned; applySidebar(false); });
+  sidebar?.addEventListener('mouseenter', () => applySidebar(true));
+  sidebar?.addEventListener('mouseleave', () => applySidebar(false));
+  $('#sidebar-toggle')?.addEventListener('click', () => { sidebarPinned = !sidebarPinned; applySidebar(false); });
 }
 
 boot();

@@ -40,14 +40,34 @@ def test_managed_mode_removes_duplicate_creation_and_rejects_direct_posts(
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path / "projects")
     monkeypatch.setattr(main_front, "MANAGED_MODE", True)
     monkeypatch.setattr(main_front, "MANAGED_PROJECT_ID", "managed-project")
+    monkeypatch.setattr(main_front, "HARNESS_TASK_ID", "task-managed")
+    monkeypatch.setattr(main_front, "HARNESS_INSTANCE_ID", "managed-project")
+    monkeypatch.setattr(main_front, "RUNTIME_SETTINGS_V2_ENABLED", True)
     monkeypatch.setattr(main_front, "MANAGED_ADAPTER_KEY", "managed-adapter-key-for-tests-12345")
     managed_client = TestClient(main_front.app, raise_server_exceptions=False)
     page = managed_client.get("/")
     assert page.status_code == 200
     assert 'id="new-button"' not in page.text
     assert 'id="project-form"' not in page.text
+    assert 'id="sidebar"' not in page.text
     context = managed_client.get("/api/runtime-context").json()
-    assert context == {"managed_by_harness": True, "project_id": "managed-project"}
+    assert context == {
+        "managed_by_harness": True,
+        "navigation_mode": "harness",
+        "project_id": "managed-project",
+        "task_id": "task-managed",
+        "instance_id": "managed-project",
+        "bridge_protocol_version": "1.0",
+        "capabilities": {
+            "list_projects": False,
+            "create_project": False,
+            "edit_runtime_settings": True,
+            "view_status": True,
+        },
+    }
+    listed = managed_client.get("/api/projects")
+    assert listed.status_code == 409
+    assert listed.json()["detail"]["code"] == "MANAGED_BY_HARNESS"
 
     direct = managed_client.post(
         "/api/projects",
