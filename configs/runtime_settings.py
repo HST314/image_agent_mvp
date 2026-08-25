@@ -15,6 +15,7 @@ from model_router.router import PROVIDER_KEY_ENV, REQUIRED_STATE_ROLES
 
 from .runtime_policy import RuntimePolicy
 from .runtime_revision import (
+    LIBRARY_RELEASE_FIELDS,
     RUNTIME_FIELDS,
     RuntimeRevisionError,
     RuntimeRevisionManifest,
@@ -38,6 +39,10 @@ class SelfCheckSettingsPatch(StrictSettingsRequest):
     stop_early_on_pass: bool | None = None
 
 
+class LibraryReleaseSettingsPatch(StrictSettingsRequest):
+    release: Literal["auto", "manual", "off"] | None = None
+
+
 class AdvancedModelSettingsPatch(StrictSettingsRequest):
     intake_clarify: str | None = Field(default=None, min_length=1, max_length=256)
     confirmation_build: str | None = Field(default=None, min_length=1, max_length=256)
@@ -51,6 +56,8 @@ class RuntimeSettingsPatch(StrictSettingsRequest):
     question_preference: Literal["proactive", "blocking_only"] | None = None
     max_auto_questions: int | None = Field(default=None, ge=0, le=10)
     clarification_total_budget: int | None = Field(default=None, ge=0, le=100)
+    category_constraint: LibraryReleaseSettingsPatch | None = None
+    style_direction: LibraryReleaseSettingsPatch | None = None
     candidate_concurrency: int | None = Field(default=None, ge=1, le=5)
     default_output_size: str | None = Field(
         default=None, pattern=r"^(?:[1-9][0-9]{1,4}x[1-9][0-9]{1,4}|[124]K)$"
@@ -153,7 +160,7 @@ def merge_settings_overrides(
     merged = deepcopy(current)
     changes = patch.model_dump(mode="json", exclude_unset=True)
     for field, value in changes.items():
-        if field in {"self_check", "advanced_model_overrides"}:
+        if field in {*LIBRARY_RELEASE_FIELDS, "self_check", "advanced_model_overrides"}:
             if value is None:
                 merged.pop(field, None)
                 continue
@@ -180,10 +187,10 @@ def policy_with_overrides(
 ) -> RuntimePolicy:
     payload = base.snapshot()
     for field in RUNTIME_FIELDS:
-        if field == "self_check":
-            nested = dict(payload["self_check"])
-            nested.update(overrides.get("self_check") or {})
-            payload["self_check"] = nested
+        if field in {*LIBRARY_RELEASE_FIELDS, "self_check"}:
+            nested = dict(payload[field])
+            nested.update(overrides.get(field) or {})
+            payload[field] = nested
         elif field in overrides:
             payload[field] = overrides[field]
     return RuntimePolicy.model_validate(payload)

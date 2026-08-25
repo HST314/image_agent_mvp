@@ -31,10 +31,22 @@ MODEL_STATES = (
     "self_check_rework",
     "human_prompt_rework",
 )
+LEGACY_RUNTIME_FIELDS = (
+    "question_preference",
+    "max_auto_questions",
+    "clarification_total_budget",
+    "candidate_concurrency",
+    "default_output_size",
+    "response_format",
+    "watermark",
+    "self_check",
+)
+LIBRARY_RELEASE_FIELDS = ("category_constraint", "style_direction")
 RUNTIME_FIELDS = (
     "question_preference",
     "max_auto_questions",
     "clarification_total_budget",
+    *LIBRARY_RELEASE_FIELDS,
     "candidate_concurrency",
     "default_output_size",
     "response_format",
@@ -93,10 +105,18 @@ class EffectiveSelfCheck(_StrictModel):
         return self
 
 
+class EffectiveLibraryRelease(_StrictModel):
+    release: Literal["auto", "manual", "off"]
+
+
 class EffectiveRuntime(_StrictModel):
     question_preference: Literal["proactive", "blocking_only"]
     max_auto_questions: int = Field(ge=0, le=10)
     clarification_total_budget: int = Field(ge=0, le=100)
+    # Optional only for loading already-published v2.0 revisions. Every newly
+    # published revision contains both explicit library boundaries.
+    category_constraint: EffectiveLibraryRelease | None = None
+    style_direction: EffectiveLibraryRelease | None = None
     candidate_concurrency: int = Field(ge=1, le=5)
     default_output_size: str = Field(pattern=r"^(?:[1-9][0-9]{1,4}x[1-9][0-9]{1,4}|[124]K)$")
     response_format: Literal["url", "b64_json"]
@@ -193,7 +213,15 @@ def revision_content_hash(runtime_sha256: str, model_config_sha256: str) -> str:
 def effective_runtime(policy: RuntimePolicy) -> dict[str, Any]:
     snapshot = policy.snapshot()
     return {
-        **{field: snapshot[field] for field in RUNTIME_FIELDS if field != "self_check"},
+        **{
+            field: snapshot[field]
+            for field in RUNTIME_FIELDS
+            if field not in {"self_check", *LIBRARY_RELEASE_FIELDS}
+        },
+        **{
+            field: {"release": snapshot[field]["release"]}
+            for field in LIBRARY_RELEASE_FIELDS
+        },
         "self_check": {
             field: snapshot["self_check"][field] for field in SELF_CHECK_FIELDS
         },
@@ -225,6 +253,18 @@ def validate_overrides(value: dict[str, Any]) -> None:
         not isinstance(self_check, dict) or set(self_check) - set(SELF_CHECK_FIELDS)
     ):
         raise ValueError("self_check overrides contain unsupported fields")
+    for field in LIBRARY_RELEASE_FIELDS:
+        boundary = value.get(field)
+        if boundary is not None and (
+            not isinstance(boundary, dict) or set(boundary) - {"release"}
+        ):
+            raise ValueError(f"{field} overrides contain unsupported fields")
+        if isinstance(boundary, dict) and boundary.get("release") not in {
+            "auto",
+            "manual",
+            "off",
+        }:
+            raise ValueError(f"{field} overrides are invalid")
     advanced = value.get("advanced_model_overrides")
     if advanced is not None and (
         not isinstance(advanced, dict) or set(advanced) - set(MODEL_STATES)
@@ -322,14 +362,30 @@ def merge_runtime_policy(
     *,
     managed: bool,
 ) -> RuntimePolicy:
-    if set(runtime_document) != set(RUNTIME_FIELDS):
+    runtime_fields = set(runtime_document)
+    if runtime_fields != set(LEGACY_RUNTIME_FIELDS) and runtime_fields != set(
+        RUNTIME_FIELDS
+    ):
         raise RuntimeRevisionError(
             "CONFIG_INTEGRITY_FAILED",
             "The runtime revision must contain exactly the editable effective runtime fields.",
         )
-    safe = EffectiveRuntime.model_validate(runtime_document).model_dump(mode="json")
+    safe = EffectiveRuntime.model_validate(runtime_document).model_dump(
+        mode="json", exclude_none=True
+    )
     payload = base_policy.snapshot()
-    payload.update({key: value for key, value in safe.items() if key != "self_check"})
+    payload.update(
+        {
+            key: value
+            for key, value in safe.items()
+            if key not in {"self_check", *LIBRARY_RELEASE_FIELDS}
+        }
+    )
+    for field in LIBRARY_RELEASE_FIELDS:
+        if field in safe:
+            boundary = dict(payload[field])
+            boundary.update(safe[field])
+            payload[field] = boundary
     self_check = dict(payload["self_check"])
     self_check.update(safe["self_check"])
     if managed:
@@ -456,7 +512,14 @@ def load_revision(
     validate_public_tree(runtime_document)
     validate_public_tree(model_document)
     policy = merge_runtime_policy(base_policy, runtime_document, managed=managed)
-    if effective_runtime(policy) != manifest.effective_runtime.model_dump(mode="json"):
+    expected_runtime = effective_runtime(policy)
+    if set(runtime_document) == set(LEGACY_RUNTIME_FIELDS):
+        expected_runtime = {
+            field: expected_runtime[field] for field in LEGACY_RUNTIME_FIELDS
+        }
+    if expected_runtime != manifest.effective_runtime.model_dump(
+        mode="json", exclude_none=True
+    ):
         raise RuntimeRevisionError(
             "CONFIG_INTEGRITY_FAILED", "The runtime revision manifest does not match runtime.yaml."
         )

@@ -105,6 +105,38 @@ def test_registered_revision_is_hash_locked_across_router_reload(
         router.reload_at_boundary()
 
 
+def test_legacy_v2_revision_without_library_release_fields_remains_loadable(
+    tmp_path: Path,
+) -> None:
+    base = _base_runtime()
+    manifest, runtime_document, model_document = _bundle(
+        "legacy-revision-project",
+        "cfg-inst-r000002",
+        policy=base.policy.model_copy(update={"candidate_concurrency": 3}),
+        model_document=base.model_document,
+    )
+    for field in ("category_constraint", "style_direction"):
+        runtime_document.pop(field)
+    runtime_sha = sha256_bytes(canonical_yaml_bytes(runtime_document))
+    manifest["runtime_sha256"] = runtime_sha
+    manifest["config_hash"] = revision_content_hash(
+        runtime_sha, manifest["model_config_sha256"]
+    )
+    root = tmp_path / "runtime-config"
+    publish_revision(root, manifest, runtime_document, model_document)
+
+    loaded = ManagedRuntime.from_revision(
+        root,
+        "cfg-inst-r000002",
+        base=base,
+        managed=False,
+    )
+
+    assert loaded.policy.candidate_concurrency == 3
+    assert loaded.policy.category_constraint.release == "off"
+    assert loaded.policy.style_direction.release == "off"
+
+
 def test_revision_loader_rejects_symlinked_registered_file(tmp_path: Path) -> None:
     base = _base_runtime()
     bundle = _bundle(

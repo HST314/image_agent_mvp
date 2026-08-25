@@ -26,12 +26,16 @@ function wrapper(path, { current, initial, inherited, initiallyOverridden, kind 
 
 test('设置补丁只包含实际变化，改回继承值时恢复任务基线', () => {
   const controls = [
+    wrapper('category_constraint.release', { current: 'manual', initial: 'off', inherited: 'off', initiallyOverridden: false }),
+    wrapper('style_direction.release', { current: 'auto', initial: 'manual', inherited: 'off', initiallyOverridden: true }),
     wrapper('candidate_concurrency', { current: 5, initial: 3, inherited: 5, initiallyOverridden: true, kind: 'number' }),
     wrapper('watermark', { current: true, initial: false, inherited: false, initiallyOverridden: false, kind: 'checkbox' }),
     wrapper('self_check.max_rounds', { current: 6, initial: 4, inherited: 4, initiallyOverridden: true, kind: 'number' }),
   ];
   const root = { querySelectorAll: () => controls };
   assert.deepEqual(collectSettingsPatch(root), {
+    category_constraint: { release: 'manual' },
+    style_direction: { release: 'auto' },
     candidate_concurrency: null,
     watermark: true,
     self_check: { max_rounds: 6 },
@@ -72,6 +76,29 @@ test('独立模式预览把嵌套设置展开为字段级未来影响', () => {
   assert.deepEqual(
     localSettingsDiff(settings, { self_check: { max_rounds: 6 } }),
     [{ field: 'self_check.max_rounds', before: 4, after: 6 }],
+  );
+});
+
+test('数据库放行设置保留两个独立策略字段及三种放行方式', () => {
+  const libraryTab = SETTINGS_TAB_LAYOUT.find(({ id }) => id === 'libraries');
+  assert.deepEqual(
+    libraryTab.fields.map(([path, label, _kind, options]) => ({
+      path,
+      label,
+      values: options.map(([value]) => value),
+    })),
+    [
+      {
+        path: 'category_constraint.release',
+        label: '品类约束放行方式',
+        values: ['auto', 'manual', 'off'],
+      },
+      {
+        path: 'style_direction.release',
+        label: '艺术风格放行方式',
+        values: ['auto', 'manual', 'off'],
+      },
+    ],
   );
 });
 

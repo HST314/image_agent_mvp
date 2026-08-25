@@ -78,7 +78,12 @@ def test_standalone_settings_apply_before_first_run(
     client = TestClient(main_front.app, raise_server_exceptions=False)
     request = {
         "base_revision_id": "cfg-inst-r000001",
-        "overrides": {"candidate_concurrency": 2, "watermark": True},
+        "overrides": {
+            "category_constraint": {"release": "manual"},
+            "style_direction": {"release": "off"},
+            "candidate_concurrency": 2,
+            "watermark": True,
+        },
         "actor": "designer-before-start",
         "confirmed": True,
         "idempotency_key": "settings-before-start-0001",
@@ -98,6 +103,8 @@ def test_standalone_settings_apply_before_first_run(
     assert store.read_manifest()["current_checkpoint"] is None
     assert main_front._project_runtime(store).revision_id == "cfg-inst-r000002"
     assert main_front._project_runtime(store).policy.candidate_concurrency == 2
+    assert main_front._project_runtime(store).policy.category_constraint.release == "manual"
+    assert main_front._project_runtime(store).policy.style_direction.release == "off"
     assert Path(main_front.RUNTIME_POLICY_PATH).read_bytes() == runtime_file_before
     assert Path(main_front.MODEL_CONFIG).read_bytes() == model_file_before
 
