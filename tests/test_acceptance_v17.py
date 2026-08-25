@@ -42,7 +42,7 @@ def test_existing_project_mode_comes_only_from_immutable_snapshot(tmp_path: Path
     assert rejected.status_code == 422
     advanced = client.post("/api/projects/v17-contract/advance", json={"clarification_answers": {"output_spec": "1:1"}})
     assert advanced.status_code == 200, advanced.text
-    assert advanced.json()["runtime_policy"]["offline_mode"] is True
+    assert "offline_mode" not in advanced.json()["runtime_policy"]
 
 
 @pytest.mark.browser
@@ -178,7 +178,7 @@ def test_browser_to_final_acceptance_uses_zero_real_providers(
         assert view["snapshot"]["completed"] is True
         assert view["snapshot"]["offline_rehearsal_completed"] is True
         assert "final_asset" not in view["snapshot"]
-        assert view["runtime_policy"]["offline_mode"] is True
+        assert "offline_mode" not in view["runtime_policy"]
         assert provider_calls == []
         assert driver.find_element(By.ID, "health-text").text == "服务已就绪"
     finally:
