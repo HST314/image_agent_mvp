@@ -30,7 +30,26 @@ The maximum page size is 500. Negative cursors and invalid limits return 422.
 
 ## Runtime configuration
 
-Runtime and model configuration is immutable for the lifetime of a managed
-instance. The service exposes no settings, policy-write, model-binding, or
-credential-management route. The parent process supplies the materialized
-configuration paths before startup.
+Each runtime revision is immutable. An active project may move to another
+validated revision only at a safe checkpoint, where the service creates a new
+branch and keeps the source checkpoint and its runtime/model binding unchanged.
+
+- `IMAGE_AGENT_CONFIG_ROOT` registers `revisions/{revision_id}` directories.
+  Each directory contains `manifest.json`, `runtime.yaml`, and
+  `model_config.yaml`; path traversal, symlinks, unknown revisions, and digest
+  mismatches fail closed. The original fixed-file environment variables remain
+  the initial-revision compatibility entry point.
+- `POST /api/managed/projects/{project_id}/config-revisions/apply` accepts a
+  loopback request authenticated with the Adapter header. The command fixes the
+  revision ID, source checkpoint, total configuration hash, effective state,
+  and idempotency key. A replay returns the original branch receipt.
+- `GET /api/projects/{project_id}/runtime-settings` and
+  `POST /api/projects/{project_id}/runtime-settings` are standalone-mode project
+  settings endpoints. They expose only the editable runtime allowlist and safe
+  model names. A confirmed write creates an immutable project-local revision
+  and branch; it never updates the process defaults.
+
+Provider credentials, Provider URLs, filesystem paths, process controls, and
+offline mode are neither editable nor returned by the settings endpoints.
+Model calls audit the revision ID, branch ID, and total configuration hash used
+for that call.
