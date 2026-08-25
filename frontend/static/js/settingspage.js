@@ -15,6 +15,23 @@ const CLARIFY_FIELDS = [
   ['clarification_total_budget', '澄清问题总预算', 'number', { min: 0, max: 100 }, '当前任务后续流程可使用的澄清问题总量。'],
 ];
 
+const LIBRARY_FIELDS = [
+  [
+    'category_constraint.release',
+    '品类约束放行方式',
+    'select',
+    [['auto', '自动放行'], ['manual', '人工确认后继续'], ['off', '不使用数据库']],
+    '控制广告品类库的使用方式；不使用数据库时跳过品类匹配与内容注入。',
+  ],
+  [
+    'style_direction.release',
+    '艺术风格放行方式',
+    'select',
+    [['auto', '自动放行'], ['manual', '人工确认后继续'], ['off', '不使用数据库']],
+    '控制艺术风格库的使用方式；不使用数据库时按任务书直接生成候选图。',
+  ],
+];
+
 const RENDER_FIELDS = [
   ['candidate_concurrency', '候选图并发数', 'number', { min: 1, max: 5 }, '同一轮并行生成的候选图数量。'],
   ['default_output_size', '默认出图尺寸', 'text', { pattern: '(?:[1-9][0-9]{1,4}x[1-9][0-9]{1,4}|[124]K)' }, '支持“宽x高”或 1K、2K、4K。'],
@@ -43,8 +60,8 @@ export const SETTINGS_TAB_LAYOUT = Object.freeze([
   {
     id: 'libraries',
     title: '数据库与放行',
-    fields: [],
-    note: '品类与艺术风格的放行遵循当前任务审批流程，并在工作区对应阶段完成。',
+    group: null,
+    fields: LIBRARY_FIELDS,
   },
   { id: 'render', title: '候选与出图', group: null, fields: RENDER_FIELDS },
   { id: 'selfcheck', title: '质量自检', group: 'self_check', fields: SELF_CHECK_FIELDS },
@@ -57,7 +74,13 @@ export const SETTINGS_TAB_LAYOUT = Object.freeze([
   { id: 'models', title: '模型', group: 'advanced_model_overrides', fields: MODEL_FIELDS },
 ]);
 
-const ALL_FIELD_DEFINITIONS = [...CLARIFY_FIELDS, ...RENDER_FIELDS, ...SELF_CHECK_FIELDS, ...MODEL_FIELDS];
+const ALL_FIELD_DEFINITIONS = [
+  ...CLARIFY_FIELDS,
+  ...LIBRARY_FIELDS,
+  ...RENDER_FIELDS,
+  ...SELF_CHECK_FIELDS,
+  ...MODEL_FIELDS,
+];
 
 function hasOwn(value, key) {
   return value && Object.prototype.hasOwnProperty.call(value, key);
@@ -82,6 +105,9 @@ function valueText(value) {
   if (value === true) return '开启';
   if (value === false) return '关闭';
   if (value === null || value === undefined || value === '') return '未设置';
+  if (value === 'auto') return '自动放行';
+  if (value === 'manual') return '人工确认后继续';
+  if (value === 'off') return '不使用数据库';
   return String(value);
 }
 
@@ -105,13 +131,18 @@ export function optionsWithHistoricalValue(options, effective) {
 }
 
 function settingControl(settings, group, definition, modelOptions = [], editable = true) {
-  const [key, label, kind = 'select', options = [], help = ''] = definition;
-  const entry = settingEntry(settings, group, key);
-  const path = group ? `${group}.${key}` : key;
+  const [configuredKey, label, kind = 'select', options = [], help = ''] = definition;
+  const [embeddedGroup, embeddedKey] = configuredKey.includes('.')
+    ? configuredKey.split('.')
+    : [null, configuredKey];
+  const resolvedGroup = embeddedGroup || group;
+  const key = embeddedKey;
+  const entry = settingEntry(settings, resolvedGroup, key);
+  const path = resolvedGroup ? `${resolvedGroup}.${key}` : key;
   const wrapper = el('div', { class: `field settings-field${kind === 'checkbox' ? ' settings-field--boolean' : ''}`, dataset: { path } });
   const inputId = `setting-${path.replaceAll('.', '-')}`;
   let input;
-  const resolvedOptions = group === 'advanced_model_overrides'
+  const resolvedOptions = resolvedGroup === 'advanced_model_overrides'
     ? modelOptions.map((value) => (
       typeof value === 'string' ? [value, value] : [value.id, value.label || value.id]
     ))
@@ -192,8 +223,11 @@ function renderDiff(container, diff) {
   }
   const list = el('ul', { class: 'settings-diff' });
   for (const item of diff) {
-    const fieldKey = String(item.field || '').split('.').at(-1);
-    const label = ALL_FIELD_DEFINITIONS.find(([key]) => key === fieldKey)?.[1] || '运行设置';
+    const fieldPath = String(item.field || '');
+    const fieldKey = fieldPath.split('.').at(-1);
+    const label = ALL_FIELD_DEFINITIONS.find(([key]) => key === fieldPath)?.[1]
+      || ALL_FIELD_DEFINITIONS.find(([key]) => key === fieldKey)?.[1]
+      || '运行设置';
     list.append(el('li', {}, [
       el('strong', { text: label }),
       el('span', { text: `${valueText(item.before)} → ${valueText(item.after)}` }),
