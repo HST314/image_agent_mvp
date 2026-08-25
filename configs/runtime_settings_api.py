@@ -31,6 +31,7 @@ class RuntimeSettingsDependencies:
     next_project_revision_id: Callable[[ProjectStore, str], str]
     runtime_settings_view: Callable[[ProjectStore], dict[str, Any]]
     workflow_boundary: Callable[[ProjectStore], dict[str, Any]]
+    before_start_allowed: Callable[[ProjectStore], bool]
     require_safe_checkpoint: Callable[[ProjectStore, str], dict[str, Any]]
     translate_error: Callable[[Exception], HTTPException]
 
@@ -137,13 +138,52 @@ def _revise_standalone_settings(
             )
         boundary = dependencies.workflow_boundary(store)
         checkpoint_id = str(boundary.get("checkpoint_id") or "")
-        dependencies.require_safe_checkpoint(store, checkpoint_id)
         store.ensure_active_config_binding(active.branch_binding())
         overrides = merge_settings_overrides(active.overrides, body.overrides)
         base = dependencies.project_baseline_runtime(store)
         policy = policy_with_overrides(base.policy, overrides)
         model_document = model_document_with_overrides(base.model_document, overrides)
         revision_id = dependencies.next_project_revision_id(store, active.revision_id)
+        if (
+            boundary.get("reason") == "CHECKPOINT_UNAVAILABLE"
+            and dependencies.before_start_allowed(store)
+        ):
+            effective_state = "initial"
+            revision = build_runtime_revision(
+                project_id=store.project_id,
+                revision_id=revision_id,
+                parent_revision_id=active.revision_id,
+                task_config_revision_id=active.task_config_revision_id,
+                overrides=overrides,
+                policy=policy,
+                model_document=model_document,
+                actor_type="member",
+                actor_id=body.actor,
+                apply_mode="before_start",
+                branch_id=None,
+                checkpoint_id=None,
+                effective_from_state=effective_state,
+            )
+
+            def publish_before_start(_receipt: dict[str, Any]) -> None:
+                publish_revision(
+                    store.root / "runtime-config",
+                    revision[0],
+                    revision[1],
+                    revision[2],
+                )
+
+            applied = store.apply_config_before_start(
+                revision[3],
+                idempotency_key=body.idempotency_key,
+                request_hash=request_hash,
+                after_persist=publish_before_start,
+            )
+            return {
+                **apply_receipt(applied),
+                "settings": dependencies.runtime_settings_view(store),
+            }
+        dependencies.require_safe_checkpoint(store, checkpoint_id)
         branch_id = config_branch_name(revision_id, body.idempotency_key)
         effective_state = "next_workflow_step"
         preliminary = build_runtime_revision(

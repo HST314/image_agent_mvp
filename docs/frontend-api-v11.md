@@ -30,7 +30,9 @@ The maximum page size is 500. Negative cursors and invalid limits return 422.
 
 ## Runtime configuration
 
-Each runtime revision is immutable. An active project may move to another
+Each runtime revision is immutable. Before a project accepts its first run, a
+validated revision may replace the initial branch binding and returns
+`APPLIED_BEFORE_START`. After execution begins, a project may move to another
 validated revision only at a safe checkpoint, where the service creates a new
 branch and keeps the source checkpoint and its runtime/model binding unchanged.
 
@@ -46,8 +48,9 @@ branch and keeps the source checkpoint and its runtime/model binding unchanged.
 - `GET /api/projects/{project_id}/runtime-settings` and
   `POST /api/projects/{project_id}/runtime-settings` are standalone-mode project
   settings endpoints. They expose only the editable runtime allowlist and safe
-  model names. A confirmed write creates an immutable project-local revision
-  and branch; it never updates the process defaults.
+  model names. A confirmed write creates an immutable project-local revision;
+  it updates the unstarted initial binding or creates a safe-checkpoint branch,
+  and never updates the process defaults.
 
 Provider credentials, Provider URLs, filesystem paths, process controls, and
 offline mode are neither editable nor returned by the settings endpoints.

@@ -55,6 +55,67 @@ def _waiting_checkpoint(store: ProjectStore) -> str:
         )
 
 
+def test_standalone_settings_apply_before_first_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", projects)
+    monkeypatch.setattr(main_front, "CONFIG_ROOT", None)
+    monkeypatch.setattr(main_front, "MANAGED_MODE", False)
+    base = main_front._base_runtime()
+    store = ProjectStore(projects, "unstarted-project")
+    initial = _bundle(
+        store.project_id,
+        "cfg-inst-r000001",
+        policy=base.policy,
+        model_document=base.model_document,
+        parent=None,
+    )
+    store.create(base.policy.snapshot(), config_binding=initial[3])
+    publish_revision(store.root / "runtime-config", initial[0], initial[1], initial[2])
+    runtime_file_before = Path(main_front.RUNTIME_POLICY_PATH).read_bytes()
+    model_file_before = Path(main_front.MODEL_CONFIG).read_bytes()
+    client = TestClient(main_front.app, raise_server_exceptions=False)
+    request = {
+        "base_revision_id": "cfg-inst-r000001",
+        "overrides": {"candidate_concurrency": 2, "watermark": True},
+        "actor": "designer-before-start",
+        "confirmed": True,
+        "idempotency_key": "settings-before-start-0001",
+    }
+
+    applied = client.post(
+        f"/api/projects/{store.project_id}/runtime-settings", json=request
+    )
+
+    assert applied.status_code == 200, applied.text
+    body = applied.json()
+    assert body["status"] == "APPLIED_BEFORE_START"
+    assert body["branch_id"] == "main"
+    assert body["checkpoint_id"] is None
+    assert body["from_checkpoint"] is None
+    assert body["runtime_config_revision_id"] == "cfg-inst-r000002"
+    assert store.read_manifest()["current_checkpoint"] is None
+    assert main_front._project_runtime(store).revision_id == "cfg-inst-r000002"
+    assert main_front._project_runtime(store).policy.candidate_concurrency == 2
+    assert Path(main_front.RUNTIME_POLICY_PATH).read_bytes() == runtime_file_before
+    assert Path(main_front.MODEL_CONFIG).read_bytes() == model_file_before
+
+    replay = client.post(
+        f"/api/projects/{store.project_id}/runtime-settings", json=request
+    )
+    assert replay.status_code == 200
+    assert replay.json()["status"] == "APPLIED_BEFORE_START"
+    assert replay.json()["runtime_config_revision_id"] == "cfg-inst-r000002"
+    assert len(
+        [
+            event
+            for event in store.history()
+            if event.get("type") == "config_revision_applied"
+        ]
+    ) == 1
+
+
 def test_standalone_settings_create_revision_branch_and_are_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

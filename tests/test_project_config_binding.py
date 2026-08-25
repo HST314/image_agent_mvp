@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import main_front
+import storage.project_store as project_store_module
 from agent_core.models import ModelRole
 from configs.managed_runtime import ManagedRuntime
 from model_router.gateway import RuntimeModelGateway
@@ -47,6 +48,19 @@ def test_owner_supplied_initial_revision_keeps_exact_file_hashes(
     assert restored.runtime_config_sha256 == runtime.runtime_config_sha256
     assert restored.model_config_sha256 == runtime.model_config_sha256
     assert restored.config_hash == runtime.config_hash
+
+
+def test_project_store_rejects_internally_inconsistent_config_hashes(
+    tmp_path: Path,
+) -> None:
+    runtime = ManagedRuntime.from_paths(MODEL_CONFIG, RUNTIME_POLICY)
+    invalid = runtime.branch_binding()
+    invalid["config_hash"] = "f" * 64
+
+    with pytest.raises(ValueError, match="总哈希"):
+        ProjectStore(tmp_path, "invalid-binding-project").create(
+            runtime.policy.snapshot(), config_binding=invalid
+        )
 
 
 def test_config_binding_follows_branch_switch_and_failed_fork_rolls_back(
@@ -188,3 +202,55 @@ def test_recovery_rolls_back_branch_when_publication_did_not_finish(
     assert store.pending_transaction() is None
     assert store.read_manifest()["current_branch"] == "main"
     assert store.find_config_apply("store-apply-crash") is None
+
+
+def test_recovery_finishes_committed_before_start_config_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = ManagedRuntime.from_paths(MODEL_CONFIG, RUNTIME_POLICY)
+    store = ProjectStore(tmp_path, "before-start-crash-project")
+    store.create(
+        runtime.policy.snapshot(), config_binding=runtime.branch_binding()
+    )
+    revised_runtime = runtime.with_policy(
+        runtime.policy.model_copy(update={"candidate_concurrency": 2})
+    )
+    revised = revised_runtime.branch_binding(effective_from_state="initial")
+    revised["runtime_config_revision_id"] = "cfg-inst-r000002"
+    real_atomic_json = project_store_module.atomic_json
+
+    def crash_after_control_commit(path: Path, value: object) -> None:
+        real_atomic_json(path, value)
+        if path == store.root / "branches.json" and isinstance(value, dict):
+            if value.get("config_applies"):
+                raise SystemExit("simulated exit after config control commit")
+
+    monkeypatch.setattr(
+        project_store_module, "atomic_json", crash_after_control_commit
+    )
+    with pytest.raises(SystemExit, match="config control commit"):
+        with store.lock():
+            store.apply_config_before_start(
+                revised,
+                idempotency_key="before-start-crash-0001",
+                request_hash="d" * 64,
+            )
+
+    assert store.pending_transaction() is not None
+    monkeypatch.setattr(project_store_module, "atomic_json", real_atomic_json)
+    store.recover_pending_transaction()
+
+    assert store.pending_transaction() is None
+    assert store.active_config_binding()["runtime_config_revision_id"] == (
+        "cfg-inst-r000002"
+    )
+    receipt = store.find_config_apply("before-start-crash-0001")
+    assert receipt is not None
+    assert receipt["status"] == "APPLIED_BEFORE_START"
+    assert len(
+        [
+            event
+            for event in store.history()
+            if event.get("type") == "config_revision_applied"
+        ]
+    ) == 1

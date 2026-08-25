@@ -242,16 +242,17 @@ def config_branch_name(revision_id: str, idempotency_key: str) -> str:
 
 
 def apply_receipt(
-    replay: dict[str, Any], *, status_value: str = "APPLIED_ON_BRANCH"
+    replay: dict[str, Any], *, status_value: str | None = None
 ) -> dict[str, Any]:
     return {
-        "status": status_value,
+        "status": status_value or replay.get("status") or "APPLIED_ON_BRANCH",
         "runtime_config_revision_id": replay["runtime_config_revision_id"],
         "branch_id": replay["branch_id"],
         "checkpoint_id": replay["checkpoint_id"],
         "from_checkpoint": replay["from_checkpoint"],
         "effective_from_state": replay["effective_from_state"],
         "runtime_policy_hash": replay["runtime_policy_hash"],
+        "runtime_config_sha256": replay["runtime_config_sha256"],
         "model_config_hash": replay["model_config_hash"],
         "config_hash": replay["config_hash"],
     }

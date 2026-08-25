@@ -416,6 +416,22 @@ def _require_safe_checkpoint(store: ProjectStore, expected: str) -> dict[str, An
     return boundary
 
 
+def _before_start_settings_allowed(store: ProjectStore) -> bool:
+    manifest = store.read_manifest()
+    if manifest.get("current_checkpoint") is not None:
+        return False
+    if JOBS.active_for_project(store.project_id) is not None:
+        return False
+    return not any(
+        event.get("type") in {
+            "step_started",
+            "model_call_started",
+            "job_status_changed",
+        }
+        for event in store.history()
+    )
+
+
 def _managed_request_allowed(project_id: str, request: Request) -> bool:
     client_host = request.client.host if request.client is not None else ""
     try:
@@ -1367,6 +1383,7 @@ app.include_router(
             next_project_revision_id=_next_project_revision_id,
             runtime_settings_view=_runtime_settings_view,
             workflow_boundary=_workflow_boundary,
+            before_start_allowed=_before_start_settings_allowed,
             require_safe_checkpoint=_require_safe_checkpoint,
             translate_error=_translate_error,
         )
