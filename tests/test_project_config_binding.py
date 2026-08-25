@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import main_front
 from agent_core.models import ModelRole
 from configs.managed_runtime import ManagedRuntime
 from model_router.gateway import RuntimeModelGateway
@@ -28,6 +29,24 @@ def _checkpoint(store: ProjectStore, state: str = "intake_clarify") -> str:
             "task_card": {"task_id": store.project_id},
         },
     )
+
+
+def test_owner_supplied_initial_revision_keeps_exact_file_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_front, "CONFIG_ROOT", None)
+    runtime = main_front._base_runtime()
+    store = ProjectStore(tmp_path, "managed-initial-project")
+    store.create(
+        runtime.policy.snapshot(), config_binding=runtime.branch_binding()
+    )
+
+    restored = main_front._project_runtime(store)
+
+    assert restored.revision_id == "cfg-inst-r000001"
+    assert restored.runtime_config_sha256 == runtime.runtime_config_sha256
+    assert restored.model_config_sha256 == runtime.model_config_sha256
+    assert restored.config_hash == runtime.config_hash
 
 
 def test_config_binding_follows_branch_switch_and_failed_fork_rolls_back(

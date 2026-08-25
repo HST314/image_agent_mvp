@@ -329,7 +329,8 @@ def _runtime_for_binding(
             and not external_registered
         ):
             policy = RuntimePolicy.model_validate(binding["runtime_policy"])
-            runtime = _base_runtime().with_policy(policy)
+            base = _base_runtime()
+            runtime = base if policy == base.policy else base.with_policy(policy)
         else:
             runtime = _managed_runtime(str(revision_id), store=store)
     runtime.assert_branch_binding(binding)
