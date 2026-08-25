@@ -44,6 +44,10 @@ from configs.runtime_apply_api import (
     RuntimeApplyDependencies,
     create_runtime_apply_router,
 )
+from configs.runtime_settings_api import (
+    RuntimeSettingsDependencies,
+    create_runtime_settings_router,
+)
 from skills.errors import ResourceError
 from agent_core.jobs import JobNotFoundError, JobRegistry
 from agent_core.annotation import compose
@@ -1347,6 +1351,21 @@ app.include_router(
                 revision_id, store=store
             ),
             project_runtime=_project_runtime,
+            require_safe_checkpoint=_require_safe_checkpoint,
+            translate_error=_translate_error,
+        )
+    )
+)
+app.include_router(
+    create_runtime_settings_router(
+        RuntimeSettingsDependencies(
+            existing_store=_existing_store,
+            managed_mode=lambda: MANAGED_MODE,
+            project_runtime=_project_runtime,
+            project_baseline_runtime=_project_baseline_runtime,
+            next_project_revision_id=_next_project_revision_id,
+            runtime_settings_view=_runtime_settings_view,
+            workflow_boundary=_workflow_boundary,
             require_safe_checkpoint=_require_safe_checkpoint,
             translate_error=_translate_error,
         )
