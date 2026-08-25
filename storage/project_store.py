@@ -19,6 +19,18 @@ from uuid import uuid4
 FORMAT_VERSION = 1
 BRANCH_NAME = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff._-]{1,63}$")
 STATE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+CONFIG_REVISION_ID = re.compile(r"^cfg-inst-r[0-9]{6}$")
+SHA256_VALUE = re.compile(r"^[0-9a-f]{64}$")
+CONFIG_BINDING_FIELDS = (
+    "runtime_config_revision_id",
+    "task_config_revision_id",
+    "runtime_policy",
+    "runtime_policy_hash",
+    "runtime_config_sha256",
+    "model_config_hash",
+    "config_hash",
+    "effective_from_state",
+)
 
 
 def _now() -> str:
@@ -31,6 +43,43 @@ def _canonical(value: Any) -> bytes:
 
 def content_hash(value: Any) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _validate_config_binding(binding: dict[str, Any]) -> dict[str, Any]:
+    if set(binding) != set(CONFIG_BINDING_FIELDS):
+        raise ValueError("配置分支关联字段不完整。")
+    if CONFIG_REVISION_ID.fullmatch(str(binding["runtime_config_revision_id"])) is None:
+        raise ValueError("配置修订 ID 无效。")
+    task_revision = str(binding["task_config_revision_id"])
+    if re.fullmatch(r"^task-config-r[0-9]{6}$", task_revision) is None:
+        raise ValueError("任务配置修订 ID 无效。")
+    if not isinstance(binding["runtime_policy"], dict):
+        raise ValueError("配置分支运行策略无效。")
+    for field in (
+        "runtime_policy_hash",
+        "runtime_config_sha256",
+        "model_config_hash",
+        "config_hash",
+    ):
+        if SHA256_VALUE.fullmatch(str(binding[field])) is None:
+            raise ValueError("配置分支哈希无效。")
+    if content_hash(binding["runtime_policy"]) != binding["runtime_policy_hash"]:
+        raise ValueError("配置分支运行策略哈希不一致。")
+    if STATE_NAME.fullmatch(str(binding["effective_from_state"])) is None:
+        raise ValueError("配置分支生效状态无效。")
+    return {field: binding[field] for field in CONFIG_BINDING_FIELDS}
+
+
+def _mapping_subset(legacy: dict[str, Any], effective: dict[str, Any]) -> bool:
+    for key, value in legacy.items():
+        if key not in effective:
+            return False
+        if isinstance(value, dict) and isinstance(effective[key], dict):
+            if not _mapping_subset(value, effective[key]):
+                return False
+        elif value != effective[key]:
+            return False
+    return True
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -312,7 +361,12 @@ class ProjectStore:
         self._lock_state = threading.local()
         self._lock_guard = threading.RLock()
 
-    def create(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    def create(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        config_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self.root.exists() and any(self.root.iterdir()):
             raise ProjectExistsError("工程已存在；请使用 resume、retry 或 rewind，禁止重复 new。")
         self.root.mkdir(parents=True, exist_ok=False)
@@ -321,12 +375,80 @@ class ProjectStore:
         snapshot = config or {}
         atomic_json(self.root / "project.yaml", snapshot)
         atomic_json(self.root / "runtime_policy.json", {"policy": snapshot, "sha256": content_hash(snapshot)})
-        atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": {
+        main_branch = {
             "parent": None, "from_checkpoint": None, "created_at": _now(),
             "runtime_policy": snapshot, "runtime_policy_hash": content_hash(snapshot),
-        }}})
+        }
+        if config_binding is not None:
+            main_branch.update(_validate_config_binding(config_binding))
+        atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": main_branch}})
         self.events.append("project_created", branch="main")
         return manifest
+
+    def active_config_binding(self) -> dict[str, Any]:
+        """Return the active branch's internal configuration association."""
+
+        with self.read_lock():
+            manifest = self.read_manifest()
+            branches = json.loads(
+                (self.root / "branches.json").read_text(encoding="utf-8")
+            )["branches"]
+        details = branches.get(manifest["current_branch"])
+        if not isinstance(details, dict):
+            raise CorruptProjectError("活动分支不存在。")
+        policy = details.get("runtime_policy")
+        if policy is None:
+            policy = json.loads(
+                (self.root / "runtime_policy.json").read_text(encoding="utf-8")
+            ).get("policy")
+        if not isinstance(policy, dict):
+            raise CorruptProjectError("活动分支运行策略无效。")
+        policy_hash = details.get("runtime_policy_hash")
+        if policy_hash is not None and policy_hash != content_hash(policy):
+            raise CorruptProjectError("活动分支运行策略哈希不一致。")
+        return {
+            **{field: details[field] for field in CONFIG_BINDING_FIELDS if field in details},
+            "runtime_policy": policy,
+            "runtime_policy_hash": content_hash(policy),
+        }
+
+    def ensure_active_config_binding(self, binding: dict[str, Any]) -> dict[str, Any]:
+        """Backfill a legacy branch on its first write, then enforce immutability."""
+
+        if not getattr(self._lock_state, "depth", 0):
+            with self.lock():
+                return self.ensure_active_config_binding(binding)
+        expected = _validate_config_binding(binding)
+        manifest = self.manifest()
+        branches_path = self.root / "branches.json"
+        document = json.loads(branches_path.read_text(encoding="utf-8"))
+        details = document["branches"].get(manifest["current_branch"])
+        if not isinstance(details, dict):
+            raise CorruptProjectError("活动分支不存在。")
+        existing_revision = details.get("runtime_config_revision_id")
+        if existing_revision is not None:
+            for field, value in expected.items():
+                if details.get(field) != value:
+                    raise CorruptProjectError("活动分支配置关联与已验证修订不一致。")
+            return expected
+        current_policy = details.get("runtime_policy")
+        if current_policy and not _mapping_subset(
+            current_policy, expected["runtime_policy"]
+        ):
+            raise CorruptProjectError("旧分支运行策略与推导配置修订不一致。")
+        details.update(expected)
+        atomic_json(branches_path, document)
+        atomic_json(
+            self.root / "runtime_policy.json",
+            {"policy": expected["runtime_policy"], "sha256": expected["runtime_policy_hash"]},
+        )
+        self.events.append(
+            "runtime_config_legacy_linked",
+            branch=manifest["current_branch"],
+            runtime_config_revision_id=expected["runtime_config_revision_id"],
+            config_hash=expected["config_hash"],
+        )
+        return expected
 
     def manifest(self) -> dict[str, Any]:
         data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
@@ -413,7 +535,19 @@ class ProjectStore:
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
         return checkpoint_id
 
-    def _transaction_complete(self, intent: dict[str, Any], manifest: dict[str, Any]) -> bool:
+    def _transaction_complete(
+        self,
+        intent: dict[str, Any],
+        manifest: dict[str, Any],
+        *,
+        require_after_persist: bool = True,
+    ) -> bool:
+        if require_after_persist and intent.get(
+            "after_persist_required"
+        ) and not intent.get(
+            "after_persist_complete"
+        ):
+            return False
         pointer = manifest.get("current_checkpoint") or {}
         expected_pointer = {
             "checkpoint_id": intent.get("checkpoint_id"),
@@ -432,6 +566,22 @@ class ProjectStore:
                 branches = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))["branches"]
                 details = branches.get(intent["branch"])
                 if not details or details.get("from_checkpoint") != intent.get("from_checkpoint"):
+                    return False
+                expected_binding_hash = intent.get("config_binding_hash")
+                if expected_binding_hash is not None:
+                    binding = {
+                        field: details.get(field) for field in CONFIG_BINDING_FIELDS
+                    }
+                    if content_hash(binding) != expected_binding_hash:
+                        return False
+                if details.get("config_apply_idempotency_key") != intent.get(
+                    "config_apply_idempotency_key"
+                ):
+                    return False
+                active_policy = json.loads(
+                    (self.root / "runtime_policy.json").read_text(encoding="utf-8")
+                )
+                if active_policy.get("sha256") != details.get("runtime_policy_hash"):
                     return False
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             return False
@@ -516,6 +666,9 @@ class ProjectStore:
                 branches = json.loads(branches_path.read_text(encoding="utf-8"))
                 branches["branches"].pop(intent["branch"], None)
                 atomic_json(branches_path, branches)
+                previous_policy = intent.get("previous_runtime_policy")
+                if isinstance(previous_policy, dict):
+                    atomic_json(self.root / "runtime_policy.json", previous_policy)
             self._restore_manifest_after_rollback(intent, manifest)
         finally:
             (self.root / "transactions/pending.json").unlink(missing_ok=True)
@@ -655,8 +808,18 @@ class ProjectStore:
         data.pop("domain_state", None)
         return data
 
-    def branch_from(self, checkpoint_id: str, *, name: str | None = None,
-                    mode: str = "fork_after", verify: Callable[[], Any] | None = None) -> str:
+    def branch_from(
+        self,
+        checkpoint_id: str,
+        *,
+        name: str | None = None,
+        mode: str = "fork_after",
+        verify: Callable[[], Any] | None = None,
+        config_binding: dict[str, Any] | None = None,
+        config_apply_idempotency_key: str | None = None,
+        config_apply_request_hash: str | None = None,
+        after_persist: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> str:
         self._recover_transaction()
         source = self.checkpoints.load(checkpoint_id)
         branches_path = self.root / "branches.json"
@@ -670,41 +833,88 @@ class ProjectStore:
                        if mode == "rerun_stage" else source["data"])
         prepared = self.checkpoints.prepare(branch, 1, source["state"], branch_data)
         previous_manifest = self.manifest()
-        transaction = {"format_version": FORMAT_VERSION, "kind": "branch", "status": "intent",
-                       "branch": branch, "sequence": 1, "state": source["state"], "data": branch_data,
-                       "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
-                       "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id,
-                       "previous_manifest": previous_manifest}
-        atomic_json(self.root / "transactions/pending.json", transaction)
         parent_details = branches["branches"][source["branch"]]
         policy = parent_details.get("runtime_policy")
         if policy is None:
             policy = json.loads((self.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"]
             parent_details.update(runtime_policy=policy, runtime_policy_hash=content_hash(policy))
-        branches["branches"][branch] = {
+        inherited_binding = {
+            field: parent_details.get(field) for field in CONFIG_BINDING_FIELDS
+        }
+        inherited_binding["runtime_policy"] = policy
+        inherited_binding["runtime_policy_hash"] = content_hash(policy)
+        selected_binding: dict[str, Any] | None = None
+        if config_binding is not None:
+            selected_binding = _validate_config_binding(config_binding)
+        elif all(inherited_binding.get(field) is not None for field in CONFIG_BINDING_FIELDS):
+            selected_binding = _validate_config_binding(inherited_binding)
+        previous_runtime_policy = json.loads(
+            (self.root / "runtime_policy.json").read_text(encoding="utf-8")
+        )
+        transaction = {"format_version": FORMAT_VERSION, "kind": "branch", "status": "intent",
+                       "branch": branch, "sequence": 1, "state": source["state"], "data": branch_data,
+                       "checkpoint_id": prepared["checkpoint_id"], "path": prepared["path"],
+                       "checksum": prepared["checksum"], "from_checkpoint": checkpoint_id,
+                       "previous_manifest": previous_manifest,
+                       "previous_runtime_policy": previous_runtime_policy,
+                       "config_binding_hash": content_hash(selected_binding) if selected_binding else None,
+                       "config_apply_idempotency_key": config_apply_idempotency_key,
+                       "after_persist_required": after_persist is not None,
+                       "after_persist_complete": False}
+        atomic_json(self.root / "transactions/pending.json", transaction)
+        branch_details = {
             "parent": source["branch"], "from_checkpoint": checkpoint_id, "created_at": _now(),
             "mode": mode,
             "runtime_policy": policy, "runtime_policy_hash": content_hash(policy),
         }
+        if selected_binding is not None:
+            branch_details.update(selected_binding)
+        if config_apply_idempotency_key is not None:
+            branch_details["config_apply_idempotency_key"] = config_apply_idempotency_key
+            branch_details["config_apply_request_hash"] = config_apply_request_hash
+        branches["branches"][branch] = branch_details
         atomic_json(branches_path, branches)
         manifest = dict(previous_manifest)
         new_id, relative, checksum = self.checkpoints.save(branch, 1, source["state"], branch_data, prepared=prepared)
         manifest.update(current_branch=branch, current_checkpoint={"checkpoint_id": new_id, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}, failed_step=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
         try:
+            active_policy = (selected_binding or inherited_binding)["runtime_policy"]
+            atomic_json(
+                self.root / "runtime_policy.json",
+                {"policy": active_policy, "sha256": content_hash(active_policy)},
+            )
             self.checkpoints.validate(new_id, expected=transaction)
-            if not self._transaction_complete(transaction, manifest):
+            if not self._transaction_complete(
+                transaction, manifest, require_after_persist=False
+            ):
                 raise CorruptProjectError("新分支持久化校验失败。")
             if verify:
                 self._lock_state.validating_transaction = True
                 verify()
+            if after_persist:
+                self._lock_state.validating_transaction = True
+                after_persist(
+                    {
+                        "branch_id": branch,
+                        "checkpoint_id": new_id,
+                        "from_checkpoint": checkpoint_id,
+                        "state": source["state"],
+                    }
+                )
+                transaction["after_persist_complete"] = True
+                atomic_json(self.root / "transactions/pending.json", transaction)
+                if not self._transaction_complete(transaction, manifest):
+                    raise CorruptProjectError("配置修订发布校验失败。")
         except Exception:
             self._rollback_transaction(transaction, manifest)
             raise
         finally:
             self._lock_state.validating_transaction = False
         self.events.append("branch_created", branch=branch, parent=source["branch"],
-                           from_checkpoint=checkpoint_id, mode=mode)
+                           from_checkpoint=checkpoint_id, mode=mode,
+                           runtime_config_revision_id=(selected_binding or {}).get("runtime_config_revision_id"),
+                           config_hash=(selected_binding or {}).get("config_hash"))
         (self.root / "transactions/pending.json").unlink(missing_ok=True)
         return branch
 
@@ -733,6 +943,19 @@ class ProjectStore:
             if intent.get("kind") == "branch":
                 branches.pop(str(intent.get("branch") or ""), None)
         checkpoints = [item for item in checkpoints if item["branch"] in branches]
+        public_branches = {
+            name: {
+                key: value
+                for key, value in details.items()
+                if key
+                not in {
+                    "runtime_policy",
+                    "config_apply_idempotency_key",
+                    "config_apply_request_hash",
+                }
+            }
+            for name, details in branches.items()
+        }
         return {
             "current_branch": manifest["current_branch"],
             "current_checkpoint_id": (manifest.get("current_checkpoint") or {}).get("checkpoint_id"),
@@ -740,9 +963,39 @@ class ProjectStore:
                 {"name": name, **details,
                  "current": name == manifest["current_branch"],
                  "checkpoints": [item for item in checkpoints if item["branch"] == name]}
-                for name, details in branches.items()
+                for name, details in public_branches.items()
             ],
         }
+
+    def find_config_apply(self, idempotency_key: str) -> dict[str, Any] | None:
+        """Find an already committed configuration branch for replay."""
+
+        with self.read_lock():
+            branches = json.loads(
+                (self.root / "branches.json").read_text(encoding="utf-8")
+            )["branches"]
+            checkpoints = self.checkpoints.list()
+        for branch, details in branches.items():
+            if details.get("config_apply_idempotency_key") != idempotency_key:
+                continue
+            branch_points = [item for item in checkpoints if item["branch"] == branch]
+            if not branch_points:
+                raise CorruptProjectError("配置修订分支缺少检查点。")
+            applied_checkpoint = min(
+                branch_points, key=lambda item: int(item["sequence"])
+            )
+            return {
+                "branch_id": branch,
+                "checkpoint_id": applied_checkpoint["checkpoint_id"],
+                "from_checkpoint": details.get("from_checkpoint"),
+                "runtime_config_revision_id": details.get("runtime_config_revision_id"),
+                "runtime_policy_hash": details.get("runtime_policy_hash"),
+                "model_config_hash": details.get("model_config_hash"),
+                "config_hash": details.get("config_hash"),
+                "effective_from_state": details.get("effective_from_state"),
+                "request_hash": details.get("config_apply_request_hash"),
+            }
+        return None
 
     @contextmanager
     def read_lock(self) -> Iterator[None]:
@@ -917,7 +1170,12 @@ class ProjectStore:
             response.append({**item, "snapshot": envelope["data"]})
         return response
 
-    def switch_branch(self, checkpoint_id: str) -> dict[str, Any]:
+    def switch_branch(
+        self,
+        checkpoint_id: str,
+        *,
+        verify: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> dict[str, Any]:
         """Move the active read pointer to an indexed checkpoint without changing history."""
         self._recover_transaction()
         target = self.checkpoints.load(checkpoint_id)
@@ -928,6 +1186,9 @@ class ProjectStore:
         head = max(branch_checkpoints, key=lambda item: item["sequence"])
         if head["checkpoint_id"] != checkpoint_id:
             raise ValueError("历史节点只读；如需继续，请从该节点创建新分支。")
+        details = branches[target["branch"]]
+        if verify is not None:
+            verify(dict(details))
         manifest = self.manifest()
         manifest.update(
             current_branch=target["branch"],
@@ -939,10 +1200,14 @@ class ProjectStore:
             updated_at=_now(),
         )
         atomic_json(self.root / "manifest.json", manifest)
-        policy = branches[target["branch"]].get("runtime_policy")
+        policy = details.get("runtime_policy")
         if policy is not None:
             atomic_json(self.root / "runtime_policy.json", {"policy": policy, "sha256": content_hash(policy)})
-        self.events.append("branch_switched", branch=target["branch"], checkpoint_id=checkpoint_id)
+        self.events.append(
+            "branch_switched", branch=target["branch"], checkpoint_id=checkpoint_id,
+            runtime_config_revision_id=details.get("runtime_config_revision_id"),
+            config_hash=details.get("config_hash"),
+        )
         return self.branches()
 
     @contextmanager

@@ -58,7 +58,10 @@ class RuntimeModelGateway:
         route = ModelRoute(binding=binding, mock=True) if self.offline_mode else self.router.route_for_state(state)
         snapshot = binding.model_dump(mode="json")
         trace = f"trace_{uuid4().hex}"
-        idempotency_key = content_hash([state, template_id, template_version, messages, variables, input_refs])
+        idempotency_key = content_hash([
+            state, template_id, template_version, messages, variables, input_refs,
+            self.router.config_hash, self.router.revision_id, self.router.branch_id,
+        ])
         route = ModelRoute(binding=route.binding.model_copy(update={"parameters": {
             **route.binding.parameters, "_idempotency_key": idempotency_key}}), mock=route.mock)
         relevant = [event for event in self.store.history() if event.get("idempotency_key") == idempotency_key and event.get("type") in {"model_call_unknown", "model_call_unknown_resolved"}]
@@ -69,17 +72,32 @@ class RuntimeModelGateway:
             "template_hash": content_hash(messages), "variables": variables, "input_refs": input_refs,
             "model": {"provider": binding.provider, "name": binding.model, "role": role.value},
             "parameters": binding.parameters, "config_hash": self.router.config_hash, "state": state,
+            "runtime_config_revision_id": self.router.revision_id, "branch_id": self.router.branch_id,
             "trace_id": trace, "request_id": idempotency_key, "idempotency_key": idempotency_key,
             "parent_prompt": parent_prompt, "round": round_number}
-        self.store.events.append("model_config_loaded", state=state, config_hash=self.router.config_hash, binding=snapshot)
-        self.store.events.append("model_call_started", state=state, trace_id=trace, idempotency_key=idempotency_key)
+        self.store.events.append(
+            "model_config_loaded", state=state, config_hash=self.router.config_hash,
+            runtime_config_revision_id=self.router.revision_id,
+            branch_id=self.router.branch_id, binding=snapshot,
+        )
+        self.store.events.append(
+            "model_call_started", state=state, trace_id=trace,
+            idempotency_key=idempotency_key, config_hash=self.router.config_hash,
+            runtime_config_revision_id=self.router.revision_id,
+            branch_id=self.router.branch_id,
+        )
         try:
             observed_usage: list[ProviderUsageObservation] = []
             with capture_provider_usage(observed_usage.append):
                 result = self.executor.audited_run(
                     lambda: invoke(route), prompts=self.store.prompts, audit=audit
                 )
-            self.store.events.append("model_call_completed", state=state, trace_id=trace, idempotency_key=idempotency_key)
+            self.store.events.append(
+                "model_call_completed", state=state, trace_id=trace,
+                idempotency_key=idempotency_key, config_hash=self.router.config_hash,
+                runtime_config_revision_id=self.router.revision_id,
+                branch_id=self.router.branch_id,
+            )
             for index, usage in enumerate(observed_usage):
                 token_usage = usage.token_usage
                 self.store.events.append(
