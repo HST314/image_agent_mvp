@@ -76,6 +76,9 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 INTAKE_TASK_FILE = "intake_task.json"
 MANAGED_MODE = os.getenv("IMAGE_AGENT_MANAGED_MODE", "0") == "1"
 MANAGED_PROJECT_ID = os.getenv("IMAGE_AGENT_MANAGED_PROJECT_ID", "").strip()
+HARNESS_TASK_ID = os.getenv("HARNESS_TASK_ID", "").strip()
+HARNESS_INSTANCE_ID = os.getenv("HARNESS_INSTANCE_ID", "").strip()
+RUNTIME_SETTINGS_V2_ENABLED = os.getenv("INSTANCE_RUNTIME_SETTINGS_V2", "0") == "1"
 MANAGED_CONTROL_FILE = os.getenv("IMAGE_AGENT_CONTROL_FILE", "").strip()
 MANAGED_ADAPTER_HEADER = "X-Harness-Adapter-Key"
 
@@ -213,6 +216,8 @@ def _store(project_id: str) -> ProjectStore:
 
 
 def _existing_store(project_id: str) -> ProjectStore:
+    if MANAGED_MODE and project_id != MANAGED_PROJECT_ID:
+        raise ProjectNotFoundError("受管实例只能读取当前工程。")
     store = _store(project_id)
     if not (store.root / "manifest.json").is_file():
         raise ProjectNotFoundError(f"工程不存在：{store.project_id}")
@@ -543,6 +548,38 @@ def _runtime_settings_view(store: ProjectStore) -> dict[str, Any]:
     }
 
 
+def _runtime_status_view(store: ProjectStore) -> dict[str, Any]:
+    """Project status derived only from structured state and immutable bindings."""
+    manifest = store.read_manifest()
+    active = _project_runtime(store)
+    failed_step = manifest.get("failed_step")
+    exceptions: list[dict[str, Any]] = []
+    if isinstance(failed_step, dict):
+        error = failed_step.get("error")
+        if isinstance(error, dict):
+            exceptions.append(
+                {
+                    "code": error.get("code") or error.get("category") or "WORKFLOW_FAILED",
+                    "message": "当前工作流步骤执行失败，请按状态页提示处理。",
+                    "retryable": bool(error.get("retryable")),
+                    "occurred_at": failed_step.get("at"),
+                }
+            )
+    return {
+        "schema_version": "1.0",
+        "project_id": store.project_id,
+        "process_health": "ok",
+        "active_job": JOBS.active_for_project(store.project_id),
+        "configuration": {
+            "revision_id": active.revision_id,
+            "config_hash": active.config_hash,
+            "branch_id": manifest.get("current_branch") or "main",
+            "pending_revision_id": None,
+        },
+        "recent_exceptions": exceptions[-5:],
+    }
+
+
 def _job_operation(body: AdvanceRequest) -> str:
     if body.category_action == "retry":
         return "重新匹配品类约束"
@@ -722,7 +759,7 @@ async def index() -> Response:
     if not MANAGED_MODE:
         return FileResponse(FRONTEND_ROOT / "index.html", media_type="text/html")
     html = (FRONTEND_ROOT / "index.html").read_text(encoding="utf-8")
-    for name in ("action", "dialog"):
+    for name in ("action", "dialog", "sidebar"):
         start = f"<!-- standalone-create-{name}-start -->"
         end = f"<!-- standalone-create-{name}-end -->"
         before, marker, remainder = html.partition(start)
@@ -775,14 +812,33 @@ async def health(response: Response) -> dict[str, Any]:
 
 @app.get("/api/runtime-context")
 async def runtime_context() -> dict[str, Any]:
+    editable = (not MANAGED_MODE) or RUNTIME_SETTINGS_V2_ENABLED
     return {
         "managed_by_harness": MANAGED_MODE,
+        "navigation_mode": "harness" if MANAGED_MODE else "standalone",
         "project_id": MANAGED_PROJECT_ID if MANAGED_MODE else None,
+        "task_id": HARNESS_TASK_ID if MANAGED_MODE else None,
+        "instance_id": HARNESS_INSTANCE_ID if MANAGED_MODE else None,
+        "bridge_protocol_version": "1.0" if MANAGED_MODE and editable else None,
+        "capabilities": {
+            "list_projects": not MANAGED_MODE,
+            "create_project": not MANAGED_MODE,
+            "edit_runtime_settings": editable,
+            "view_status": True,
+        },
     }
 
 
 @app.get("/api/projects")
 async def list_projects() -> dict[str, Any]:
+    if MANAGED_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "MANAGED_BY_HARNESS",
+                "message": "受管实例不提供工程枚举，请从主系统打开当前任务。",
+            },
+        )
     PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
     projects: list[dict[str, Any]] = []
     for child in sorted(PROJECTS_ROOT.iterdir(), key=lambda item: item.stat().st_mtime, reverse=True):
@@ -905,6 +961,14 @@ async def _create_project(body: CreateProjectRequest) -> dict[str, Any]:
 async def get_project(project_id: str) -> dict[str, Any]:
     try:
         return await asyncio.to_thread(_project_view, _existing_store(project_id))
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/runtime-status")
+async def get_project_runtime_status(project_id: str) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_runtime_status_view, _existing_store(project_id))
     except Exception as exc:
         raise _translate_error(exc) from exc
 

@@ -3,7 +3,7 @@
 
 import { $, $$ } from './dom.js';
 
-export const VIEWS = ['workspace', 'status'];
+export const VIEWS = ['workspace', 'settings', 'status'];
 
 /** 高亮当前视图页签（aria-current=page），其余移除。 */
 export function markActiveTab(view) {
@@ -21,4 +21,10 @@ export function setTopContext({ projectId = null, branch = null } = {}) {
   if (!projectId) return;
   $('#topnav-project-name').textContent = projectId;
   $('#topnav-branch').textContent = `分支 ${branch || 'main'}`;
+}
+
+/** 正常状态不占位；仅结构化异常状态驱动提示点。 */
+export function setStatusAlert(hasAlert) {
+  const dot = $('#status-alert');
+  if (dot) dot.hidden = !hasAlert;
 }

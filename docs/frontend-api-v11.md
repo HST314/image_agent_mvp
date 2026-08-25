@@ -51,6 +51,30 @@ branch and keeps the source checkpoint and its runtime/model binding unchanged.
   model names. A confirmed write creates an immutable project-local revision;
   it updates the unstarted initial binding or creates a safe-checkpoint branch,
   and never updates the process defaults.
+- `GET /api/projects/{project_id}/runtime-status` returns only structured
+  process health, active-job state, the active revision/branch/config digest,
+  pending revision identity, and up to five structured recent exceptions. The
+  status view does not derive state by parsing log text.
+
+## Runtime context and navigation
+
+`GET /api/runtime-context` tells the browser whether it is standalone or
+Harness-managed, the current project/task/instance identity, bridge protocol
+version, navigation mode, and explicit capabilities.
+
+In standalone mode the project directory, creation flow, project switching,
+current-task settings, and status page remain available. In managed mode the
+document removes the project directory and creation UI, opens the bound project
+directly, and rejects `GET /api/projects` with `MANAGED_BY_HARNESS`. Every
+project-scoped read is still constrained to the bound managed project.
+
+When `INSTANCE_RUNTIME_SETTINGS_V2=1`, a managed iframe may request only the
+runtime-settings get/propose/confirm actions over bridge protocol `1.0`. The
+child accepts messages only from the exact parent origin derived from the
+document referrer, and the parent supplies a one-use nonce tied to the current
+instance. Credentials, Provider URLs, filesystem paths, and Adapter headers do
+not enter bridge messages. Managed instances without this capability render
+current-task settings read-only.
 
 Provider credentials, Provider URLs, filesystem paths, process controls, and
 offline mode are neither editable nor returned by the settings endpoints.

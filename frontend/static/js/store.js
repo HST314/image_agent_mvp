@@ -8,7 +8,13 @@ export const state = {
   job: null,          // 进行中的后台 job（长任务期间页面仍可操作）
   managedByHarness: false,
   managedProjectId: null,
-  view: 'workspace',  // 顶部导航当前视图：workspace / status
+  taskId: null,
+  instanceId: null,
+  capabilities: {},
+  bridgeProtocolVersion: null,
+  health: null,
+  externalStatusAbnormal: false,
+  view: 'workspace',  // 顶部导航当前视图：workspace / settings / status
 };
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }

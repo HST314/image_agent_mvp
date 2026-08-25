@@ -168,6 +168,16 @@ def test_standalone_settings_create_revision_branch_and_are_idempotent(
     assert Path(main_front.RUNTIME_POLICY_PATH).read_bytes() == runtime_file_before
     assert Path(main_front.MODEL_CONFIG).read_bytes() == model_file_before
 
+    runtime_status = client.get(f"/api/projects/{store.project_id}/runtime-status")
+    assert runtime_status.status_code == 200, runtime_status.text
+    status_body = runtime_status.json()
+    assert status_body["process_health"] == "ok"
+    assert status_body["active_job"] is None
+    assert status_body["configuration"]["revision_id"] == "cfg-inst-r000002"
+    assert status_body["configuration"]["branch_id"] == body["branch_id"]
+    assert len(status_body["configuration"]["config_hash"]) == 64
+    assert status_body["recent_exceptions"] == []
+
     replay = client.post(
         f"/api/projects/{store.project_id}/runtime-settings", json=request
     )

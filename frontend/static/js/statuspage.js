@@ -25,7 +25,13 @@ const MAX_LOG_ITEMS = 500;
  * deps.openStream(after, { signal }) → 异步可迭代事件序列（app.js 注入
  * api.streamTimelineEvents 绑定工程后的形态）。
  */
-export function renderStatusPage(container, view, { openStream } = {}) {
+export function renderStatusPage(container, view, {
+  openStream,
+  loadRuntimeStatus,
+  loadManagedSettings,
+  onManagedSettings,
+  health,
+} = {}) {
   if (!view?.project_id) {
     container.append(stateBlock('empty', '尚未打开工程',
       '从左侧目录打开一个工程后，这里会集中显示它的运行状态、工程信息、原始任务、最近活动与实时事件日志。'));
@@ -56,6 +62,21 @@ export function renderStatusPage(container, view, { openStream } = {}) {
     el('dd', { text: `分支 ${manifest.current_branch || 'main'} · 检查点 ${manifest.current_checkpoint?.sequence || 0}` }),
   );
   statusPanel.append(facts, liveLine);
+
+  /* ===== 服务与配置状态：只读取结构化投影，不解析日志文本 ===== */
+  const runtimePanel = sectionPanel('服务与配置', '显示进程健康、活动修订、待应用设置与结构化异常。');
+  const runtimeFacts = el('dl', { class: 'kv' });
+  runtimeFacts.append(
+    el('dt', { text: '服务健康' }),
+    el('dd', { text: health?.status === 'ok' ? '正常' : '降级或暂不可用' }),
+    el('dt', { text: '当前配置修订' }),
+    el('dd', { text: '正在读取…' }),
+    el('dt', { text: '待应用设置' }),
+    el('dd', { text: '正在读取…' }),
+    el('dt', { text: '最近异常' }),
+    el('dd', { text: '正在读取…' }),
+  );
+  runtimePanel.append(runtimeFacts);
 
   /* ===== 事件日志（Q2-A：实时滚动 / 当前动作高亮 / 可暂停） ===== */
   const logPanel = sectionPanel('事件日志', '实时自动滚动刷新；当前正在执行的动作高亮');
@@ -88,7 +109,38 @@ export function renderStatusPage(container, view, { openStream } = {}) {
   const activityPanel = sectionPanel('最近活动', '真实事件审计记录');
   renderTimeline(activityPanel, view.history || []);
 
-  container.append(statusPanel, grid, activityPanel);
+  container.append(statusPanel, runtimePanel, grid, activityPanel);
+
+  const runtimeController = new AbortController();
+  if (loadRuntimeStatus) {
+    void loadRuntimeStatus({ signal: runtimeController.signal }).then((runtime) => {
+      if (disposed) return;
+      const values = runtimeFacts.querySelectorAll('dd');
+      const config = runtime.configuration || {};
+      values[0].textContent = runtime.process_health === 'ok' ? '正常' : '降级或暂不可用';
+      values[1].textContent = config.revision_id
+        ? `${config.revision_id} · 分支 ${config.branch_id || 'main'} · 校验 ${String(config.config_hash || '').slice(0, 12)}…`
+        : '未绑定配置修订';
+      values[2].textContent = config.pending_revision_id || '无';
+      values[3].textContent = runtime.recent_exceptions?.length
+        ? `${runtime.recent_exceptions.length} 项需要处理`
+        : '无';
+    }).catch(() => {
+      if (!disposed) runtimeFacts.querySelectorAll('dd')[0].textContent = '状态投影暂不可用';
+    });
+  }
+  if (loadManagedSettings) {
+    void loadManagedSettings().then((settings) => {
+      if (disposed) return;
+      const pending = settings.pending_application;
+      onManagedSettings?.(settings);
+      runtimeFacts.querySelectorAll('dd')[2].textContent = pending
+        ? `${pending.revision_id || settings.revision?.pending_revision_id || '待应用修订'} · ${pending.status === 'WAITING_SAFE_POINT' ? '等待安全检查点' : '正在应用'}`
+        : settings.revision?.pending_revision_id || '无';
+    }).catch(() => {
+      if (!disposed) runtimeFacts.querySelectorAll('dd')[2].textContent = '主系统状态暂不可用';
+    });
+  }
 
   /* ---- 事件日志数据与跟随 ---- */
   const initial = (Array.isArray(view.history) ? view.history : []).filter((e) => Number.isFinite(Number(e?.sequence)));
@@ -178,6 +230,7 @@ export function renderStatusPage(container, view, { openStream } = {}) {
   return {
     dispose() {
       disposed = true;
+      runtimeController.abort();
       stopFollower();
     },
   };

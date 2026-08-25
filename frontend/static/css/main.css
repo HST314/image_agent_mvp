@@ -15,15 +15,17 @@
 .app{min-height:100dvh;display:grid;grid-template-rows:var(--topnav-h) minmax(0,1fr)}
 .app-body{display:grid;grid-template-columns:var(--sidebar-rail) minmax(0,1fr);transition:grid-template-columns var(--ease);min-height:calc(100dvh - var(--topnav-h))}
 .app.sidebar-expanded .app-body{grid-template-columns:var(--sidebar) minmax(0,1fr)}
+.app.app--managed .app-body{grid-template-columns:minmax(0,1fr)}
 .topnav{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:clamp(10px,2vw,22px);padding:0 clamp(12px,2vw,24px);border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(14px)}
 .topnav__brand{display:flex;align-items:center;gap:10px;min-width:0}
 .topnav__brand .brand__mark{width:32px;height:32px;border-radius:9px}
 .topnav__brand .brand__mark svg{width:18px}
 .topnav__brand strong{font-size:15px;white-space:nowrap}
 .topnav__tabs{display:flex;gap:4px}
-.topnav__tab{min-height:40px;padding:8px 16px;border:1px solid transparent;border-radius:999px;background:transparent;font-weight:700;font-size:14px;color:var(--muted);transition:background var(--ease),color var(--ease)}
+.topnav__tab{min-height:44px;padding:8px 16px;border:1px solid transparent;border-radius:999px;background:transparent;font-weight:700;font-size:14px;color:var(--muted);transition:background var(--ease),color var(--ease)}
 .topnav__tab:hover{background:var(--subtle)}
 .topnav__tab[aria-current=page]{background:var(--primary-soft);color:var(--primary)}
+.topnav__status-tab{display:inline-flex;align-items:center;gap:7px}.topnav__alert-dot{width:8px;height:8px;border-radius:50%;background:var(--danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 14%,transparent)}.topnav__alert-dot[hidden]{display:none}
 .topnav__context{margin-left:auto;display:flex;align-items:center;gap:10px;min-width:0}
 .topnav__project{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:13px}
 .topnav__project[hidden]{display:none}/* 类选择器的 display:flex 会盖掉 UA 的 [hidden] 规则，须显式恢复隐藏 */
@@ -160,6 +162,9 @@ input[type=color].input{padding:4px;min-height:40px}input[type=range].input{padd
 .eventlog__item time{color:var(--muted);font-size:12px;white-space:nowrap}
 .eventlog__empty{margin:8px;color:var(--muted)}
 
+/* ===== 当前任务设置 ===== */
+.settings-form{display:grid;gap:20px}.settings-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:0;padding:18px;border:1px solid var(--border);border-radius:12px}.settings-group legend{padding:0 8px;font-weight:700}.settings-field{min-width:0;display:grid;gap:7px;padding:12px;border-radius:10px;background:var(--subtle)}.settings-field__heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.settings-field__heading>label{font-size:14px;font-weight:700}.settings-field__override{display:flex;align-items:center;gap:6px;min-height:44px;padding:6px 0;font-size:12px;color:var(--muted);cursor:pointer}.settings-field__override input,.settings-sync input{width:20px;height:20px;accent-color:var(--primary)}.settings-field small{color:var(--muted);font-size:12px;line-height:1.5}.settings-field input[type=checkbox]:not([id^=override-]){width:22px;height:22px;accent-color:var(--primary)}.settings-field input:disabled,.settings-field select:disabled{opacity:.62;cursor:not-allowed}.settings-actions{display:flex;justify-content:flex-end;gap:10px}.settings-error:empty,.settings-notice:empty{display:none}.settings-notice{margin:0;padding:12px 14px;border-radius:10px;background:var(--success-soft);color:var(--success)}.settings-preview{margin-bottom:18px}.settings-diff{display:grid;gap:10px;margin:0;padding:0;list-style:none}.settings-diff li{display:grid;grid-template-columns:minmax(140px,.5fr) minmax(0,1fr);gap:4px 16px;padding:12px;border:1px solid var(--border);border-radius:10px}.settings-diff li span{overflow-wrap:anywhere}.settings-diff li small{grid-column:2;color:var(--muted)}.settings-preview__empty{color:var(--muted)}
+
 select.input{appearance:auto}
 
 /* 顶栏降级规则（T1）：≥1024 完整呈现；768–1023 隐藏品牌文字、压缩工程名胶囊、
@@ -204,3 +209,5 @@ button.badge.topnav__branch:focus-visible{outline:2px solid var(--primary);outli
 .branch-item__actions{grid-row:span 2}
 @media(max-width:599px){.branch-item{grid-template-columns:1fr}.branch-item__actions{grid-row:auto}}
 .clarification-review{display:grid;gap:4px;margin:0 0 18px;padding:14px;border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);border-radius:10px;background:var(--warning-soft);color:var(--warning);font-size:14px}.clarification-recovery{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+@media(max-width:1023px){.app.app--managed .app-body{grid-template-columns:minmax(0,1fr)}.settings-group{grid-template-columns:1fr}}
+@media(max-width:599px){.settings-field__heading{align-items:flex-start;flex-direction:column}.settings-diff li{grid-template-columns:1fr}.settings-diff li small{grid-column:1}}
