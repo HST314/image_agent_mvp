@@ -64,8 +64,7 @@ def test_index_shell_references_module_entry(client: TestClient) -> None:
     page = client.get("/")
     assert page.status_code == 200
     assert 'type="module" src="/static/js/app.js"' in page.text
-    assert 'data-view="settings"' in page.text
-    assert "当前任务设置" in page.text
+    assert 'data-view="settings">设置</button>' in page.text
     assert "data-unknown" in page.text
 
 

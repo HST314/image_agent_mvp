@@ -3,26 +3,32 @@ import assert from 'node:assert/strict';
 import {
   collectSettingsPatch,
   localSettingsDiff,
+  nextSettingsTabIndex,
   optionsWithHistoricalValue,
+  SETTINGS_TAB_LAYOUT,
 } from '../../frontend/static/js/settingspage.js';
 
-function wrapper(path, { current, initial, initiallyOverridden, override, kind = 'text' }) {
+function wrapper(path, { current, initial, inherited, initiallyOverridden, kind = 'text' }) {
   const input = {
     value: String(current), checked: Boolean(current),
-    dataset: { kind, initialValue: JSON.stringify(initial), initialOverridden: String(initiallyOverridden) },
+    dataset: {
+      kind,
+      initialEffective: JSON.stringify(initial),
+      inheritedValue: JSON.stringify(inherited),
+      initialOverridden: String(initiallyOverridden),
+    },
   };
-  const toggle = { checked: override };
   return {
     dataset: { path },
-    querySelector(selector) { return selector.startsWith('.input') ? input : toggle; },
+    querySelector() { return input; },
   };
 }
 
-test('设置补丁只包含变化，并用 null 清除当前任务覆盖', () => {
+test('设置补丁只包含实际变化，改回继承值时恢复任务基线', () => {
   const controls = [
-    wrapper('candidate_concurrency', { current: 3, initial: 3, initiallyOverridden: true, override: false, kind: 'number' }),
-    wrapper('watermark', { current: true, initial: null, initiallyOverridden: false, override: true, kind: 'checkbox' }),
-    wrapper('self_check.max_rounds', { current: 6, initial: 4, initiallyOverridden: true, override: true, kind: 'number' }),
+    wrapper('candidate_concurrency', { current: 5, initial: 3, inherited: 5, initiallyOverridden: true, kind: 'number' }),
+    wrapper('watermark', { current: true, initial: false, inherited: false, initiallyOverridden: false, kind: 'checkbox' }),
+    wrapper('self_check.max_rounds', { current: 6, initial: 4, inherited: 4, initiallyOverridden: true, kind: 'number' }),
   ];
   const root = { querySelectorAll: () => controls };
   assert.deepEqual(collectSettingsPatch(root), {
@@ -30,6 +36,27 @@ test('设置补丁只包含变化，并用 null 清除当前任务覆盖', () =>
     watermark: true,
     self_check: { max_rounds: 6 },
   });
+});
+
+test('六个设置选项卡保持既定顺序', () => {
+  assert.deepEqual(
+    SETTINGS_TAB_LAYOUT.map(({ id, title }) => [id, title]),
+    [
+      ['clarify', '提问与澄清'],
+      ['libraries', '数据库与放行'],
+      ['render', '候选与出图'],
+      ['selfcheck', '质量自检'],
+      ['system', '系统与高级'],
+      ['models', '模型'],
+    ],
+  );
+});
+
+test('设置选项卡支持方向键与首尾键循环导航', () => {
+  assert.equal(nextSettingsTabIndex(0, 'ArrowRight', 6), 1);
+  assert.equal(nextSettingsTabIndex(0, 'ArrowLeft', 6), 5);
+  assert.equal(nextSettingsTabIndex(3, 'Home', 6), 0);
+  assert.equal(nextSettingsTabIndex(2, 'End', 6), 5);
 });
 
 test('独立模式预览把嵌套设置展开为字段级未来影响', () => {
@@ -45,6 +72,23 @@ test('独立模式预览把嵌套设置展开为字段级未来影响', () => {
   assert.deepEqual(
     localSettingsDiff(settings, { self_check: { max_rounds: 6 } }),
     [{ field: 'self_check.max_rounds', before: 4, after: 6 }],
+  );
+});
+
+test('独立模式预览把恢复基线显示为继承后的有效值', () => {
+  const settings = {
+    values: {
+      candidate_concurrency: {
+        inherited: 5,
+        effective: 3,
+        overridden: true,
+        explicit: 3,
+      },
+    },
+  };
+  assert.deepEqual(
+    localSettingsDiff(settings, { candidate_concurrency: null }),
+    [{ field: 'candidate_concurrency', before: 3, after: 5 }],
   );
 });
 
