@@ -22,13 +22,28 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent_core.models import ImageTaskCard
+from agent_core.models import ImageTaskCard, ModelConfig
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore, atomic_json
 
 from configs.managed_runtime import ManagedRuntime, optional_environment_path
 from configs.runtime_policy import RuntimePolicy
+from configs.runtime_revision import (
+    MODEL_STATES,
+    RUNTIME_FIELDS,
+    RuntimeRevisionError,
+    current_revision_id,
+    publish_revision,
+)
+from configs.runtime_settings import (
+    RuntimeSettingsPatch,
+    build_runtime_revision as _build_runtime_revision,
+)
+from configs.runtime_apply_api import (
+    RuntimeApplyDependencies,
+    create_runtime_apply_router,
+)
 from skills.errors import ResourceError
 from agent_core.jobs import JobNotFoundError, JobRegistry
 from agent_core.annotation import compose
@@ -40,12 +55,14 @@ from model_router.gateway import (
     resolve_unknown_model_call,
     unresolved_model_call_actions,
 )
+from model_router.router import REQUIRED_STATE_ROLES
 
 APP_ROOT = Path(__file__).resolve().parent
 FRONTEND_ROOT = APP_ROOT / "frontend"
 PROJECTS_ROOT = Path(os.getenv("IMAGE_AGENT_FRONT_PROJECTS_ROOT", FRONTEND_ROOT / "data" / "projects")).resolve()
 MODEL_CONFIG = optional_environment_path("IMAGE_AGENT_MODEL_CONFIG")
 RUNTIME_POLICY_PATH = optional_environment_path("IMAGE_AGENT_RUNTIME_POLICY")
+CONFIG_ROOT = optional_environment_path("IMAGE_AGENT_CONFIG_ROOT")
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
@@ -202,31 +219,122 @@ def _global_policy() -> RuntimePolicy:
     return _managed_runtime().policy
 
 
-def _managed_runtime() -> ManagedRuntime:
+def _base_runtime() -> ManagedRuntime:
     return ManagedRuntime.from_paths(MODEL_CONFIG, RUNTIME_POLICY_PATH)
 
 
-def _runner(store: ProjectStore) -> WorkflowRunner:
+def _managed_runtime(
+    revision_id: str | None = None,
+    *,
+    store: ProjectStore | None = None,
+) -> ManagedRuntime:
+    base = _base_runtime()
+    selected = revision_id
+    if selected is None and CONFIG_ROOT is not None:
+        selected = current_revision_id(CONFIG_ROOT)
+    if selected is None:
+        return base
+    if store is not None:
+        local_root = store.root / "runtime-config"
+        if (local_root / "revisions" / selected).is_dir():
+            return ManagedRuntime.from_revision(
+                local_root, selected, base=base, managed=MANAGED_MODE
+            )
+    if CONFIG_ROOT is not None and (CONFIG_ROOT / "revisions" / selected).is_dir():
+        return ManagedRuntime.from_revision(
+            CONFIG_ROOT, selected, base=base, managed=MANAGED_MODE
+        )
+    if selected == base.revision_id:
+        return base
+    raise RuntimeRevisionError(
+        "CONFIG_INTEGRITY_FAILED",
+        "The active branch references an unavailable runtime configuration revision.",
+    )
+
+
+def _runner(store: ProjectStore, runtime: ManagedRuntime | None = None) -> WorkflowRunner:
+    selected = runtime or _managed_runtime()
     return WorkflowRunner(
-        store, _managed_runtime().model_config_path, offline_mode=False
+        store,
+        selected.model_config_path,
+        offline_mode=selected.policy.offline_mode,
+        policy=selected.policy,
+        runtime_config_revision_id=selected.revision_id,
+        task_config_revision_id=selected.task_config_revision_id,
+        runtime_config_sha256=selected.runtime_config_sha256,
+        model_config_sha256=selected.model_config_sha256,
+        config_hash=selected.config_hash,
+        effective_from_state=selected.branch_binding()["effective_from_state"],
     )
 
 
 def _project_policy(store: ProjectStore) -> RuntimePolicy:
-    """Load the immutable project runtime policy; requests never choose its mode."""
-    policy_file = store.root / "runtime_policy.json"
-    if not policy_file.is_file():
-        raise FileNotFoundError(f"工程运行策略不存在：{store.project_id}")
-    payload = json.loads(policy_file.read_text(encoding="utf-8"))
-    policy = RuntimePolicy.model_validate(payload["policy"])
-    if policy.offline_mode:
+    """Load policy/model state from the active branch's immutable revision."""
+    policy = _project_runtime(store).policy
+    if MANAGED_MODE and policy.offline_mode:
         raise RuntimeError("Offline projects cannot run through the managed API.")
     return policy
 
 
+def _project_runtime(store: ProjectStore) -> ManagedRuntime:
+    return _runtime_for_binding(store, store.active_config_binding())
+
+
+def _project_baseline_runtime(store: ProjectStore) -> ManagedRuntime:
+    local_root = store.root / "runtime-config"
+    if (local_root / "revisions" / "cfg-inst-r000001").is_dir():
+        return ManagedRuntime.from_revision(
+            local_root,
+            "cfg-inst-r000001",
+            base=_base_runtime(),
+            managed=False,
+        )
+    return _base_runtime()
+
+
+def _next_project_revision_id(store: ProjectStore, active_revision_id: str) -> str:
+    sequences = [int(active_revision_id.rsplit("r", 1)[1])]
+    revisions_root = store.root / "runtime-config" / "revisions"
+    if revisions_root.is_dir():
+        sequences.extend(
+            int(path.name.rsplit("r", 1)[1])
+            for path in revisions_root.glob("cfg-inst-r[0-9][0-9][0-9][0-9][0-9][0-9]")
+            if path.is_dir()
+        )
+    return f"cfg-inst-r{max(sequences) + 1:06d}"
+
+
+def _runtime_for_binding(
+    store: ProjectStore, binding: dict[str, Any]
+) -> ManagedRuntime:
+    revision_id = binding.get("runtime_config_revision_id")
+    if revision_id is None:
+        policy = RuntimePolicy.model_validate(binding["runtime_policy"])
+        return _base_runtime().with_policy(policy)
+    else:
+        local_registered = (
+            store.root / "runtime-config" / "revisions" / str(revision_id)
+        ).is_dir()
+        external_registered = bool(
+            CONFIG_ROOT is not None
+            and (CONFIG_ROOT / "revisions" / str(revision_id)).is_dir()
+        )
+        if (
+            str(revision_id) == "cfg-inst-r000001"
+            and not local_registered
+            and not external_registered
+        ):
+            policy = RuntimePolicy.model_validate(binding["runtime_policy"])
+            runtime = _base_runtime().with_policy(policy)
+        else:
+            runtime = _managed_runtime(str(revision_id), store=store)
+    runtime.assert_branch_binding(binding)
+    return runtime
+
+
 def _project_runner(store: ProjectStore) -> WorkflowRunner:
-    _project_policy(store)
-    return _runner(store)
+    runtime = _project_runtime(store)
+    return _runner(store, runtime)
 
 
 def _options(body: AdvanceRequest) -> RunnerOptions:
@@ -246,6 +354,77 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         category_action=body.category_action,
         clarification_action=body.clarification_action,
         taskbook_action=body.taskbook_action,
+    )
+
+
+def _workflow_boundary(store: ProjectStore) -> dict[str, Any]:
+    manifest = store.read_manifest()
+    pointer = manifest.get("current_checkpoint")
+    active_job = JOBS.active_for_project(store.project_id)
+    pending = store.pending_transaction()
+    unknown = unresolved_model_call_actions(store)
+    completed = bool((store.resume(manifest=manifest) or {}).get("completed"))
+    safe = (
+        bool(pointer)
+        and active_job is None
+        and pending is None
+        and not unknown
+        and not completed
+    )
+    reason = None
+    if completed:
+        reason = "INSTANCE_CONFIG_LOCKED"
+    elif active_job is not None:
+        reason = "ACTIVE_JOB"
+    elif pending is not None:
+        reason = "PROJECT_TRANSACTION_PENDING"
+    elif unknown:
+        reason = "MODEL_CALL_OUTCOME_UNKNOWN"
+    elif pointer is None:
+        reason = "CHECKPOINT_UNAVAILABLE"
+    return {
+        "state": (pointer or {}).get("state"),
+        "checkpoint_id": (pointer or {}).get("checkpoint_id"),
+        "safe_now": safe,
+        "reason": reason,
+    }
+
+
+def _require_safe_checkpoint(store: ProjectStore, expected: str) -> dict[str, Any]:
+    boundary = _workflow_boundary(store)
+    if not boundary["safe_now"]:
+        if boundary["reason"] == "INSTANCE_CONFIG_LOCKED":
+            raise RuntimeRevisionError(
+                "INSTANCE_CONFIG_LOCKED",
+                "The completed project has no future execution boundary for this revision.",
+            )
+        raise RuntimeRevisionError(
+            "SAFE_CHECKPOINT_UNAVAILABLE",
+            "The project cannot apply a runtime revision at its current boundary.",
+        )
+    if boundary["checkpoint_id"] != expected:
+        raise RuntimeRevisionError(
+            "SETTINGS_REVISION_CONFLICT",
+            "The active safe checkpoint changed after the configuration was prepared.",
+        )
+    store.checkpoints.validate(expected)
+    return boundary
+
+
+def _managed_request_allowed(project_id: str, request: Request) -> bool:
+    client_host = request.client.host if request.client is not None else ""
+    try:
+        loopback = ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        loopback = False
+    supplied_key = request.headers.get(MANAGED_ADAPTER_HEADER, "")
+    return bool(
+        MANAGED_MODE
+        and MANAGED_PROJECT_ID
+        and MANAGED_ADAPTER_KEY
+        and project_id == MANAGED_PROJECT_ID
+        and hmac.compare_digest(supplied_key, MANAGED_ADAPTER_KEY)
+        and loopback
     )
 
 
@@ -272,7 +451,7 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
             "capabilities": _capabilities(manifest, snapshot),
             "resource_events": [e for e in history if e.get("type") == "resource_degraded"],
             "unknown_actions": unresolved_model_call_actions(store),
-            "runtime_policy": json.loads((store.root / "runtime_policy.json").read_text(encoding="utf-8"))["policy"],
+            "runtime_policy": _project_runtime(store).safe_runtime(),
             "active_job": JOBS.active_for_project(store.project_id),
             "delivery_status": delivery_status,
         }
@@ -285,6 +464,62 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
     except CorruptProjectError as exc:
         exc.project_context = store.corruption_context("project_view")
         raise
+
+
+def _runtime_settings_view(store: ProjectStore) -> dict[str, Any]:
+    active = _project_runtime(store)
+    base = _project_baseline_runtime(store)
+    inherited = base.safe_runtime()
+    effective = active.safe_runtime()
+    overrides = active.overrides
+    values: dict[str, Any] = {}
+    for field in RUNTIME_FIELDS:
+        explicit = overrides.get(field)
+        values[field] = {
+            "inherited": inherited[field],
+            "effective": effective[field],
+            "overridden": field in overrides,
+            "source": "instance" if field in overrides else "project_baseline",
+            "explicit": explicit,
+        }
+    base_config = ModelConfig.model_validate(base.model_document)
+    options: dict[str, list[str]] = {}
+    for state, role in REQUIRED_STATE_ROLES.items():
+        options[state] = sorted(
+            {
+                binding.model
+                for binding in base_config.state_bindings
+                if binding.model_role == role
+            }
+        )
+    active_bindings = active.safe_model_bindings()
+    base_bindings = base.safe_model_bindings()
+    model_values = {
+        state: {
+            "inherited": base_bindings[state],
+            "effective": active_bindings[state],
+            "overridden": state in (overrides.get("advanced_model_overrides") or {}),
+            "source": (
+                "instance"
+                if state in (overrides.get("advanced_model_overrides") or {})
+                else "project_baseline"
+            ),
+        }
+        for state in MODEL_STATES
+    }
+    return {
+        "scope": {"project_id": store.project_id},
+        "revision": {
+            "current": int(active.revision_id.rsplit("r", 1)[1]),
+            "revision_id": active.revision_id,
+            "config_hash": active.config_hash,
+        },
+        "values": values,
+        "model_bindings": model_values,
+        "editable_schema": RuntimeSettingsPatch.model_json_schema(),
+        "model_options": options,
+        "workflow_boundary": _workflow_boundary(store),
+    }
 
 
 def _job_operation(body: AdvanceRequest) -> str:
@@ -389,6 +624,11 @@ def _translate_error(exc: Exception) -> HTTPException:
         return exc
     if isinstance(exc, ValidationError):
         return HTTPException(status_code=422, detail=exc.errors(include_url=False))
+    if isinstance(exc, RuntimeRevisionError):
+        return HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        )
     if isinstance(exc, ResourceError):
         return HTTPException(status_code=503, detail=exc.as_dict())
     if isinstance(exc, ArtifactNotFoundError):
@@ -480,17 +720,31 @@ app.mount("/static", StaticFiles(directory=FRONTEND_ROOT / "static"), name="stat
 
 @app.get("/api/health")
 async def health(response: Response) -> dict[str, Any]:
-    if MODEL_CONFIG is None or RUNTIME_POLICY_PATH is None:
+    if CONFIG_ROOT is None:
+        model_config = MODEL_CONFIG
+        runtime_policy = RUNTIME_POLICY_PATH
+    else:
+        try:
+            runtime = _managed_runtime()
+            model_config = runtime.model_config_path
+            runtime_policy = runtime.runtime_policy_path
+        except Exception:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {
+                "status": "degraded",
+                "checks": [{"name": "runtime_revision", "status": "error", "error_code": "CONFIG_INTEGRITY_FAILED"}],
+            }
+    if model_config is None or runtime_policy is None:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "degraded",
-            "checks": [{"name": "model_router", "status": "error", "error_code": "MODEL_ROUTER_UNAVAILABLE"}],
+            "checks": [{"name": "runtime_revision", "status": "error", "error_code": "CONFIG_INTEGRITY_FAILED"}],
         }
     result = await asyncio.to_thread(
         run_diagnostics,
         projects_root=PROJECTS_ROOT,
-        model_config=MODEL_CONFIG,
-        runtime_policy=RUNTIME_POLICY_PATH,
+        model_config=model_config,
+        runtime_policy=runtime_policy,
         app_root=APP_ROOT, job_registry=JOBS,
     )
     if result["status"] != "ok":
@@ -546,20 +800,7 @@ async def create_managed_project(
     body: CreateProjectRequest,
     request: Request,
 ) -> dict[str, Any]:
-    client_host = request.client.host if request.client is not None else ""
-    try:
-        loopback = ipaddress.ip_address(client_host).is_loopback
-    except ValueError:
-        loopback = False
-    supplied_key = request.headers.get(MANAGED_ADAPTER_HEADER, "")
-    if (
-        not MANAGED_MODE
-        or not MANAGED_PROJECT_ID
-        or not MANAGED_ADAPTER_KEY
-        or body.project_id != MANAGED_PROJECT_ID
-        or not hmac.compare_digest(supplied_key, MANAGED_ADAPTER_KEY)
-        or not loopback
-    ):
+    if not _managed_request_allowed(body.project_id, request):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -579,13 +820,57 @@ async def _create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            store.create(_global_policy().snapshot())
+            initial = _managed_runtime()
+            policy = _global_policy()
+            if policy != initial.policy:
+                initial = initial.with_policy(policy)
+            if MANAGED_MODE:
+                if (
+                    initial.manifest is not None
+                    and initial.manifest["instance_id"] != project_id
+                ):
+                    raise RuntimeRevisionError(
+                        "CONFIG_INTEGRITY_FAILED",
+                        "The initial runtime revision belongs to another instance.",
+                    )
+                binding = initial.branch_binding()
+                initial_bundle = None
+            elif policy.offline_mode:
+                # Offline mode is a test-only legacy path and is never emitted
+                # as a v2 public runtime revision.
+                binding = None
+                initial_bundle = None
+            else:
+                initial_bundle = _build_runtime_revision(
+                    project_id=project_id,
+                    revision_id="cfg-inst-r000001",
+                    parent_revision_id=None,
+                    task_config_revision_id=initial.task_config_revision_id,
+                    overrides={},
+                    policy=policy,
+                    model_document=initial.model_document,
+                    actor_type="system",
+                    actor_id="image_agent",
+                    apply_mode="before_start",
+                    branch_id=None,
+                    checkpoint_id=None,
+                    effective_from_state="initial",
+                )
+                binding = initial_bundle[3]
+            store.create(policy.snapshot(), config_binding=binding)
+            if initial_bundle is not None:
+                publish_revision(
+                    store.root / "runtime-config",
+                    initial_bundle[0],
+                    initial_bundle[1],
+                    initial_bundle[2],
+                )
             if body.defer_run:
                 # T10（契约 §7）：仅持久化工程与入站任务卡，立即返回视图（不做任何
                 # 模型调用）；首个工作流推进由 POST /api/projects/{id}/jobs 异步执行。
                 atomic_json(store.root / INTAKE_TASK_FILE, task.model_dump(mode="json"))
                 return _project_view(store)
-            _runner(store).run(
+            _project_runner(store).run(
                 {"task_card": task.model_dump(mode="json")}, RunnerOptions()
             )
             return _project_view(store)
@@ -941,7 +1226,10 @@ async def switch_project_branch(project_id: str, body: BranchSwitchRequest) -> d
         def execute() -> dict[str, Any]:
             store = _store(project_id)
             with store.lock():
-                return store.switch_branch(body.checkpoint_id)
+                return store.switch_branch(
+                    body.checkpoint_id,
+                    verify=lambda binding: _runtime_for_binding(store, binding),
+                )
         return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc
@@ -1048,3 +1336,19 @@ async def get_asset(project_id: str, artifact_id: str) -> FileResponse:
     if media_type not in IMAGE_TYPES:
         raise HTTPException(status_code=415, detail="资源类型不受支持。")
     return FileResponse(asset, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+app.include_router(
+    create_runtime_apply_router(
+        RuntimeApplyDependencies(
+            existing_store=_existing_store,
+            managed_request_allowed=_managed_request_allowed,
+            managed_runtime=lambda revision_id, store: _managed_runtime(
+                revision_id, store=store
+            ),
+            project_runtime=_project_runtime,
+            require_safe_checkpoint=_require_safe_checkpoint,
+            translate_error=_translate_error,
+        )
+    )
+)
