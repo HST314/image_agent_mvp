@@ -177,6 +177,10 @@ def _runner(
     *,
     output=None,
 ) -> WorkflowRunner:
+    # The active branch owns its ``effective_from_state`` boundary: rebuilt
+    # stages reuse a validated revision at a new state, so the revision
+    # manifest's recorded state must not override the branch's value here.
+    binding = store.active_config_binding()
     return WorkflowRunner(
         store,
         runtime.model_config_path,
@@ -188,7 +192,7 @@ def _runner(
         runtime_config_sha256=runtime.runtime_config_sha256,
         model_config_sha256=runtime.model_config_sha256,
         config_hash=runtime.config_hash,
-        effective_from_state=runtime.branch_binding()["effective_from_state"],
+        effective_from_state=str(binding.get("effective_from_state") or "initial"),
     )
 
 def _present_result(view: Presenter, result: dict[str, object]) -> None:
