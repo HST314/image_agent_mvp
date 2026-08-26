@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
-import pytest
-from fastapi.testclient import TestClient
-
-import main_front
 import configs.runtime_settings_api as runtime_settings_api
+import main_front
+import pytest
+from agent_core.jobs import JobRegistry
+from agent_core.workflow_runner import WorkflowRunner
 from configs.runtime_revision import publish_revision
-from storage.project_store import ProjectStore
+from fastapi.testclient import TestClient
+from storage.project_store import ProjectStore, atomic_json
 
 
 def _bundle(
@@ -50,9 +52,102 @@ def _waiting_checkpoint(store: ProjectStore) -> str:
                 "state": "intake_clarify",
                 "phase": "waiting_clarification",
                 "waiting": True,
-                "task_card": {"task_id": store.project_id},
+                "task_card": {
+                    "task_id": f"task-{store.project_id}",
+                    "project_id": store.project_id,
+                    "source_refs": [{"ref_id": "brief", "ref_type": "brief"}],
+                    "deliverable_goal": "新品海报",
+                    "usage_context": "内部审核",
+                    "category_ref": {"category_id": "generic", "version": "1"},
+                    "known_facts": {"audience": "审核人员"},
+                    "unknowns": {"output_spec": "待确认"},
+                    "asset_inputs": [],
+                    "status": "draft",
+                },
             },
         )
+
+
+def _wait_job(client: TestClient, job_id: str, timeout: float = 20.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        record = client.get(f"/api/jobs/{job_id}").json()
+        if record["status"] in {"succeeded", "failed", "cancelled", "interrupted"}:
+            return record
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish in time")
+
+
+def test_rerun_branch_jobs_keep_branch_effective_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects = tmp_path / "projects"
+    config_root = tmp_path / "instance-runtime-config"
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", projects)
+    monkeypatch.setattr(main_front, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(main_front, "MANAGED_MODE", True)
+    monkeypatch.setattr(main_front, "MANAGED_PROJECT_ID", "rerun-binding-project")
+    monkeypatch.setattr(main_front, "JOBS", JobRegistry(tmp_path / "jobs"))
+    base = main_front._base_runtime()
+    initial = _bundle(
+        "rerun-binding-project",
+        "cfg-inst-r000001",
+        policy=base.policy,
+        model_document=base.model_document,
+        parent=None,
+    )
+    publish_revision(config_root, initial[0], initial[1], initial[2])
+    atomic_json(config_root / "state.json", {"current_revision_id": "cfg-inst-r000001"})
+    store = ProjectStore(projects, "rerun-binding-project")
+    store.create(base.policy.snapshot(), config_binding=initial[3])
+    source = _waiting_checkpoint(store)
+    client = TestClient(main_front.app, raise_server_exceptions=False)
+    real_clarify = WorkflowRunner._clarify
+
+    def clarify_without_provider(
+        runner: WorkflowRunner, data: dict, options: dict
+    ) -> dict:
+        runner.offline_mode = True
+        try:
+            return real_clarify(runner, data, options)
+        finally:
+            runner.offline_mode = False
+
+    monkeypatch.setattr(WorkflowRunner, "_clarify", clarify_without_provider)
+
+    created = client.post(
+        "/api/projects/rerun-binding-project/branches",
+        json={
+            "checkpoint": source,
+            "name": "rerun-clarification",
+            "mode": "rerun_stage",
+        },
+    )
+
+    assert created.status_code == 200, created.text
+    assert initial[0]["effective_from_state"] == "initial"
+    binding = store.active_config_binding()
+    assert binding["runtime_config_revision_id"] == "cfg-inst-r000001"
+    assert binding["effective_from_state"] == "intake_clarify"
+
+    first = client.post(
+        "/api/projects/rerun-binding-project/jobs",
+        json={"idempotency_key": "rerun-auto-start"},
+    )
+    assert first.status_code == 202, first.text
+    assert _wait_job(client, first.json()["job_id"])["status"] == "succeeded"
+    snapshot = store.resume()
+    assert snapshot is not None
+    assert snapshot["phase"] == "waiting_clarification"
+    assert snapshot["question_card"]["questions"]
+
+    second = client.post(
+        "/api/projects/rerun-binding-project/jobs",
+        json={"idempotency_key": "rerun-user-click"},
+    )
+    assert second.status_code == 202, second.text
+    assert _wait_job(client, second.json()["job_id"])["status"] == "succeeded"
+    assert store.active_config_binding()["effective_from_state"] == "intake_clarify"
 
 
 def test_standalone_settings_apply_before_first_run(

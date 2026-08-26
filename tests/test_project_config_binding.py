@@ -5,16 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 import main_front
+import pytest
 import storage.project_store as project_store_module
 from agent_core.models import ModelRole
 from configs.managed_runtime import ManagedRuntime
 from model_router.gateway import RuntimeModelGateway
 from model_router.router import ModelRouter
-from storage.project_store import ProjectStore
-
+from storage.project_store import CorruptProjectError, ProjectStore, atomic_json
 
 MODEL_CONFIG = Path(__file__).resolve().parent / "fixtures" / "model_config.yaml"
 RUNTIME_POLICY = Path(__file__).resolve().parent / "fixtures" / "runtime.yaml"
@@ -61,6 +59,47 @@ def test_project_store_rejects_internally_inconsistent_config_hashes(
         ProjectStore(tmp_path, "invalid-binding-project").create(
             runtime.policy.snapshot(), config_binding=invalid
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered"),
+    (
+        ("runtime_config_revision_id", "cfg-inst-r999999"),
+        ("runtime_policy_hash", "f" * 64),
+        ("model_config_hash", "f" * 64),
+        ("config_hash", "f" * 64),
+    ),
+)
+def test_active_config_binding_drift_fails_closed_with_field_diagnostic(
+    tmp_path: Path, field: str, tampered: str
+) -> None:
+    runtime = ManagedRuntime.from_paths(MODEL_CONFIG, RUNTIME_POLICY)
+    binding = runtime.branch_binding()
+    store = ProjectStore(tmp_path, f"binding-drift-{field.replace('_', '-')}")
+    store.create(runtime.policy.snapshot(), config_binding=binding)
+    branches_path = store.root / "branches.json"
+    branches = json.loads(branches_path.read_text(encoding="utf-8"))
+    branches["branches"]["main"][field] = tampered
+    atomic_json(branches_path, branches)
+
+    with pytest.raises(CorruptProjectError, match=rf"field={field},"):
+        store.ensure_active_config_binding(binding)
+
+
+def test_project_runner_keeps_legacy_binding_backfill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_front, "CONFIG_ROOT", None)
+    runtime = main_front._base_runtime()
+    store = ProjectStore(tmp_path, "legacy-binding-project")
+    store.create(runtime.policy.snapshot())
+
+    runner = main_front._project_runner(store)
+    store.ensure_active_config_binding(runner.config_binding)
+
+    binding = store.active_config_binding()
+    assert binding["runtime_config_revision_id"] == runtime.revision_id
+    assert binding["effective_from_state"] == "initial"
 
 
 def test_config_binding_follows_branch_switch_and_failed_fork_rolls_back(

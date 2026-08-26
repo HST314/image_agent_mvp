@@ -261,19 +261,34 @@ def _managed_runtime(
     )
 
 
-def _runner(store: ProjectStore, runtime: ManagedRuntime | None = None) -> WorkflowRunner:
+def _runner(
+    store: ProjectStore,
+    runtime: ManagedRuntime | None = None,
+    *,
+    config_binding: dict[str, Any] | None = None,
+) -> WorkflowRunner:
     selected = runtime or _managed_runtime()
+    if config_binding is None:
+        binding = selected.branch_binding()
+    elif config_binding.get("runtime_config_revision_id") is None:
+        binding = selected.branch_binding(
+            effective_from_state=str(
+                config_binding.get("effective_from_state") or "initial"
+            )
+        )
+    else:
+        binding = config_binding
     return WorkflowRunner(
         store,
         selected.model_config_path,
         offline_mode=selected.policy.offline_mode,
         policy=selected.policy,
-        runtime_config_revision_id=selected.revision_id,
-        task_config_revision_id=selected.task_config_revision_id,
-        runtime_config_sha256=selected.runtime_config_sha256,
-        model_config_sha256=selected.model_config_sha256,
-        config_hash=selected.config_hash,
-        effective_from_state=selected.branch_binding()["effective_from_state"],
+        runtime_config_revision_id=str(binding["runtime_config_revision_id"]),
+        task_config_revision_id=str(binding["task_config_revision_id"]),
+        runtime_config_sha256=str(binding["runtime_config_sha256"]),
+        model_config_sha256=str(binding["model_config_hash"]),
+        config_hash=str(binding["config_hash"]),
+        effective_from_state=str(binding["effective_from_state"]),
     )
 
 
@@ -347,8 +362,9 @@ def _runtime_for_binding(
 
 
 def _project_runner(store: ProjectStore) -> WorkflowRunner:
-    runtime = _project_runtime(store)
-    return _runner(store, runtime)
+    binding = store.active_config_binding()
+    runtime = _runtime_for_binding(store, binding)
+    return _runner(store, runtime, config_binding=binding)
 
 
 def _options(body: AdvanceRequest) -> RunnerOptions:

@@ -525,7 +525,10 @@ class ProjectStore:
         if existing_revision is not None:
             for field, value in expected.items():
                 if details.get(field) != value:
-                    raise CorruptProjectError("活动分支配置关联与已验证修订不一致。")
+                    raise CorruptProjectError(
+                        "活动分支配置关联与已验证修订不一致："
+                        f"field={field}, expected={value!r}, actual={details.get(field)!r}。"
+                    )
             return expected
         current_policy = details.get("runtime_policy")
         if current_policy and not _mapping_subset(
