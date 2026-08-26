@@ -54,7 +54,7 @@ class OpenAICompatibleTextClient:
         api_key: str,
         model: str,
         parameters: dict[str, Any] | None = None,
-        timeout: float = 180,
+        timeout: float = 360,
     ) -> None:
         self.base_url = base_url
         self.api_key = api_key

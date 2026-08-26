@@ -51,7 +51,7 @@ class RuntimePolicy(BaseModel):
     self_check: SelfCheckPolicyConfig = Field(default_factory=SelfCheckPolicyConfig)
     max_render_retries: Literal[0] = 0
     candidate_concurrency: int = Field(5, ge=1, le=5)
-    model_timeout_seconds: float = Field(180, gt=0, le=3600)
+    model_timeout_seconds: float = Field(360, gt=0, le=3600)
     image_api_base_url: str = ""
     default_output_size: str = Field("2560x1440", pattern=r"^(\d{2,5}x\d{2,5}|[124]K)$")
     response_format: Literal["url", "b64_json"] = "url"
