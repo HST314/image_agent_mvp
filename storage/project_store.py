@@ -37,6 +37,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Windows reader gates: msvcrt offers no shared-lock primitive and its
+# blocking lock request fails with EDEADLK under intra-process contention,
+# so readers of the same project serialize on one threading lock per lock
+# file before touching the kernel lock.  Keyed by path because store
+# instances are recreated per request.
+_READER_GATES: dict[str, threading.Lock] = {}
+_READER_GATES_GUARD = threading.Lock()
+
+
+def _reader_gate(lock_path: Path) -> threading.Lock:
+    key = str(lock_path)
+    with _READER_GATES_GUARD:
+        gate = _READER_GATES.get(key)
+        if gate is None:
+            gate = threading.Lock()
+            _READER_GATES[key] = gate
+        return gate
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
@@ -1324,14 +1343,27 @@ class ProjectStore:
             return
         lock_path = self.root / ".lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if _WINDOWS:
+            # ``msvcrt`` has no shared-lock primitive, and its blocking
+            # LK_LOCK gives up with EDEADLK (Errno 36) after about ten
+            # seconds, so concurrent in-process readers used to fail under
+            # load.  Gate readers through a per-project threading lock so
+            # only one thread at a time contends for the file lock; the
+            # exclusive file lock below still excludes writers in other
+            # processes.
+            with _reader_gate(lock_path):
+                with self._locked_read_stream(lock_path, portalocker.LOCK_EX):
+                    yield
+            return
+        # POSIX platforms retain concurrent reads through a real shared lock.
+        with self._locked_read_stream(lock_path, portalocker.LOCK_SH):
+            yield
+
+    @contextmanager
+    def _locked_read_stream(self, lock_path: Path, mode: int) -> Iterator[None]:
         stream = lock_path.open("a+b", buffering=0)
         acquired = False
         try:
-            # ``msvcrt`` has no shared-lock primitive.  Portalocker therefore
-            # requires its optional pywin32 backend for LOCK_SH on Windows.
-            # A branch projection is short-lived, so serialize readers there
-            # with an exclusive lock; POSIX platforms retain concurrent reads.
-            mode = portalocker.LOCK_EX if os.name == "nt" else portalocker.LOCK_SH
             portalocker.lock(stream, mode)
             acquired = True
             yield

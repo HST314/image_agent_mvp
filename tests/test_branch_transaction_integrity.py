@@ -311,7 +311,9 @@ def test_windows_branch_read_uses_exclusive_lock_without_shared_backend(tmp_path
     lock_modes: list[int] = []
     unlocks: list[object] = []
 
-    monkeypatch.setattr(project_store_module.os, "name", "nt")
+    # Flip the module seam, never the process-wide os.name: mutating os.name
+    # breaks pathlib for every other thread while the patch is active.
+    monkeypatch.setattr(project_store_module, "_WINDOWS", True)
     monkeypatch.setattr(project_store_module.portalocker, "lock", lambda stream, mode: lock_modes.append(mode))
     monkeypatch.setattr(project_store_module.portalocker, "unlock", lambda stream: unlocks.append(stream))
 

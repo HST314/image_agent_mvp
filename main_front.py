@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import hashlib
+import time
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -213,6 +214,53 @@ def _safe_project_id(value: str) -> str:
 
 def _store(project_id: str) -> ProjectStore:
     return ProjectStore(PROJECTS_ROOT, _safe_project_id(project_id))
+
+
+# Branch projections are read by every poller.  A burst of pollers must not
+# pile onto the same project file lock from worker threads (Windows msvcrt
+# fails such contention with EDEADLK), so the read is single-flighted per
+# project and followers reuse a short-TTL copy.  Keys embed PROJECTS_ROOT so
+# tests that relocate the root never see a stale cross-fixture view.
+_BRANCH_VIEW_TTL_SECONDS = 1.0
+_BRANCH_VIEW_ENTRY_LIMIT = 128
+_branch_view_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+_branch_view_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _branch_view_key(project_id: str) -> str:
+    return f"{PROJECTS_ROOT}:{project_id}"
+
+
+def _branch_view_lock(project_id: str) -> asyncio.Lock:
+    key = _branch_view_key(project_id)
+    loop = asyncio.get_running_loop()
+    entry = _branch_view_locks.get(key)
+    if entry is None or entry[0] is not loop:
+        if len(_branch_view_locks) >= _BRANCH_VIEW_ENTRY_LIMIT:
+            _branch_view_locks.clear()
+        entry = (loop, asyncio.Lock())
+        _branch_view_locks[key] = entry
+    return entry[1]
+
+
+def _cached_branch_view(project_id: str) -> dict[str, Any] | None:
+    cached = _branch_view_cache.get(_branch_view_key(project_id))
+    if cached is None:
+        return None
+    fetched_at, view = cached
+    if time.monotonic() - fetched_at >= _BRANCH_VIEW_TTL_SECONDS:
+        return None
+    return view
+
+
+def _store_branch_view(project_id: str, view: dict[str, Any]) -> None:
+    if len(_branch_view_cache) >= _BRANCH_VIEW_ENTRY_LIMIT:
+        _branch_view_cache.clear()
+    _branch_view_cache[_branch_view_key(project_id)] = (time.monotonic(), view)
+
+
+def _invalidate_branch_view(project_id: str) -> None:
+    _branch_view_cache.pop(_branch_view_key(project_id), None)
 
 
 def _existing_store(project_id: str) -> ProjectStore:
@@ -1325,6 +1373,7 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
                         effective_from_state=str(source["state"])
                     ),
                 )
+                _invalidate_branch_view(project_id)
                 return _project_view(store)
 
         return await asyncio.to_thread(execute)
@@ -1334,10 +1383,21 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
 
 @app.get("/api/projects/{project_id}/branches")
 async def list_project_branches(project_id: str) -> dict[str, Any]:
-    try:
-        return await asyncio.to_thread(lambda: _store(project_id).branches())
-    except Exception as exc:
-        raise _translate_error(exc) from exc
+    cached = _cached_branch_view(project_id)
+    if cached is not None:
+        return cached
+    async with _branch_view_lock(project_id):
+        # Re-check inside the gate: followers reuse the leader's fresh view
+        # instead of queueing worker threads on the same project file lock.
+        cached = _cached_branch_view(project_id)
+        if cached is not None:
+            return cached
+        try:
+            view = await asyncio.to_thread(lambda: _store(project_id).branches())
+        except Exception as exc:
+            raise _translate_error(exc) from exc
+        _store_branch_view(project_id, view)
+        return view
 
 
 @app.post("/api/projects/{project_id}/branches/switch")
@@ -1346,10 +1406,12 @@ async def switch_project_branch(project_id: str, body: BranchSwitchRequest) -> d
         def execute() -> dict[str, Any]:
             store = _store(project_id)
             with store.lock():
-                return store.switch_branch(
+                view = store.switch_branch(
                     body.checkpoint_id,
                     verify=lambda binding: _runtime_for_binding(store, binding),
                 )
+            _invalidate_branch_view(project_id)
+            return view
         return await asyncio.to_thread(execute)
     except Exception as exc:
         raise _translate_error(exc) from exc
