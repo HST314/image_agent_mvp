@@ -144,14 +144,36 @@ def _config_apply_receipt(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+_WINDOWS = os.name == "nt"
+
+
+def long_path(path: Path) -> Path:
+    """Bypass the 260-character MAX_PATH limit on Windows file operations.
+
+    Checkpoint temp files combine a deep managed workspace layout with long
+    ``.{name}.{uuid}.tmp`` suffixes, which can push a write past the legacy
+    Windows path limit and surface as ``FileNotFoundError``.  Prefixing the
+    absolute path with ``\\\\?\\`` opts the call into extended-length paths.
+    POSIX systems return the path unchanged.
+    """
+    if not _WINDOWS:
+        return path
+    text = os.fspath(path)
+    if text.startswith("\\\\?\\"):
+        return Path(text)
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + os.path.abspath(text))
+
+
 def atomic_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    long_path(path.parent).mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    with temporary.open("wb") as stream:
+    with long_path(temporary).open("wb") as stream:
         stream.write(_canonical(value))
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    os.replace(long_path(temporary), long_path(path))
 
 
 class CorruptProjectError(ValueError):

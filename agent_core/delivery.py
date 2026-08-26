@@ -11,6 +11,7 @@ from uuid import uuid4
 from PIL import Image
 
 from agent_core.contracts import DesignDeliveryEnvelopeV1
+from storage.project_store import long_path
 
 def build_delivery(snapshot: dict[str, Any], project_id: str, asset: dict[str, Any], trace_ref: str) -> DesignDeliveryEnvelopeV1:
     task=(snapshot.get("task_card") or {})
@@ -49,10 +50,10 @@ def finalize_delivery(root: Path, envelope: DesignDeliveryEnvelopeV1, source_ima
     if not destination.exists():
         temporary = directory / f".{destination.name}.{uuid4().hex}.tmp"
         try:
-            shutil.copyfile(source_image, temporary)
-            os.replace(temporary, destination)
+            shutil.copyfile(source_image, long_path(temporary))
+            os.replace(long_path(temporary), long_path(destination))
         finally:
-            temporary.unlink(missing_ok=True)
+            long_path(temporary).unlink(missing_ok=True)
     files["image"] = str(destination.relative_to(root))
     return files
 
@@ -83,13 +84,13 @@ def _write_immutable(path: Path, content: bytes) -> None:
         return
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        with temporary.open("xb") as stream:
+        with long_path(temporary).open("xb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        os.replace(long_path(temporary), long_path(path))
     finally:
-        temporary.unlink(missing_ok=True)
+        long_path(temporary).unlink(missing_ok=True)
 
 
 def finalize_delivery_candidate(
