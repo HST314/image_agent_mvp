@@ -108,6 +108,8 @@ def test_managed_apply_requires_registered_revision_and_replays_one_branch(
         "runtime_config_revision_id": "cfg-inst-r000002",
         "from_checkpoint": source,
         "expected_config_hash": revision[0]["config_hash"],
+        "expected_project_revision_id": initial[0]["revision_id"],
+        "expected_project_config_hash": initial[0]["config_hash"],
         "effective_from_state": "confirmation_build",
         "idempotency_key": "managed-apply-0001",
     }
@@ -150,6 +152,23 @@ def test_managed_apply_requires_registered_revision_and_replays_one_branch(
             if item.get("runtime_config_revision_id") == "cfg-inst-r000002"
         ]
     ) == 1
+    atomic_json(
+        config_root / "state.json", {"current_revision_id": "cfg-inst-r000002"}
+    )
+
+    historical_rerun = client.post(
+        "/api/projects/managed-project/branches",
+        json={
+            "checkpoint": source,
+            "name": "latest-config-rerun",
+            "mode": "rerun_stage",
+        },
+    )
+    assert historical_rerun.status_code == 200, historical_rerun.text
+    assert store.active_config_binding()["runtime_config_revision_id"] == (
+        "cfg-inst-r000002"
+    )
+    assert main_front._project_runtime(store).policy.candidate_concurrency == 2
 
     rejected = client.post(
         "/api/managed/projects/managed-project/config-revisions/apply",
@@ -177,6 +196,8 @@ def test_managed_apply_requires_registered_revision_and_replays_one_branch(
             "runtime_config_revision_id": "cfg-inst-r000003",
             "from_checkpoint": applied.json()["checkpoint_id"],
             "expected_config_hash": stale[0]["config_hash"],
+            "expected_project_revision_id": initial[0]["revision_id"],
+            "expected_project_config_hash": initial[0]["config_hash"],
             "effective_from_state": "self_check_inspection",
             "idempotency_key": "managed-apply-stale-parent",
         },

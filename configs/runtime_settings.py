@@ -86,6 +86,8 @@ class ManagedConfigRevisionApplyRequest(StrictSettingsRequest):
     runtime_config_revision_id: str = Field(pattern=r"^cfg-inst-r[0-9]{6}$")
     from_checkpoint: str = Field(pattern=r"^checkpoint_[0-9a-f]{24}$")
     expected_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_project_revision_id: str = Field(pattern=r"^cfg-inst-r[0-9]{6}$")
+    expected_project_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     effective_from_state: str = Field(
         min_length=1,
         max_length=128,

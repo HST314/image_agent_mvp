@@ -196,13 +196,9 @@ class ManagedRuntime:
         persisted_policy = binding.get("runtime_policy")
         if persisted_policy is not None and persisted_policy != expected["runtime_policy"]:
             raise RuntimeError("The active branch runtime policy does not match its revision.")
-        recorded_state = None if self.manifest is None else self.manifest.get(
-            "effective_from_state"
-        )
-        if recorded_state is not None and binding.get("effective_from_state") != recorded_state:
-            raise RuntimeError(
-                "The active branch effective state does not match its revision."
-            )
+        # ``effective_from_state`` belongs to the branch binding, not the
+        # immutable file content. Reusing the latest validated revision when a
+        # user rebuilds an earlier stage intentionally gives it a new boundary.
 
     def safe_runtime(self) -> dict[str, Any]:
         return effective_runtime(self.policy)

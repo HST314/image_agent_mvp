@@ -119,10 +119,13 @@ def _apply_managed_revision(
             return apply_receipt(replay)
         dependencies.require_safe_checkpoint(store, body.from_checkpoint)
         current = dependencies.project_runtime(store)
-        if manifest["parent_revision_id"] != current.revision_id:
+        if (
+            current.revision_id != body.expected_project_revision_id
+            or current.config_hash != body.expected_project_config_hash
+        ):
             raise RuntimeRevisionError(
                 "SETTINGS_REVISION_CONFLICT",
-                "The runtime configuration revision is based on a stale project revision.",
+                "The active project configuration changed after preview.",
             )
         branch_id = config_branch_name(
             body.runtime_config_revision_id, body.idempotency_key

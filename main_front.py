@@ -469,6 +469,7 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
             except (OSError, json.JSONDecodeError):
                 delivery_status = None
         history = store.history()
+        active_runtime = _project_runtime(store)
         view = {
             "project_id": store.project_id,
             "manifest": manifest,
@@ -477,7 +478,12 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
             "capabilities": _capabilities(manifest, snapshot),
             "resource_events": [e for e in history if e.get("type") == "resource_degraded"],
             "unknown_actions": unresolved_model_call_actions(store),
-            "runtime_policy": _project_runtime(store).safe_runtime(),
+            "runtime_policy": active_runtime.safe_runtime(),
+            "runtime_configuration": {
+                "revision_id": active_runtime.revision_id,
+                "config_hash": active_runtime.config_hash,
+                "branch_id": manifest.get("current_branch") or "main",
+            },
             "active_job": JOBS.active_for_project(store.project_id),
             "delivery_status": delivery_status,
         }
@@ -1289,7 +1295,16 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
             with store.lock():
                 # 分支事务只验证持久化不变量；页面投影在事务提交后生成，投影层的
                 # 非关键读取失败不得回滚已经健康落盘的分支。
-                store.branch_from(body.checkpoint, name=body.name, mode=body.mode)
+                source = store.checkpoints.load(body.checkpoint)
+                latest = _managed_runtime(store=store)
+                store.branch_from(
+                    body.checkpoint,
+                    name=body.name,
+                    mode=body.mode,
+                    config_binding=latest.branch_binding(
+                        effective_from_state=str(source["state"])
+                    ),
+                )
                 return _project_view(store)
 
         return await asyncio.to_thread(execute)
