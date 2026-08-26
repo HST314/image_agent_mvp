@@ -452,20 +452,35 @@ class ProjectStore:
         self.events.append("project_created", branch="main")
         return manifest
 
-    def active_config_binding(self) -> dict[str, Any]:
-        """Return the active branch's internal configuration association."""
+    def active_config_binding(
+        self, *, manifest: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Return the configuration for one committed manifest projection.
 
-        with self.read_lock():
-            intent = self.pending_transaction()
-            manifest = self.read_manifest()
-            branches = json.loads(
-                (self.root / "branches.json").read_text(encoding="utf-8")
-            )["branches"]
-        details = branches.get(manifest["current_branch"])
+        Workflow execution deliberately owns the project writer lock while a
+        remote model call is in flight.  Project-detail GETs must remain
+        readable during that interval so the UI can attach to the active job
+        and follow its timeline.  The binding is already stored in the
+        atomically replaced ``branches.json`` document, while a pending
+        before-start transaction carries the last committed branch details.
+        Reading that projection therefore must not wait for the execution
+        lock.
+
+        Callers that already selected a manifest (notably the project-detail
+        view) pass it in so the manifest, checkpoint and runtime configuration
+        all describe the same committed branch.
+        """
+
+        intent = self.pending_transaction()
+        selected_manifest = manifest or self.read_manifest()
+        branches = json.loads(
+            (self.root / "branches.json").read_text(encoding="utf-8")
+        )["branches"]
+        details = branches.get(selected_manifest["current_branch"])
         if (
             intent
             and intent.get("kind") == "config_before_start"
-            and intent.get("branch") == manifest["current_branch"]
+            and intent.get("branch") == selected_manifest["current_branch"]
             and isinstance(intent.get("previous_branch_details"), dict)
         ):
             details = intent["previous_branch_details"]
@@ -473,9 +488,15 @@ class ProjectStore:
             raise CorruptProjectError("活动分支不存在。")
         policy = details.get("runtime_policy")
         if policy is None:
-            policy = json.loads(
-                (self.root / "runtime_policy.json").read_text(encoding="utf-8")
-            ).get("policy")
+            previous_policy = intent.get("previous_runtime_policy") if intent else None
+            policy_document = (
+                previous_policy
+                if isinstance(previous_policy, dict)
+                else json.loads(
+                    (self.root / "runtime_policy.json").read_text(encoding="utf-8")
+                )
+            )
+            policy = policy_document.get("policy")
         if not isinstance(policy, dict):
             raise CorruptProjectError("活动分支运行策略无效。")
         policy_hash = details.get("runtime_policy_hash")

@@ -135,6 +135,49 @@ def test_project_get_during_branch_intent_serves_previous_commit_without_mutatio
     assert (store.root / "transactions/pending.json").is_file()
 
 
+def test_project_get_remains_readable_while_workflow_owns_writer_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-flight model call must not leave the managed iframe blank."""
+
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+    store, _ = _store(tmp_path)
+    writer_started = threading.Event()
+    release_writer = threading.Event()
+    request_finished = threading.Event()
+    result: dict[str, object] = {}
+
+    def hold_workflow_lock() -> None:
+        with store.lock():
+            store.events.append("step_started", state="intake_clarify")
+            writer_started.set()
+            assert release_writer.wait(3)
+
+    def read_project() -> None:
+        result["response"] = TestClient(
+            main_front.app, raise_server_exceptions=False
+        ).get(f"/api/projects/{store.project_id}")
+        request_finished.set()
+
+    writer = threading.Thread(target=hold_workflow_lock)
+    reader = threading.Thread(target=read_project)
+    writer.start()
+    assert writer_started.wait(1)
+    reader.start()
+    completed_while_locked = request_finished.wait(1)
+    release_writer.set()
+    writer.join(timeout=2)
+    reader.join(timeout=2)
+
+    assert completed_while_locked, "project GET waited for the workflow writer lock"
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    response = result["response"]
+    assert response.status_code == 200, response.text
+    assert response.json()["snapshot"]["state"] == "confirmation_build"
+    assert response.json()["history"][-1]["type"] == "step_started"
+
+
 def test_branch_listing_hides_pending_branch_and_checkpoint_without_mutation(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
     store, source = _store(tmp_path)

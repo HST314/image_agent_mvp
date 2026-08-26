@@ -285,8 +285,12 @@ def _project_policy(store: ProjectStore) -> RuntimePolicy:
     return policy
 
 
-def _project_runtime(store: ProjectStore) -> ManagedRuntime:
-    return _runtime_for_binding(store, store.active_config_binding())
+def _project_runtime(
+    store: ProjectStore, *, manifest: dict[str, Any] | None = None
+) -> ManagedRuntime:
+    return _runtime_for_binding(
+        store, store.active_config_binding(manifest=manifest)
+    )
 
 
 def _project_baseline_runtime(store: ProjectStore) -> ManagedRuntime:
@@ -469,7 +473,7 @@ def _project_view(store: ProjectStore, *, include_progress_snapshots: bool = Tru
             except (OSError, json.JSONDecodeError):
                 delivery_status = None
         history = store.history()
-        active_runtime = _project_runtime(store)
+        active_runtime = _project_runtime(store, manifest=manifest)
         view = {
             "project_id": store.project_id,
             "manifest": manifest,
