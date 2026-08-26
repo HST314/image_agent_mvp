@@ -353,7 +353,9 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
   const loading = stateBlock('loading', '正在读取当前任务设置', '设置仅作用于当前任务，不会修改系统默认值。');
   container.append(loading);
 
-  void deps.load({ signal: controller.signal }).then((settings) => {
+  void Promise.resolve()
+    .then(() => deps.load({ signal: controller.signal }))
+    .then((settings) => {
     if (disposed) return;
     container.textContent = '';
     const revision = settings.revision || {};
@@ -396,6 +398,10 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
 
     const notice = el('p', { class: 'settings-notice', role: 'status', 'aria-live': 'polite' });
     const error = el('p', { class: 'field-error settings-error', role: 'alert' });
+    const lastFailure = settings.last_application_failure;
+    if (lastFailure?.last_error) {
+      error.textContent = `上次设置应用失败：${lastFailure.last_error.message || '运行配置未能应用'}。请重新预览并保存。`;
+    }
     const previewButton = el('button', { type: 'submit', class: 'btn btn--primary', text: '预览设置变更' });
     if (!editable) {
       previewButton.disabled = true;
@@ -443,7 +449,10 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
         preview.hidden = false;
         confirmButton.focus();
       } catch (requestError) {
-        error.textContent = requestError.message;
+        proposal = null;
+        preview.hidden = true;
+        error.textContent = `${requestError.message} 请重新预览并保存。`;
+        previewButton.focus();
       } finally {
         previewButton.disabled = false;
         previewButton.textContent = '预览设置变更';
@@ -487,11 +496,12 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
         confirmButton.textContent = '确认创建设置修订';
       }
     });
-  }).catch((error) => {
-    if (disposed || controller.signal.aborted) return;
-    container.textContent = '';
-    container.append(stateBlock('error', '无法读取当前任务设置', error.message));
-  });
+    })
+    .catch((error) => {
+      if (disposed || controller.signal.aborted) return;
+      container.textContent = '';
+      container.append(stateBlock('error', '无法读取当前任务设置', error.message));
+    });
 
   return {
     dispose() {

@@ -88,8 +88,12 @@ class _StrictModel(BaseModel):
 
 
 class RevisionActor(_StrictModel):
-    type: Literal["member", "agent", "system"]
-    id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    type: Literal["human", "master", "system", "adapter", "member", "agent"]
+    id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
 
 
 class EffectiveSelfCheck(_StrictModel):

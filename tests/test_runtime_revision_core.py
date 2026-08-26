@@ -12,6 +12,7 @@ import yaml
 from configs.managed_runtime import ManagedRuntime
 from configs.runtime_revision import (
     RuntimeRevisionError,
+    RuntimeRevisionManifest,
     canonical_yaml_bytes,
     effective_runtime,
     model_bindings,
@@ -103,6 +104,22 @@ def test_registered_revision_is_hash_locked_across_router_reload(
     )
     with pytest.raises(ValueError, match="immutable revision"):
         router.reload_at_boundary()
+
+
+@pytest.mark.parametrize("actor_type", ["human", "master", "system", "adapter"])
+def test_managed_revision_accepts_harness_audit_actor_types(actor_type: str) -> None:
+    base = _base_runtime()
+    manifest, _, _ = _bundle(
+        "managed-actor-project",
+        "cfg-inst-r000002",
+        policy=base.policy,
+        model_document=base.model_document,
+    )
+    manifest["created_by"] = {"type": actor_type, "id": "harness_operator"}
+
+    validated = RuntimeRevisionManifest.model_validate(manifest)
+
+    assert validated.created_by.type == actor_type
 
 
 def test_legacy_v2_revision_without_library_release_fields_remains_loadable(
