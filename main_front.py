@@ -850,6 +850,16 @@ async def index() -> Response:
 app.mount("/static", StaticFiles(directory=FRONTEND_ROOT / "static"), name="static")
 
 
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    """零 I/O 存活探针：进程能响应即视为存活，供 Harness 运行期高频探活使用。
+
+    深度就绪诊断保留在 /api/health；本端点不做任何磁盘/配置读取，
+    避免任务执行期间的瞬时负载被误判为进程死亡。
+    """
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 async def health(response: Response) -> dict[str, Any]:
     if CONFIG_ROOT is None:
