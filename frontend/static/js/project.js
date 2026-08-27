@@ -99,10 +99,6 @@ export function renderProject(view, { autostartBootstrap = false, autostartRerun
 
   renderStage(stagePanel, view, derived, { projectId, actor, refresh, jobRunner });
 
-  /* ===== 付费调用待处置（契约 §3：工作台仅保留进度卡与阶段工作区；
-   * 工程信息/最近活动/原始任务迁入状态页，运行策略迁入设置页） ===== */
-  const unknowns = view.unknown_actions || [];
-  if (unknowns.length) rail.append(renderUnknowns(unknowns, { projectId, refresh }));
   if (!rail.children.length) workspace.classList.add('workspace--solo');
 
   /* 恢复进行中的 job 展示（刷新后） */
@@ -956,32 +952,6 @@ function renderDeliveryStage(panel, view, { projectId }) {
     }
   });
   panel.append(el('div', { class: 'delivery-complete' }, [status, complete]));
-}
-
-/* ---------- 侧栏 ---------- */
-
-function renderUnknowns(items, { projectId, refresh }) {
-  const panel = sectionPanel('付费调用待处置', '结果未知时不会自动重试');
-  const tpl = document.getElementById('tpl-unknown-action');
-  for (const item of items) {
-    const node = tpl.content.firstElementChild.cloneNode(true);
-    node.querySelector('.unknown-action__trace').textContent = item.trace_id || item.idempotency_key;
-    for (const btn of node.querySelectorAll('[data-unknown]')) {
-      btn.dataset.key = item.idempotency_key;
-      btn.addEventListener('click', async () => {
-        const actor = getActor();
-        if (!actor) { toast('请先在状态页「工程信息」填写操作人身份。', 'error'); return; }
-        btn.disabled = true;
-        try {
-          await api.resolveUnknown(projectId, item.idempotency_key, { action: btn.dataset.unknown, actor });
-          toast('人工处置已记录。');
-          refresh();
-        } catch (error) { toast(error.message, 'error'); btn.disabled = false; }
-      });
-    }
-    panel.append(node);
-  }
-  return panel;
 }
 
 /* ---------- job 运行器 ---------- */

@@ -239,7 +239,6 @@ export const EVENT_LABELS = {
   delivery_exported: '交付说明已导出',
   delivery_note_retried: '交付说明已重新生成',
   resource_degraded: '资源已按策略降级',
-  model_call_unknown: '付费调用结果未知',
   runtime_policy_revised: '运行策略已修订',
   skill_invocation_completed: '两库调用已完成',
   skill_invocation_retried: '已重新调用两库',

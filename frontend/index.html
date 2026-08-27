@@ -59,18 +59,6 @@
     </form>
   </dialog><!-- standalone-create-dialog-end -->
 
-  <!-- 未知付费调用处置条目模板：JS 按条克隆并写入 trace_id 与幂等键。 -->
-  <template id="tpl-unknown-action">
-    <div class="hint unknown-action">
-      <code class="unknown-action__trace"></code>
-      <p class="unknown-action__note">结果未知，可能已计费；不会自动重试。</p>
-      <div class="button-row">
-        <button type="button" class="btn btn--secondary" data-unknown="retry_after_confirmation">确认后重试</button>
-        <button type="button" class="btn btn--danger" data-unknown="abandon">放弃调用</button>
-      </div>
-    </div>
-  </template>
-
   <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
