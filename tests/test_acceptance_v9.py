@@ -7,7 +7,7 @@ import io
 import pytest
 
 from agent_core.annotation import compose
-from agent_core.delivery import build_delivery, persist_delivery
+from agent_core.delivery import build_delivery, delivery_note_prompt, persist_delivery
 from agent_core.jobs import JobRegistry
 from calibrator.structured_inspection import InspectionOutputError, parse_with_one_repair
 
@@ -79,3 +79,24 @@ def test_t27_delivery_formats_are_consistent_and_stable(tmp_path: Path):
     markdown=(tmp_path/files["markdown"]).read_text(encoding="utf-8")
     assert payload["final_image"]==asset and payload["design_note"]["concept"] in markdown
     assert payload["trace_ref"] in markdown
+
+
+def test_t27_delivery_note_prompt_has_five_shots_and_frozen_evidence():
+    asset={"artifact_id":"artifact_"+"a"*24,"uri":"artifact://artifact_"+"a"*24,
+           "sha256":"b"*64,"style_id":"style-2"}
+    snapshot={"task_card":{"task_id":"t1","deliverable_goal":"品牌海报"},
+              "style_selections":[{"style_id":"style-2","reason":"强化品牌识别"}],
+              "render_plans":[{"style_id":"style-2","prompt_text":"中心构图，蓝金配色"}],
+              "inspection":{"passed":True,"overall_score":93}}
+    prompt=delivery_note_prompt(snapshot,asset)
+    assert all(f"【示例{number}" in prompt for number in "一二三四五")
+    assert "中心构图，蓝金配色" in prompt and "overall_score" in prompt
+    assert "只输出 Markdown 正文" in prompt
+
+
+def test_t27_generated_delivery_note_replaces_template():
+    asset={"artifact_id":"artifact_"+"a"*24,"uri":"artifact://artifact_"+"a"*24,"sha256":"b"*64}
+    markdown="# 图：品牌主视觉\n\n## 视觉描述\n完整的段落化说明。"
+    envelope=build_delivery({"task_card":{"task_id":"t1"}},"p1",asset,"trace-1",
+                            generated_markdown=markdown)
+    assert envelope.design_note_markdown == markdown
