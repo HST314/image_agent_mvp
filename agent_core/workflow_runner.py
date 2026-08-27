@@ -48,7 +48,7 @@ from configs.runtime_revision import (
 from model_router.executor import ModelExecutor
 from skills.errors import ResourceError
 from calibrator.structured_inspection import parse_with_one_repair, InspectionOutputError
-from agent_core.delivery import build_delivery, persist_delivery
+from agent_core.delivery import build_delivery, delivery_note_prompt, persist_delivery
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -1580,7 +1580,33 @@ class WorkflowRunner:
                                  asset=asset, quality_version=str(data.get("quality_version", "visual-check-v2")), actor=actor)
         delivery = frozen.model_dump(mode="json")
         trace_ref = f"project:{self.store.project_id}:asset:{asset['sha256']}"
-        envelope = build_delivery(data, self.store.project_id, asset, trace_ref)
+        generated_note = None
+        if not self.offline_mode:
+            prompt = delivery_note_prompt(data, asset)
+            try:
+                generated_note = self.gateway.call(
+                    "confirmation_build",
+                    ModelRole.REASONING_LLM,
+                    lambda route: self._text(route).complete(prompt),
+                    messages=[{"role": "user", "content": prompt}],
+                    variables={"delivery_note": True, "asset_sha256": asset["sha256"]},
+                    template_id="delivery-design-note",
+                    template_version="1",
+                    input_refs=[asset["uri"]],
+                )
+            except Exception as exc:
+                self.store.events.append(
+                    "delivery_note_generation_fallback",
+                    reason=type(exc).__name__,
+                    blocking=False,
+                )
+        envelope = build_delivery(
+            data,
+            self.store.project_id,
+            asset,
+            trace_ref,
+            generated_markdown=generated_note,
+        )
         delivery_files = persist_delivery(self.store.root, envelope)
         self.store.events.append("delivery_frozen", delivery=delivery)
         self.store.events.append("delivery_exported", envelope=envelope.model_dump(mode="json"), files=delivery_files)
