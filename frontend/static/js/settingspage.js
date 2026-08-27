@@ -382,18 +382,19 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
       savePanel.append(actor);
     }
 
-    const syncCandidates = settings.sync_candidates || [];
+    const syncPeers = settings.sync_peers || [];
     const sync = el('label', { class: 'switch-row settings-sync' });
     const syncInput = el('input', { type: 'checkbox', id: 'settings-sync' });
+    syncInput.checked = settings.sync_to_peers === true;
     sync.append(syncInput, el('span', {}, [
       el('strong', { text: '同步到本任务其他 Image Agent' }),
       el('span', {
-        text: syncCandidates.length
-          ? `可同步 ${syncCandidates.length} 个尚未启动的实例；确认时会再次校验。`
-          : '当前没有可同步的尚未启动实例。',
+        text: syncPeers.length
+          ? `开启后，本实例确认的设置修订会自动同步给同任务其他 ${syncPeers.length} 个 Image 实例；运行中的实例在安全检查点应用。`
+          : '当前任务没有其他 Image 实例可同步。',
       }),
     ]));
-    syncInput.disabled = !editable || !context.managed || !syncCandidates.length;
+    syncInput.disabled = !editable || !context.managed || !syncPeers.length;
     if (context.managed) savePanel.append(sync);
 
     const notice = el('p', { class: 'settings-notice', role: 'status', 'aria-live': 'polite' });
@@ -408,6 +409,24 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
       notice.textContent = '已有设置修订正在处理中；当前值保持可见，处理完成后可继续修改。';
     }
     savePanel.append(el('div', { class: 'settings-actions' }, [previewButton]), error, notice);
+
+    syncInput.addEventListener('change', async () => {
+      error.textContent = '';
+      notice.textContent = '';
+      syncInput.disabled = true;
+      try {
+        const result = await deps.syncToggle({ sync_to_peers: syncInput.checked });
+        syncInput.checked = result?.sync_to_peers === true;
+        notice.textContent = syncInput.checked
+          ? '已开启同步：本实例后续确认的设置修订会自动同步给同任务其他 Image 实例。'
+          : '已关闭同步：本实例的设置修订只作用于当前实例。';
+      } catch (toggleError) {
+        syncInput.checked = !syncInput.checked;
+        error.textContent = toggleError.message;
+      } finally {
+        syncInput.disabled = !editable || !syncPeers.length;
+      }
+    });
 
     const preview = el('div', { class: 'settings-preview' });
     preview.hidden = true;
@@ -436,10 +455,8 @@ export function renderRuntimeSettingsPage(container, view, context, deps) {
           proposal = await deps.propose({
             base_revision: Number(revision.current),
             overrides: patch,
-            sync_unstarted_image_work_items: syncInput.checked,
-            expected_sync_instance_ids: syncInput.checked
-              ? syncCandidates.map((item) => item.instance_id)
-              : [],
+            sync_unstarted_image_work_items: false,
+            expected_sync_instance_ids: [],
           });
           renderDiff(previewBody, proposal.diff || []);
         } else {

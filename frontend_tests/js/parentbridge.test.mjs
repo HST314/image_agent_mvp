@@ -70,3 +70,38 @@ test('桥接校验来源、实例与一次性 nonce，并在每次响应后轮�
   assert.equal((await second).proposal_id, 'proposal_1');
   bridge.dispose();
 });
+
+test('syncToggle 通过桥接转发 sync_toggle 动作与勾选状态', async () => {
+  const sent = [];
+  const parent = { postMessage: (message, origin) => sent.push({ message, origin }) };
+  const target = new EventTargetFake();
+  const bridge = createParentBridge({
+    instanceId: 'instance_1',
+    protocolVersion: '1.0',
+    parentWindow: parent,
+    eventTarget: target,
+    referrer: 'https://control.example/tasks/t1',
+    timeoutMs: 500,
+  });
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: { protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.init', instance_id: 'instance_1', nonce: 'nonce-sync-toggle-0001' },
+  });
+  const pendingToggle = bridge.syncToggle({ sync_to_peers: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const request = sent.at(-1).message;
+  assert.equal(request.action, 'runtime_settings.sync_toggle');
+  assert.deepEqual(request.payload, { sync_to_peers: true });
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: {
+      protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.response',
+      instance_id: 'instance_1', request_id: request.request_id, nonce: request.nonce,
+      next_nonce: 'nonce-sync-toggle-0002', ok: true, payload: { sync_to_peers: true },
+    },
+  });
+  assert.equal((await pendingToggle).sync_to_peers, true);
+  bridge.dispose();
+});

@@ -132,6 +132,7 @@ function renderPage(view) {
         : api.getRuntimeSettings(current.project_id, options),
       propose: (payload) => requireParentBridge().proposeSettings(payload),
       confirm: (payload) => requireParentBridge().confirmSettings(payload),
+      syncToggle: (payload) => requireParentBridge().syncToggle(payload),
       revise: (payload, options) => api.reviseRuntimeSettings(current.project_id, payload, options),
       onApplied: async () => {
         const fresh = await api.getProject(current.project_id, { cache: 'no-store' });
