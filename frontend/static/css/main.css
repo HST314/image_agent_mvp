@@ -16,6 +16,9 @@
 .app-body{display:grid;grid-template-columns:var(--sidebar-rail) minmax(0,1fr);transition:grid-template-columns var(--ease);min-height:calc(100dvh - var(--topnav-h))}
 .app.sidebar-expanded .app-body{grid-template-columns:var(--sidebar) minmax(0,1fr)}
 .app.app--managed .app-body{grid-template-columns:minmax(0,1fr)}
+/* 受管嵌入模式：顶栏与内容留白收紧，与主系统 48px 顶栏、2px 模块间距对齐 */
+.app.app--managed{--topnav-h:48px}
+.app.app--managed .content{padding:10px 12px 16px}
 .topnav{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:clamp(10px,2vw,22px);padding:0 clamp(12px,2vw,24px);border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(14px)}
 .topnav__brand{display:flex;align-items:center;gap:10px;min-width:0}
 .topnav__brand .brand__mark{width:32px;height:32px;border-radius:9px}
