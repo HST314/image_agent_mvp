@@ -96,7 +96,13 @@ def test_t27_delivery_note_prompt_has_five_shots_and_frozen_evidence():
 
 def test_t27_generated_delivery_note_replaces_template():
     asset={"artifact_id":"artifact_"+"a"*24,"uri":"artifact://artifact_"+"a"*24,"sha256":"b"*64}
-    markdown="# 图：品牌主视觉\n\n## 视觉描述\n完整的段落化说明。"
+    markdown=("# 图：品牌主视觉\n\n## 视觉描述\n完整的段落化说明。\n\n"
+              "### 整体风格\n现代。\n\n### 构图分析\n居中。\n\n### 色彩体系\n蓝金。\n\n"
+              "### 象征意义\n成长。\n\n### 工艺特征\n细腻材质。")
     envelope=build_delivery({"task_card":{"task_id":"t1"}},"p1",asset,"trace-1",
                             generated_markdown=markdown)
     assert envelope.design_note_markdown == markdown
+
+    fallback=build_delivery({"task_card":{"task_id":"t1"}},"p1",asset,"trace-1",
+                            generated_markdown="# incomplete")
+    assert fallback.design_note_markdown.startswith("# 最终设计说明")

@@ -40,6 +40,16 @@ DELIVERY_NOTE_SYSTEM_PROMPT = """你是资深视觉设计总监。你的文字�
 【示例五：虚实融合文化徽章】工业质感、文化符号与科幻信息层叠合。前景拉丝银徽章、中景半透明信息面板和远景真实发射场景形成清晰纵深，虚拟符号与工程实体相互呼应；宝石蓝、金色、墨蓝和亮白制造丰富的冷暖及明暗对比。文字刻印与金属拉丝传达文化和工业底蕴，珐琅渐变与发光描边连接传统工艺和数字界面。
 """
 
+DELIVERY_NOTE_REQUIRED_HEADINGS = (
+    "# 图：",
+    "## 视觉描述",
+    "### 整体风格",
+    "### 构图分析",
+    "### 色彩体系",
+    "### 象征意义",
+    "### 工艺特征",
+)
+
 
 def delivery_note_prompt(snapshot: dict[str, Any], asset: dict[str, Any]) -> str:
     """Build the text-only delivery-note request from frozen workflow evidence."""
@@ -84,7 +94,12 @@ def build_delivery(
           "final_asset":{"artifact_id":asset["artifact_id"],"sha256":asset["sha256"]},"trace_ref":trace_ref}
     fallback=(f"# 最终设计说明\n\n## 设计理念\n{note['concept']}\n\n## 选择理由\n{note['selection_reason']}\n\n"
               f"## 任务适配\n{note['task_fit']}\n\n最终资产：`{asset['artifact_id']}`\n\n追溯引用：`{trace_ref}`\n")
-    markdown = (generated_markdown or "").strip() or fallback
+    candidate = (generated_markdown or "").strip()
+    markdown = (
+        candidate
+        if candidate and all(heading in candidate for heading in DELIVERY_NOTE_REQUIRED_HEADINGS)
+        else fallback
+    )
     return DesignDeliveryEnvelopeV1(task_id=str(task.get("task_id","unknown")), project_id=project_id,
         final_image={k:asset[k] for k in ("artifact_id","uri","sha256")}, design_note_markdown=markdown,
         design_note=note, trace_ref=trace_ref)
