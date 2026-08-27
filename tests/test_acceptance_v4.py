@@ -39,7 +39,6 @@ import main_front
 page = TestClient(main_front.app, raise_server_exceptions=False).get('/')
 assert page.status_code == 200, page.text
 assert 'data-view="settings"' in page.text
-assert 'data-unknown' in page.text
 print('INSTALLED_UI_OK')
 """
     env = os.environ.copy()

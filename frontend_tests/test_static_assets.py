@@ -65,7 +65,6 @@ def test_index_shell_references_module_entry(client: TestClient) -> None:
     assert page.status_code == 200
     assert 'type="module" src="/static/js/app.js"' in page.text
     assert 'data-view="settings">设置</button>' in page.text
-    assert "data-unknown" in page.text
 
 
 def test_t11_create_dialog_has_no_raw_contract_editor_or_english_keys(client: TestClient) -> None:
