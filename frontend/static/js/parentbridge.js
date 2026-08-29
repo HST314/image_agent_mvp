@@ -9,6 +9,7 @@ export const BRIDGE_ACTIONS = new Set([
   'runtime_settings.propose',
   'runtime_settings.confirm',
   'runtime_settings.sync_toggle',
+  'delivery.complete',
 ]);
 
 export function trustedParentOrigin(referrer) {
@@ -40,7 +41,7 @@ export function createParentBridge({
   parentWindow = globalThis.window?.parent,
   eventTarget = globalThis.window,
   referrer = globalThis.document?.referrer || '',
-  timeoutMs = 12_000,
+  timeoutMs = 30_000,
 } = {}) {
   const parentOrigin = trustedParentOrigin(referrer);
   const supported = Boolean(
@@ -145,6 +146,7 @@ export function createParentBridge({
     proposeSettings: (payload) => send('runtime_settings.propose', payload),
     confirmSettings: (payload) => send('runtime_settings.confirm', payload),
     syncToggle: (payload) => send('runtime_settings.sync_toggle', payload),
+    completeDelivery: (payload) => send('delivery.complete', payload),
     dispose() {
       disposed = true;
       eventTarget?.removeEventListener?.('message', onMessage);

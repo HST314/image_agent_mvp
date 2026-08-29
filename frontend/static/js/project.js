@@ -34,7 +34,11 @@ const MANUAL_ACTIONS = [
 /** 离开工程视图（回首页等）时调用：中止仍在进行中的操作与 job 跟踪循环。 */
 export function stopJobTracking() { viewOperations.leave(); }
 
-export function renderProject(view, { autostartBootstrap = false, autostartRerun = false } = {}) {
+export function renderProject(view, {
+  autostartBootstrap = false,
+  autostartRerun = false,
+  completeManagedDelivery = null,
+} = {}) {
   viewOperations.begin();
   // 后台对账重渲染前关闭旧的历史快照弹窗；同检查点的弹窗会由 UI 状态恢复
   // 重新打开，避免 body 上叠出两个 modal。
@@ -79,7 +83,10 @@ export function renderProject(view, { autostartBootstrap = false, autostartRerun
   const stagePanel = sectionPanel(stageTitle(derived), stageSubtitle(derived));
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
-  const refresh = (next, opts) => { if (next) renderProject(next, opts); else openProject(projectId); };
+  const refresh = (next, opts) => {
+    if (next) renderProject(next, { ...opts, completeManagedDelivery });
+    else openProject(projectId);
+  };
   let jobRunner;
   const showIntermediateView = (liveView) => {
     if (liveView?.snapshot?.state !== 'category_constraint') return;
@@ -97,7 +104,9 @@ export function renderProject(view, { autostartBootstrap = false, autostartRerun
   };
   jobRunner = makeJobRunner(jobBox, projectId, refresh, content, showIntermediateView);
 
-  renderStage(stagePanel, view, derived, { projectId, actor, refresh, jobRunner });
+  renderStage(stagePanel, view, derived, {
+    projectId, actor, refresh, jobRunner, completeManagedDelivery,
+  });
 
   if (!rail.children.length) workspace.classList.add('workspace--solo');
 
@@ -888,7 +897,7 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
   if (!actor) panel.append(el('small', { text: '请先在状态页「工程信息」填写操作人身份。' }));
 }
 
-function renderDeliveryStage(panel, view, { projectId }) {
+function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.final_asset;
   if (!asset) {
@@ -903,49 +912,49 @@ function renderDeliveryStage(panel, view, { projectId }) {
 
   const notePanel = el('div', { class: 'delivery-note' });
   const envelope = snapshot.delivery_envelope;
-  const note = envelope?.design_note || {};
   notePanel.append(el('h3', { text: '设计说明' }));
-  const sections = [
-    ['设计理念', note.concept],
-    ['选择理由', note.selection_reason],
-    ['任务适配', note.task_fit],
-  ].filter(([, value]) => value);
-  if (sections.length) {
-    for (const [title, value] of sections) {
-      notePanel.append(el('section', { class: 'delivery-note__section' }, [el('h4', { text: title }), el('p', { text: value })]));
-    }
-  } else {
-    const markdown = el('div', { class: 'markdown-body' });
-    renderMarkdownInto(markdown, envelope?.design_note_markdown || '最终图片已经过候选筛选、自检与人工确认。');
-    notePanel.append(markdown);
-  }
+  const markdown = el('div', { class: 'markdown-body' });
+  renderMarkdownInto(markdown, envelope?.design_note_markdown || '最终图片已经过候选筛选、自检与人工确认。');
+  notePanel.append(markdown);
   layout.append(visual, notePanel);
   panel.append(layout);
 
   const finalized = view.delivery_status?.finalized === true
     && view.delivery_status?.asset_sha256 === asset.sha256;
+  // 受管模式的私有落盘不等于主系统已发布：即使上次跨窗口请求
+  // 在响应前中断，“完成”仍必须可重试。主系统以 bundle_id 幂等去重。
+  const locallyComplete = finalized && !completeManagedDelivery;
   const status = el('div', {
-    class: `delivery-complete__status ${finalized ? 'is-complete' : ''}`,
+    class: `delivery-complete__status ${locallyComplete ? 'is-complete' : ''}`,
     role: 'status',
-    text: finalized ? '最终图片与设计说明已保存到工程交付目录。' : '点击完成，将最终图片和设计说明保存到工程交付目录。',
+    text: locallyComplete
+      ? '最终图片与设计说明已保存到工程交付目录。'
+      : finalized
+        ? '图片与设计说明已在 Image Agent 交付目录；点击完成后复制到任务共享文件夹。'
+        : '点击完成，将最终图片和设计说明保存到工程交付目录。',
   });
   const complete = el('button', {
     type: 'button', class: 'btn btn--primary',
-    text: finalized ? '已完成并保存' : '完成并保存到本地',
-    disabled: finalized ? 'disabled' : null,
+    text: locallyComplete ? '已完成' : '完成',
+    disabled: locallyComplete ? 'disabled' : null,
   });
   complete.addEventListener('click', async () => {
     complete.disabled = true;
     complete.textContent = '正在保存…';
     try {
-      await api.finalizeDelivery(projectId);
-      complete.textContent = '已完成并保存';
-      status.textContent = '最终图片与设计说明已保存到工程交付目录。';
+      const marker = await api.finalizeDelivery(projectId);
+      if (completeManagedDelivery) {
+        await completeManagedDelivery({ bundle_id: marker.bundle_id });
+      }
+      complete.textContent = '已完成';
+      status.textContent = completeManagedDelivery
+        ? '最终图片与设计说明已一并复制到任务共享文件夹。'
+        : '最终图片与设计说明已保存到工程交付目录。';
       status.classList.add('is-complete');
-      toast('交付文件已保存。');
+      toast(completeManagedDelivery ? '交付文件已进入共享文件夹。' : '交付文件已保存。');
     } catch (error) {
       complete.disabled = false;
-      complete.textContent = '完成并保存到本地';
+      complete.textContent = '完成';
       status.textContent = error.message;
       status.classList.remove('is-complete');
       toast(error.message, 'error');

@@ -16,16 +16,8 @@ from storage.project_store import long_path
 DELIVERY_NOTE_SYSTEM_PROMPT = """你是资深视觉设计总监。你的文字是无视觉能力的 PPT 模型理解最终图片的唯一依据。
 根据提供的任务书、最终渲染提示词、风格选择及理由、质检结论，撰写准确、具体、可直接用于配图叙述的 Markdown 设计说明。
 
-必须使用以下结构：
-# 图：<简洁作品名>
-## 视觉描述
-### 整体风格
-### 构图分析
-### 色彩体系
-### 象征意义
-### 工艺特征
-
-要求：以连贯段落为主，不要把输入字段机械堆砌；明确主体、空间层级、视觉动势、材质、光影、主辅色及其关系；只描述输入能够支持的事实，不臆测图片中不可确认的文字、品牌或工艺参数；不要插入图片链接、资产 ID、哈希或追溯信息；只输出 Markdown 正文。
+使用自然、可读的 Markdown 组织内容，可以自由决定标题和段落，不强制固定字段或固定结构。
+要求：以连贯段落为主，不要把输入字段机械堆砌；尽量说清主体、空间层级、视觉动势、材质、光影、主辅色及其关系；只描述输入能够支持的事实，不臆测图片中不可确认的文字、品牌或工艺参数；不要插入图片链接、资产 ID、哈希或追溯信息；不要输出 JSON 或用代码块包裹全文，只输出 Markdown 正文。
 
 以下五个压缩示例仅用于学习表达密度和结构，不得照抄其中的航天题材事实：
 
@@ -39,17 +31,6 @@ DELIVERY_NOTE_SYSTEM_PROMPT = """你是资深视觉设计总监。你的文字�
 
 【示例五：虚实融合文化徽章】工业质感、文化符号与科幻信息层叠合。前景拉丝银徽章、中景半透明信息面板和远景真实发射场景形成清晰纵深，虚拟符号与工程实体相互呼应；宝石蓝、金色、墨蓝和亮白制造丰富的冷暖及明暗对比。文字刻印与金属拉丝传达文化和工业底蕴，珐琅渐变与发光描边连接传统工艺和数字界面。
 """
-
-DELIVERY_NOTE_REQUIRED_HEADINGS = (
-    "# 图：",
-    "## 视觉描述",
-    "### 整体风格",
-    "### 构图分析",
-    "### 色彩体系",
-    "### 象征意义",
-    "### 工艺特征",
-)
-
 
 def delivery_note_prompt(snapshot: dict[str, Any], asset: dict[str, Any]) -> str:
     """Build the text-only delivery-note request from frozen workflow evidence."""
@@ -95,11 +76,7 @@ def build_delivery(
     fallback=(f"# 最终设计说明\n\n## 设计理念\n{note['concept']}\n\n## 选择理由\n{note['selection_reason']}\n\n"
               f"## 任务适配\n{note['task_fit']}\n\n最终资产：`{asset['artifact_id']}`\n\n追溯引用：`{trace_ref}`\n")
     candidate = (generated_markdown or "").strip()
-    markdown = (
-        candidate
-        if candidate and all(heading in candidate for heading in DELIVERY_NOTE_REQUIRED_HEADINGS)
-        else fallback
-    )
+    markdown = candidate or fallback
     return DesignDeliveryEnvelopeV1(task_id=str(task.get("task_id","unknown")), project_id=project_id,
         final_image={k:asset[k] for k in ("artifact_id","uri","sha256")}, design_note_markdown=markdown,
         design_note=note, trace_ref=trace_ref)

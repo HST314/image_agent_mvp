@@ -103,6 +103,10 @@ def test_t27_generated_delivery_note_replaces_template():
                             generated_markdown=markdown)
     assert envelope.design_note_markdown == markdown
 
+    free_form=build_delivery({"task_card":{"task_id":"t1"}},"p1",asset,"trace-1",
+                             generated_markdown="# 简洁说明\n\n这是一段正常 Markdown 文本。")
+    assert free_form.design_note_markdown == "# 简洁说明\n\n这是一段正常 Markdown 文本。"
+
     fallback=build_delivery({"task_card":{"task_id":"t1"}},"p1",asset,"trace-1",
-                            generated_markdown="# incomplete")
+                            generated_markdown="   ")
     assert fallback.design_note_markdown.startswith("# 最终设计说明")

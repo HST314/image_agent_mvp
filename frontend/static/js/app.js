@@ -190,7 +190,12 @@ function updateStatusAlert(view = state.current, externalAbnormal) {
 }
 
 function renderCurrentProject(view, options) {
-  renderProject(view, options);
+  renderProject(view, {
+    ...options,
+    completeManagedDelivery: state.managedByHarness && parentBridge?.supported
+      ? (payload) => parentBridge.completeDelivery(payload)
+      : null,
+  });
   updateStatusAlert(view);
 }
 
