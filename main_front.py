@@ -98,6 +98,20 @@ def _managed_adapter_key() -> str:
 MANAGED_ADAPTER_KEY = _managed_adapter_key()
 LOGGER = logging.getLogger(__name__)
 
+
+def _work_admission_quiesced() -> bool:
+    if not MANAGED_MODE:
+        return False
+    if not MANAGED_CONTROL_FILE:
+        return True
+    try:
+        value = json.loads(Path(MANAGED_CONTROL_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # A missing or corrupt managed gate is not permission to accept work.
+        return True
+    return not isinstance(value, dict) or value.get("quiesced") is not False
+
+
 app = FastAPI(
     title="Image Agent Studio",
     description="生产 Image Agent 的 Web 薄适配接口",
@@ -178,6 +192,21 @@ class UnknownResolutionRequest(StrictRequest):
 @app.middleware("http")
 async def enforce_request_size(request: Request, call_next):
     """在 JSON 解析前拒绝超大请求，避免内存型拒绝服务。"""
+    if (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and _work_admission_quiesced()
+        and not request.url.path.endswith("/cancel")
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "agent_quiesced",
+                    "message": "当前 Agent 正在安全归档 暂不接收新任务",
+                    "retryable": True,
+                }
+            },
+        )
     raw_length = request.headers.get("content-length")
     if raw_length:
         try:
@@ -203,6 +232,11 @@ async def enforce_request_size(request: Request, call_next):
     # exhausted client receive channel.
     request._body = body
     return await call_next(request)
+
+
+@app.get("/api/managed/work-admission")
+async def managed_work_admission() -> dict[str, bool]:
+    return {"quiesced": _work_admission_quiesced()}
 
 
 def _safe_project_id(value: str) -> str:
