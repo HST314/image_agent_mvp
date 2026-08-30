@@ -10,6 +10,7 @@ export const BRIDGE_ACTIONS = new Set([
   'runtime_settings.confirm',
   'runtime_settings.sync_toggle',
   'delivery.complete',
+  'delivery.status',
 ]);
 
 export function trustedParentOrigin(referrer) {
@@ -147,6 +148,7 @@ export function createParentBridge({
     confirmSettings: (payload) => send('runtime_settings.confirm', payload),
     syncToggle: (payload) => send('runtime_settings.sync_toggle', payload),
     completeDelivery: (payload) => send('delivery.complete', payload),
+    deliveryStatus: (payload) => send('delivery.status', payload),
     dispose() {
       disposed = true;
       eventTarget?.removeEventListener?.('message', onMessage);

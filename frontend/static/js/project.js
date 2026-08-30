@@ -38,6 +38,7 @@ export function renderProject(view, {
   autostartBootstrap = false,
   autostartRerun = false,
   completeManagedDelivery = null,
+  managedDeliveryStatus = null,
 } = {}) {
   viewOperations.begin();
   // 后台对账重渲染前关闭旧的历史快照弹窗；同检查点的弹窗会由 UI 状态恢复
@@ -84,7 +85,7 @@ export function renderProject(view, {
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
   const refresh = (next, opts) => {
-    if (next) renderProject(next, { ...opts, completeManagedDelivery });
+    if (next) renderProject(next, { ...opts, completeManagedDelivery, managedDeliveryStatus });
     else openProject(projectId);
   };
   let jobRunner;
@@ -105,7 +106,7 @@ export function renderProject(view, {
   jobRunner = makeJobRunner(jobBox, projectId, refresh, content, showIntermediateView);
 
   renderStage(stagePanel, view, derived, {
-    projectId, actor, refresh, jobRunner, completeManagedDelivery,
+    projectId, actor, refresh, jobRunner, completeManagedDelivery, managedDeliveryStatus,
   });
 
   if (!rail.children.length) workspace.classList.add('workspace--solo');
@@ -897,7 +898,7 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
   if (!actor) panel.append(el('small', { text: '请先在状态页「工程信息」填写操作人身份。' }));
 }
 
-function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }) {
+function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery, managedDeliveryStatus }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.final_asset;
   if (!asset) {
@@ -922,7 +923,8 @@ function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }
   const finalized = view.delivery_status?.finalized === true
     && view.delivery_status?.asset_sha256 === asset.sha256;
   // 受管模式的私有落盘不等于主系统已发布：即使上次跨窗口请求
-  // 在响应前中断，“完成”仍必须可重试。主系统以 bundle_id 幂等去重。
+  // 在响应前中断，“完成”仍必须可重试。主系统以 bundle_id 幂等去重；
+  // 渲染后另行查询主系统发布态，已发布则直接呈现完成态（见下方）。
   const locallyComplete = finalized && !completeManagedDelivery;
   const status = el('div', {
     class: `delivery-complete__status ${locallyComplete ? 'is-complete' : ''}`,
@@ -961,6 +963,20 @@ function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }
     }
   });
   panel.append(el('div', { class: 'delivery-complete' }, [status, complete]));
+
+  // 受管模式下私有落盘不等于主系统已发布。重新进入交付页时按 bundle_id
+  // 查询主系统发布态：已发布则呈现完成态，避免误以为未保存而重复点击。
+  // 查询失败或非发布态时保持可点击，不影响既有重试路径。
+  const bundleId = view.delivery_status?.bundle_id;
+  if (completeManagedDelivery && managedDeliveryStatus && finalized && bundleId) {
+    managedDeliveryStatus({ bundle_id: bundleId }).then((result) => {
+      if (result?.status !== 'PUBLISHED') return;
+      complete.disabled = true;
+      complete.textContent = '已完成';
+      status.textContent = '最终图片与设计说明已保存到任务共享文件夹。';
+      status.classList.add('is-complete');
+    }).catch(() => {});
+  }
 }
 
 /* ---------- job 运行器 ---------- */

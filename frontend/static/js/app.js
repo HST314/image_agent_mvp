@@ -190,10 +190,14 @@ function updateStatusAlert(view = state.current, externalAbnormal) {
 }
 
 function renderCurrentProject(view, options) {
+  const managed = state.managedByHarness && parentBridge?.supported;
   renderProject(view, {
     ...options,
-    completeManagedDelivery: state.managedByHarness && parentBridge?.supported
+    completeManagedDelivery: managed
       ? (payload) => parentBridge.completeDelivery(payload)
+      : null,
+    managedDeliveryStatus: managed
+      ? (payload) => parentBridge.deliveryStatus(payload)
       : null,
   });
   updateStatusAlert(view);
