@@ -12,6 +12,7 @@ from render_clients.payload_mapper import SEEDREAM_MIN_PIXELS, validate_render_s
 _SIZE_LABELS = {
     "output_spec", "output_format_details", "size",
     "输出规格", "交付规格", "交付要求", "尺寸规格",
+    "aspect_ratio", "orientation", "画面比例", "比例",
 }
 _DIMENSION = re.compile(r"(?<!\d)(\d{2,5})\s*[xX×＊*]\s*(\d{2,5})(?!\d)")
 _RATIO = re.compile(r"(?<!\d)(\d{1,2})\s*[:：]\s*(\d{1,2})(?!\d)")
@@ -67,7 +68,7 @@ def _keyword_ratios(text: str) -> list[tuple[int, int]]:
         ratios.append((1, 1))
     if "竖版手机" in text or "手机竖版" in text:
         ratios.append((9, 16))
-    elif "竖版" in text:
+    elif re.search(r"竖版|竖向|竖构图", text):
         ratios.append((3, 4))
     if "横版" in text:
         ratios.append((16, 9))
@@ -82,14 +83,17 @@ def resolve_render_size(spec: TaskSpecification, model: str, default_size: str) 
         if fact.label in _SIZE_LABELS and fact.status != "blocking" and fact.value.strip()
     ]
     explicit: list[tuple[int, int]] = []
-    requested_ratios: list[tuple[int, int]] = []
+    numeric_ratios: list[tuple[int, int]] = []
+    keyword_ratios: list[tuple[int, int]] = []
     for text in requirements:
         explicit.extend((int(match.group(1)), int(match.group(2))) for match in _DIMENSION.finditer(text))
-        requested_ratios.extend(_ratio(int(match.group(1)), int(match.group(2))) for match in _RATIO.finditer(text))
-        requested_ratios.extend(_keyword_ratios(text))
+        numeric_ratios.extend(_ratio(int(match.group(1)), int(match.group(2))) for match in _RATIO.finditer(text))
+        keyword_ratios.extend(_keyword_ratios(text))
 
     explicit_unique = list(dict.fromkeys(explicit))
-    ratio_unique = list(dict.fromkeys(requested_ratios))
+    # Explicit numeric ratios outrank direction keywords: keyword results only
+    # apply when the approved facts carry no numeric ratio at all.
+    ratio_unique = list(dict.fromkeys(numeric_ratios or keyword_ratios))
     if len(explicit_unique) > 1:
         raise ValueError("输出规格包含多个不同尺寸，请在生图前确认唯一尺寸。")
     if ratio_unique and any(not _near(ratio_unique[0], item) for item in ratio_unique[1:]):
