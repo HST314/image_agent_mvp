@@ -38,6 +38,7 @@ export function renderProject(view, {
   autostartBootstrap = false,
   autostartRerun = false,
   completeManagedDelivery = null,
+  managedDeliveryStatus = null,
 } = {}) {
   viewOperations.begin();
   // 后台对账重渲染前关闭旧的历史快照弹窗；同检查点的弹窗会由 UI 状态恢复
@@ -84,7 +85,7 @@ export function renderProject(view, {
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
   const refresh = (next, opts) => {
-    if (next) renderProject(next, { ...opts, completeManagedDelivery });
+    if (next) renderProject(next, { ...opts, completeManagedDelivery, managedDeliveryStatus });
     else openProject(projectId);
   };
   let jobRunner;
@@ -105,7 +106,7 @@ export function renderProject(view, {
   jobRunner = makeJobRunner(jobBox, projectId, refresh, content, showIntermediateView);
 
   renderStage(stagePanel, view, derived, {
-    projectId, actor, refresh, jobRunner, completeManagedDelivery,
+    projectId, actor, refresh, jobRunner, completeManagedDelivery, managedDeliveryStatus,
   });
 
   if (!rail.children.length) workspace.classList.add('workspace--solo');
@@ -897,7 +898,8 @@ function renderFinal(panel, view, { projectId, actor, refresh, jobRunner }) {
   if (!actor) panel.append(el('small', { text: '请先在状态页「工程信息」填写操作人身份。' }));
 }
 
-function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }) {
+// 导出供 frontend_tests 的交付页 DOM 行为测试使用。
+export function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery, managedDeliveryStatus }) {
   const snapshot = view.snapshot || {};
   const asset = snapshot.final_asset;
   if (!asset) {
@@ -921,22 +923,32 @@ function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }
 
   const finalized = view.delivery_status?.finalized === true
     && view.delivery_status?.asset_sha256 === asset.sha256;
+  const bundleId = view.delivery_status?.bundle_id;
   // 受管模式的私有落盘不等于主系统已发布：即使上次跨窗口请求
-  // 在响应前中断，“完成”仍必须可重试。主系统以 bundle_id 幂等去重。
+  // 在响应前中断，“完成”仍必须可重试。主系统以 bundle_id 幂等去重；
+  // 渲染后另行查询主系统发布态，已发布则直接呈现完成态（见下方）。
   const locallyComplete = finalized && !completeManagedDelivery;
+  // 受管且已私有落盘、存在 bundle_id 时，首帧即以禁用态进入发布态确认，
+  // 查询在途期间不可点，杜绝“退出再返回仍可点”的重复提交窗口；
+  // 确认非 PUBLISHED 或查询失败后才恢复可重试。
+  const pendingPublishCheck = Boolean(
+    !locallyComplete && completeManagedDelivery && managedDeliveryStatus && finalized && bundleId,
+  );
   const status = el('div', {
     class: `delivery-complete__status ${locallyComplete ? 'is-complete' : ''}`,
     role: 'status',
     text: locallyComplete
       ? '最终图片与设计说明已保存到工程交付目录。'
-      : finalized
-        ? '图片与设计说明已在 Image Agent 交付目录；点击完成后复制到任务共享文件夹。'
-        : '点击完成，将最终图片和设计说明保存到工程交付目录。',
+      : pendingPublishCheck
+        ? '正在确认主系统交付状态…'
+        : finalized
+          ? '图片与设计说明已在 Image Agent 交付目录；点击完成后复制到任务共享文件夹。'
+          : '点击完成，将最终图片和设计说明保存到工程交付目录。',
   });
   const complete = el('button', {
     type: 'button', class: 'btn btn--primary',
-    text: locallyComplete ? '已完成' : '完成',
-    disabled: locallyComplete ? 'disabled' : null,
+    text: locallyComplete ? '已完成' : pendingPublishCheck ? '确认中…' : '完成',
+    disabled: (locallyComplete || pendingPublishCheck) ? 'disabled' : null,
   });
   complete.addEventListener('click', async () => {
     complete.disabled = true;
@@ -961,6 +973,29 @@ function renderDeliveryStage(panel, view, { projectId, completeManagedDelivery }
     }
   });
   panel.append(el('div', { class: 'delivery-complete' }, [status, complete]));
+
+  // 受管模式下私有落盘不等于主系统已发布。重新进入交付页时按 bundle_id
+  // 查询主系统发布态：已发布则呈现完成态，避免误以为未保存而重复点击；
+  // 非发布态或查询失败时恢复可点击，不影响既有重试路径。
+  if (pendingPublishCheck) {
+    const enableRetry = (detail) => {
+      complete.disabled = false;
+      complete.textContent = '完成';
+      status.textContent = detail;
+    };
+    managedDeliveryStatus({ bundle_id: bundleId }).then((result) => {
+      if (result?.status === 'PUBLISHED') {
+        complete.disabled = true;
+        complete.textContent = '已完成';
+        status.textContent = '最终图片与设计说明已保存到任务共享文件夹。';
+        status.classList.add('is-complete');
+        return;
+      }
+      enableRetry('图片与设计说明已在 Image Agent 交付目录；点击完成后复制到任务共享文件夹。');
+    }).catch(() => {
+      enableRetry('交付状态确认失败，可点击完成后重试。');
+    });
+  }
 }
 
 /* ---------- job 运行器 ---------- */

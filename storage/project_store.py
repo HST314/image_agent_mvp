@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import portalocker
 from io import BytesIO
 from contextlib import contextmanager
@@ -17,6 +18,10 @@ from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 FORMAT_VERSION = 1
+# Transient lock contention (delivery observer vs. user actions) used to fail
+# instantly with a 423.  Wait briefly before giving up instead.
+LOCK_ACQUIRE_TIMEOUT_SECONDS = 3.0
+LOCK_ACQUIRE_RETRY_INTERVAL_SECONDS = 0.1
 BRANCH_NAME = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff._-]{1,63}$")
 STATE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CONFIG_REVISION_ID = re.compile(r"^cfg-inst-r[0-9]{6}$")
@@ -1577,11 +1582,16 @@ class ProjectStore:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.touch(mode=0o600, exist_ok=True)
         stream = lock_path.open("r+b", buffering=0)
-        try:
-            portalocker.lock(stream, portalocker.LOCK_EX | portalocker.LOCK_NB)
-        except portalocker.exceptions.LockException as exc:
-            stream.close()
-            raise ProjectLockError("该工程正在由另一个进程处理，请稍后重试。") from exc
+        deadline = time.monotonic() + LOCK_ACQUIRE_TIMEOUT_SECONDS
+        while True:
+            try:
+                portalocker.lock(stream, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                break
+            except portalocker.exceptions.LockException as exc:
+                if time.monotonic() >= deadline:
+                    stream.close()
+                    raise ProjectLockError("该工程正在由另一个进程处理，请稍后重试。") from exc
+                time.sleep(LOCK_ACQUIRE_RETRY_INTERVAL_SECONDS)
         stream.seek(0)
         stream.truncate()
         stream.write(json.dumps({"pid": os.getpid(), "started_at": _now(), "thread": threading.get_ident()}).encode())
