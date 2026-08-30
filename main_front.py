@@ -1233,7 +1233,11 @@ def _finalize_checkpoint_candidate(
     from datetime import datetime, timezone
 
     from agent_core.contracts import DesignDeliveryEnvelopeV1
-    from agent_core.delivery import build_delivery, finalize_delivery_candidate
+    from agent_core.delivery import (
+        build_delivery,
+        finalize_delivery_candidate,
+        load_finalized_candidate_marker,
+    )
 
     snapshot = checkpoint.get("data") or {}
     asset = snapshot.get("final_asset")
@@ -1245,30 +1249,40 @@ def _finalize_checkpoint_candidate(
         or frozen.get("asset_sha256") != asset.get("sha256")
     ):
         raise ValueError("DELIVERY_NOT_FROZEN")
-    source, record = store.artifacts.resolve(str(asset.get("artifact_id", "")))
-    if record.get("sha256") != asset.get("sha256"):
-        raise ValueError("最终图片与冻结交付记录不一致。")
-    raw_envelope = snapshot.get("delivery_envelope")
-    envelope = (
-        DesignDeliveryEnvelopeV1.model_validate(raw_envelope)
-        if raw_envelope
-        else build_delivery(
-            snapshot,
-            store.project_id,
-            asset,
-            f"project:{store.project_id}:asset:{asset['sha256']}",
-        )
-    )
-    marker = finalize_delivery_candidate(
+    branch_id = str(checkpoint["branch"])
+    checkpoint_id = str(checkpoint["checkpoint_id"])
+    marker = load_finalized_candidate_marker(
         store.root,
-        envelope,
-        source,
-        branch_id=str(checkpoint["branch"]),
-        checkpoint_id=str(checkpoint["checkpoint_id"]),
-        created_at=datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
-            "+00:00", "Z"
-        ),
+        store.project_id,
+        branch_id,
+        checkpoint_id,
+        str(asset.get("sha256")),
     )
+    if marker is None:
+        source, record = store.artifacts.resolve(str(asset.get("artifact_id", "")))
+        if record.get("sha256") != asset.get("sha256"):
+            raise ValueError("最终图片与冻结交付记录不一致。")
+        raw_envelope = snapshot.get("delivery_envelope")
+        envelope = (
+            DesignDeliveryEnvelopeV1.model_validate(raw_envelope)
+            if raw_envelope
+            else build_delivery(
+                snapshot,
+                store.project_id,
+                asset,
+                f"project:{store.project_id}:asset:{asset['sha256']}",
+            )
+        )
+        marker = finalize_delivery_candidate(
+            store.root,
+            envelope,
+            source,
+            branch_id=branch_id,
+            checkpoint_id=checkpoint_id,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+                "+00:00", "Z"
+            ),
+        )
     if not any(
         event.get("type") == "delivery_candidate_finalized"
         and event.get("bundle_id") == marker["bundle_id"]

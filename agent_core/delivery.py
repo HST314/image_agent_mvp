@@ -147,6 +147,33 @@ def _write_immutable(path: Path, content: bytes) -> None:
         long_path(temporary).unlink(missing_ok=True)
 
 
+def load_finalized_candidate_marker(
+    root: Path,
+    project_id: str,
+    branch_id: str,
+    checkpoint_id: str,
+    asset_sha256: str,
+) -> dict[str, Any] | None:
+    """Return the already-materialized candidate marker for this bundle identity.
+
+    The bundle id covers project + branch + checkpoint + image sha256, and every
+    remaining marker field is a deterministic function of those inputs, so a
+    matching marker is authoritative: callers can skip re-reading and re-hashing
+    the image entirely.  A missing or unreadable marker falls back to the full
+    finalize path, which deterministically rebuilds the bundle.
+    """
+
+    bundle_id = bundle_id_for(project_id, branch_id, checkpoint_id, asset_sha256)
+    marker_path = root / "delivery" / f"{bundle_id}-candidate.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(marker, dict) or marker.get("bundle_id") != bundle_id:
+        return None
+    return marker
+
+
 def finalize_delivery_candidate(
     root: Path,
     envelope: DesignDeliveryEnvelopeV1,
