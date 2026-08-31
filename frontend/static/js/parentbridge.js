@@ -55,12 +55,33 @@ export function createParentBridge({
   );
   let disposed = false;
   let nonce = null;
-  let handshakeResolve;
+  let handshakeWaiter = null;
   let serial = Promise.resolve();
   const pending = new Map();
-  const handshake = new Promise((resolve) => {
-    handshakeResolve = resolve;
-  });
+
+  const bridgeError = (message, code) => {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  };
+
+  const postHello = () => parentWindow.postMessage({
+    protocol: BRIDGE_PROTOCOL,
+    version: BRIDGE_VERSION,
+    type: 'bridge.hello',
+    instance_id: instanceId,
+  }, parentOrigin);
+
+  const beginHandshake = () => {
+    if (!handshakeWaiter) {
+      let resolve;
+      const promise = new Promise((done) => { resolve = done; });
+      handshakeWaiter = { promise, resolve };
+    }
+    nonce = null;
+    postHello();
+    return handshakeWaiter.promise;
+  };
 
   const onMessage = (event) => {
     if (disposed || event.source !== parentWindow || event.origin !== parentOrigin) return;
@@ -68,7 +89,8 @@ export function createParentBridge({
     if (!protocolMessage(message, instanceId)) return;
     if (message.type === 'bridge.init' && typeof message.nonce === 'string' && message.nonce.length >= 16) {
       nonce = message.nonce;
-      handshakeResolve();
+      handshakeWaiter?.resolve();
+      handshakeWaiter = null;
       return;
     }
     if (message.type !== 'bridge.response' || typeof message.request_id !== 'string') return;
@@ -76,7 +98,8 @@ export function createParentBridge({
     if (!request || message.nonce !== request.nonce) return;
     pending.delete(message.request_id);
     if (typeof message.next_nonce !== 'string' || message.next_nonce.length < 16) {
-      request.reject(new Error('主系统返回了无效的桥接凭据，请刷新后重试。'));
+      beginHandshake();
+      request.reject(bridgeError('主系统返回了无效的桥接凭据，正在重新连接。', 'BRIDGE_INVALID_CREDENTIAL'));
       return;
     }
     nonce = message.next_nonce;
@@ -90,51 +113,76 @@ export function createParentBridge({
 
   if (supported) {
     eventTarget.addEventListener('message', onMessage);
+    beginHandshake();
+  }
+
+  async function waitForHandshake() {
+    if (disposed) throw bridgeError('主系统设置连接已关闭。', 'BRIDGE_CLOSED');
+    if (nonce) return;
+    // Every wait re-announces the child. A previous hello can be lost while
+    // the parent effect is being replaced, so retaining only its unresolved
+    // promise would otherwise make later clicks wait on a dead session.
+    const handshake = beginHandshake();
+    let timer;
+    try {
+      await Promise.race([
+        handshake,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(bridgeError('等待主系统设置连接超时。', 'BRIDGE_HANDSHAKE_TIMEOUT')),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (disposed || !nonce) throw bridgeError('主系统设置连接尚未恢复。', 'BRIDGE_DISCONNECTED');
+  }
+
+  async function transmit(action, payload) {
+    await waitForHandshake();
+    const requestId = `bridge_${randomId()}`;
+    const requestNonce = nonce;
+    nonce = null;
+    const result = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        beginHandshake();
+        reject(bridgeError('主系统设置请求超时，正在重新连接。', 'BRIDGE_REQUEST_TIMEOUT'));
+      }, timeoutMs);
+      pending.set(requestId, {
+        nonce: requestNonce,
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+    });
     parentWindow.postMessage({
       protocol: BRIDGE_PROTOCOL,
       version: BRIDGE_VERSION,
-      type: 'bridge.hello',
+      type: 'bridge.request',
       instance_id: instanceId,
+      request_id: requestId,
+      nonce: requestNonce,
+      action,
+      payload,
     }, parentOrigin);
+    return result;
   }
 
   async function send(action, payload = {}) {
     if (!BRIDGE_ACTIONS.has(action)) throw new Error('不支持的设置桥接操作。');
     if (!supported) throw new Error('当前页面未建立可信的主系统连接。');
     const run = async () => {
-      await Promise.race([
-        handshake,
-        new Promise((_, reject) => setTimeout(
-          () => reject(new Error('等待主系统设置连接超时。')),
-          timeoutMs,
-        )),
-      ]);
-      if (disposed || !nonce) throw new Error('主系统设置连接已关闭。');
-      const requestId = `bridge_${randomId()}`;
-      const requestNonce = nonce;
-      nonce = null;
-      const result = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(requestId);
-          reject(new Error('主系统设置请求超时。'));
-        }, timeoutMs);
-        pending.set(requestId, {
-          nonce: requestNonce,
-          resolve: (value) => { clearTimeout(timer); resolve(value); },
-          reject: (error) => { clearTimeout(timer); reject(error); },
-        });
-      });
-      parentWindow.postMessage({
-        protocol: BRIDGE_PROTOCOL,
-        version: BRIDGE_VERSION,
-        type: 'bridge.request',
-        instance_id: instanceId,
-        request_id: requestId,
-        nonce: requestNonce,
-        action,
-        payload,
-      }, parentOrigin);
-      return result;
+      try {
+        return await transmit(action, payload);
+      } catch (error) {
+        if (action !== 'delivery.complete' || error?.code !== 'BRIDGE_REQUEST_TIMEOUT') throw error;
+        await waitForHandshake();
+        const status = await transmit('delivery.status', payload);
+        if (status?.status === 'PUBLISHED') return status;
+        return transmit(action, payload);
+      }
     };
     serial = serial.then(run, run);
     return serial;
@@ -151,6 +199,7 @@ export function createParentBridge({
     deliveryStatus: (payload) => send('delivery.status', payload),
     dispose() {
       disposed = true;
+      nonce = null;
       eventTarget?.removeEventListener?.('message', onMessage);
       for (const request of pending.values()) request.reject(new Error('主系统设置连接已关闭。'));
       pending.clear();

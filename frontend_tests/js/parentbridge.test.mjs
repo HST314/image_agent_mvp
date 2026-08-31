@@ -140,3 +140,91 @@ test('deliveryStatus 通过桥接查询主系统发布态', async () => {
   assert.equal((await pendingStatus).status, 'PUBLISHED');
   bridge.dispose();
 });
+
+test('请求超时后自动重新握手，后续操作无需退出页面', async () => {
+  const sent = [];
+  const parent = { postMessage: (message, origin) => sent.push({ message, origin }) };
+  const target = new EventTargetFake();
+  const bridge = createParentBridge({
+    instanceId: 'instance_1',
+    protocolVersion: '1.0',
+    parentWindow: parent,
+    eventTarget: target,
+    referrer: 'https://control.example/tasks/t1',
+    timeoutMs: 15,
+  });
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: { protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.init', instance_id: 'instance_1', nonce: 'nonce-before-timeout-01' },
+  });
+  const timedOut = bridge.getSettings();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await assert.rejects(timedOut, (error) => error.code === 'BRIDGE_REQUEST_TIMEOUT');
+  assert.equal(sent.at(-1).message.type, 'bridge.hello');
+
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: { protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.init', instance_id: 'instance_1', nonce: 'nonce-after-timeout-002' },
+  });
+  const recovered = bridge.getSettings();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const retry = sent.at(-1).message;
+  assert.equal(retry.type, 'bridge.request');
+  assert.equal(retry.nonce, 'nonce-after-timeout-002');
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: {
+      protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.response',
+      instance_id: 'instance_1', request_id: retry.request_id, nonce: retry.nonce,
+      next_nonce: 'nonce-after-recovery-003', ok: true, payload: { revision: { current: 4 } },
+    },
+  });
+  assert.equal((await recovered).revision.current, 4);
+  bridge.dispose();
+});
+
+test('交付完成响应丢失时重连并以发布状态收敛', async () => {
+  const sent = [];
+  const parent = { postMessage: (message, origin) => sent.push({ message, origin }) };
+  const target = new EventTargetFake();
+  const bridge = createParentBridge({
+    instanceId: 'instance_1',
+    protocolVersion: '1.0',
+    parentWindow: parent,
+    eventTarget: target,
+    referrer: 'https://control.example/tasks/t1',
+    timeoutMs: 15,
+  });
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: { protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.init', instance_id: 'instance_1', nonce: 'nonce-delivery-lost-001' },
+  });
+  const completion = bridge.completeDelivery({ bundle_id: 'bundle_abc123' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(sent.at(-1).message.type, 'bridge.hello');
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: { protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.init', instance_id: 'instance_1', nonce: 'nonce-delivery-resync-02' },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const statusRequest = sent.at(-1).message;
+  assert.equal(statusRequest.action, 'delivery.status');
+  target.emit({
+    source: parent,
+    origin: 'https://control.example',
+    data: {
+      protocol: 'image-agent-runtime-settings', version: '1.0', type: 'bridge.response',
+      instance_id: 'instance_1', request_id: statusRequest.request_id, nonce: statusRequest.nonce,
+      next_nonce: 'nonce-delivery-finished-03', ok: true,
+      payload: { bundle_id: 'bundle_abc123', status: 'PUBLISHED' },
+    },
+  });
+  assert.equal((await completion).status, 'PUBLISHED');
+  assert.equal(sent.filter(({ message }) => message.action === 'delivery.complete').length, 1);
+  bridge.dispose();
+});
