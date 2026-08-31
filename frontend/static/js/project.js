@@ -34,6 +34,24 @@ const MANUAL_ACTIONS = [
 /** 离开工程视图（回首页等）时调用：中止仍在进行中的操作与 job 跟踪循环。 */
 export function stopJobTracking() { viewOperations.leave(); }
 
+// 工程内的 job 刷新、分支创建和分支切换必须复用同一受管交付上下文。
+// 集中生成导航函数，避免任一路径直接调用裸 renderProject 后退化为本地交付。
+export function createContextualProjectNavigation(projectId, {
+  completeManagedDelivery,
+  managedDeliveryStatus,
+}, {
+  render = renderProject,
+  open = openProject,
+} = {}) {
+  const renderWithContext = (next, opts) => render(next, {
+    ...opts,
+    completeManagedDelivery,
+    managedDeliveryStatus,
+  });
+  const openWithContext = (op) => open(projectId, op, renderWithContext);
+  return { renderWithContext, openWithContext };
+}
+
 export function renderProject(view, {
   autostartBootstrap = false,
   autostartRerun = false,
@@ -53,13 +71,20 @@ export function renderProject(view, {
   const manifest = view.manifest || {};
   const projectId = view.project_id;
   const derived = deriveView(view);
+  const { renderWithContext, openWithContext } = createContextualProjectNavigation(
+    projectId,
+    {
+      completeManagedDelivery,
+      managedDeliveryStatus,
+    },
+  );
 
   setTopContext({ projectId, branch: manifest.current_branch });
   /* 顶栏分支徽章即分支界面入口（每次渲染重绑，避免闭包捕获旧工程）。 */
   const branchButton = $('#topnav-branch');
   if (branchButton) {
     branchButton.onclick = () => {
-      openBranchDialog({ projectId, onSwitched: () => openProject(projectId) });
+      openBranchDialog({ projectId, onSwitched: () => openWithContext() });
     };
   }
 
@@ -68,7 +93,7 @@ export function renderProject(view, {
   /* ===== 实时进度 ===== */
   const progressSection = sectionPanel('创作进度', `当前分支 ${manifest.current_branch || 'main'} · 检查点 ${manifest.current_checkpoint?.sequence || 0}`);
   const stepper = el('div', { class: 'stepper', 'aria-label': '工作流进度' });
-  renderProgressSteps(stepper, view, { onBranchCreated: renderProject });
+  renderProgressSteps(stepper, view, { onBranchCreated: renderWithContext });
   progressSection.append(stepper);
   const jobBox = el('div', { style: 'margin-top:14px' });
   progressSection.append(jobBox);
@@ -85,15 +110,15 @@ export function renderProject(view, {
   stagePanel.classList.add('stage');
   primary.append(stagePanel);
   const refresh = (next, opts) => {
-    if (next) renderProject(next, { ...opts, completeManagedDelivery, managedDeliveryStatus });
-    else openProject(projectId);
+    if (next) renderWithContext(next, opts);
+    else openWithContext();
   };
   let jobRunner;
   const showIntermediateView = (liveView) => {
     if (liveView?.snapshot?.state !== 'category_constraint') return;
     patch({ current: liveView });
     stepper.textContent = '';
-    renderProgressSteps(stepper, liveView, { onBranchCreated: renderProject });
+    renderProgressSteps(stepper, liveView, { onBranchCreated: renderWithContext });
     const head = stagePanel.querySelector('.section__head');
     [...stagePanel.children].forEach((child) => { if (child !== head) child.remove(); });
     const title = head?.querySelector('h2');
@@ -103,7 +128,14 @@ export function renderProject(view, {
     stagePanel.setAttribute('aria-busy', 'true');
     renderCategoryConstraint(stagePanel, liveView, { actor, jobRunner });
   };
-  jobRunner = makeJobRunner(jobBox, projectId, refresh, content, showIntermediateView);
+  jobRunner = makeJobRunner(
+    jobBox,
+    projectId,
+    refresh,
+    content,
+    showIntermediateView,
+    openWithContext,
+  );
 
   renderStage(stagePanel, view, derived, {
     projectId, actor, refresh, jobRunner, completeManagedDelivery, managedDeliveryStatus,
@@ -1000,7 +1032,14 @@ export function renderDeliveryStage(panel, view, { projectId, completeManagedDel
 
 /* ---------- job 运行器 ---------- */
 
-function makeJobRunner(box, projectId, refresh, actionRoot, onIntermediateView) {
+function makeJobRunner(
+  box,
+  projectId,
+  refresh,
+  actionRoot,
+  onIntermediateView,
+  openLatestProject,
+) {
   const runner = createJobRunner({
     projectId,
     renderProgress: (job, handlers) => renderJobProgress(box, job, handlers),
@@ -1011,7 +1050,7 @@ function makeJobRunner(box, projectId, refresh, actionRoot, onIntermediateView) 
     },
     notify: toast,
     // 延时刷新的世代守卫在 jobrunner 内完成；此处再校验拉取期间世代未变。
-    refresh: (op) => openProject(projectId, op),
+    refresh: (op) => openLatestProject(op),
     getProjectId: () => state.current?.project_id,
     getCheckpoint: () => state.current?.manifest?.current_checkpoint?.sequence ?? '',
     postJob: (body, opts) => api.startAdvanceJob(projectId, body, opts),
@@ -1062,7 +1101,7 @@ function makeJobRunner(box, projectId, refresh, actionRoot, onIntermediateView) 
 
 /* ---------- 小工具 ---------- */
 
-async function openProject(id, op) {
+async function openProject(id, op, render = renderProject) {
   // 视图拉取即一次操作：无调用方世代时登记新世代（意图发生即中止 in-flight
   // 的旧拉取/跟踪）；GET 绑定该世代 signal，返回前复核——拉取期间接管的
   // 新操作（如用户启动 job B 或侧栏切页）使本响应过期丢弃，不得覆盖新视图（H1）。
@@ -1070,7 +1109,7 @@ async function openProject(id, op) {
   try {
     const view = await api.getProject(id, { signal: fetchOp.controller.signal });
     if (!viewOperations.isCurrent(fetchOp)) return;
-    renderProject(view);
+    render(view);
   } catch (error) {
     if (!viewOperations.isCurrent(fetchOp)) return;
     toast(error.message, 'error');
